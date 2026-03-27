@@ -1,0 +1,17 @@
+# Temporary files
+pending-merge.yaml
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug
+debug/
+*.log

@@ -78,9 +78,9 @@ hooks:
       target: ~/.claude/statusline.sh
       runtime: bash
     windows:
-      source: assets/hooks/mac/statusline.sh
-      target: ~/.claude/statusline.sh
-      runtime: git-bash
+      source: assets/hooks/windows/statusline.ps1
+      target: ~/.claude/statusline.ps1
+      runtime: powershell
 
 # CLAUDE.md（用户级指令）
 claude_md:

@@ -1,0 +1,122 @@
+version: 1
+metadata:
+  name: my-claude-config
+  description: 个人 Claude Code 配置清单
+  last_updated: 2026-03-28
+  last_sync_platform: mac
+
+# 平台定义
+platforms:
+  mac: [darwin, macos]
+  windows: [windows, win32, win64]
+  linux: [linux, ubuntu, debian]
+
+# Skills 配置
+skills:
+  github:
+    source: assets/skills/github
+    platforms: [all]
+    description: GitHub workflow skill
+
+  research-brainstorm:
+    source: assets/skills/research-brainstorm
+    platforms: [all]
+    description: 研究头脑风暴
+
+  literature-review:
+    source: assets/skills/literature-review
+    platforms: [all]
+    description: 学术文献综述
+
+  read-paper:
+    source: assets/skills/read-paper
+    platforms: [all]
+    description: 论文阅读工具
+
+# Rules 配置
+rules: {}
+
+# Agents 配置
+agents: {}
+
+# Settings 配置（分离处理）
+settings:
+  base:
+    source: assets/settings/base.json
+    merge_strategy: replace
+    platforms: [all]
+
+# Permissions（平台分类）
+permissions:
+  universal:
+    source: assets/settings/permissions-universal.json
+    merge_strategy:
+      path: permissions.allow
+      mode: merge_unique
+    platforms: [all]
+
+  mac:
+    source: assets/settings/permissions-mac.json
+    merge_strategy:
+      path: permissions.allow
+      mode: merge_unique
+    platforms: [mac]
+
+  windows:
+    source: assets/settings/permissions-windows.json
+    merge_strategy:
+      path: permissions.allow
+      mode: merge_unique
+    platforms: [windows]
+
+# Hooks 配置（平台特定）
+hooks:
+  statusline:
+    depends_on: [claude-hud]
+    mac:
+      source: assets/hooks/mac/statusline.sh
+      target: ~/.claude/statusline.sh
+      runtime: bash
+    windows:
+      source: assets/hooks/mac/statusline.sh
+      target: ~/.claude/statusline.sh
+      runtime: git-bash
+
+# CLAUDE.md（用户级指令）
+claude_md:
+  source: assets/claude-md/CLAUDE.md
+  target: ~/.claude/CLAUDE.md
+  platforms: [all]
+
+# Memory（行为偏好）
+memory:
+  items:
+    claude-code-teammate-workflow:
+      source: assets/memory/claude-code-teammate-workflow.md
+      platforms: [all]
+    collaboration-preference-ask-user-question:
+      source: assets/memory/collaboration-preference-ask-user-question.md
+      platforms: [all]
+    ask-user-question-strictly-preferred:
+      source: assets/memory/ask-user-question-strictly-preferred.md
+      platforms: [all]
+
+# 环境变量（不管理敏感值，只检查存在性）
+env:
+  expected:
+    - ANTHROPIC_AUTH_TOKEN
+    - ANTHROPIC_BASE_URL
+  fixed:
+    CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1"
+    ENABLE_TOOL_SEARCH: "true"
+
+# 排除列表
+exclude:
+  - ~/.claude/config.json
+  - ~/.claude.json
+  - ~/.claude/teams/
+  - ~/.claude/session-env/
+  - ~/.claude/sessions/
+  - ~/.claude/history.jsonl
+  - ~/.claude/cache/
+  - ~/.claude/telemetry/

@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(claude plugin:*)",
+      "Bash(git:*)",
+      "Bash(gh repo:*)",
+      "WebSearch",
+      "Skill(update-config)",
+      "Skill(github)",
+      "Skill(claude-hud:setup)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:openreview.net)",
+      "WebFetch(domain:sakana.ai)",
+      "WebFetch(domain:awesome-agi.github.io)",
+      "WebFetch(domain:elicit.com)",
+      "WebFetch(domain:consensus.app)",
+      "WebFetch(domain:docs.anthropic.com)"
+    ]
+  }
+}

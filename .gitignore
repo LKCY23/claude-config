@@ -15,3 +15,9 @@ Thumbs.db
 # Debug
 debug/
 *.log
+
+# User config data (should be in private repo)
+assets/skills/*/
+assets/memory/*.md
+assets/settings/*.json
+assets/hooks/*/statusline.*

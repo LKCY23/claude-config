@@ -1,0 +1,108 @@
+# Claude Config Manifest Template
+# Copy this file to your private config repo and customize
+
+version: 1
+metadata:
+  name: my-claude-config
+  description: 个人 Claude Code 配置清单
+  last_updated: "YYYY-MM-DD"
+  last_sync_platform: ""
+
+# 平台定义
+platforms:
+  mac: [darwin, macos]
+  windows: [windows, win32, win64]
+  linux: [linux, ubuntu, debian]
+
+# Skills 配置
+# Example:
+# skills:
+#   my-skill:
+#     source: assets/skills/my-skill
+#     platforms: [all]
+#     description: My custom skill
+skills: {}
+
+# Rules 配置
+rules: {}
+
+# Agents 配置
+agents: {}
+
+# Settings 配置
+settings:
+  base:
+    source: assets/settings/base.json
+    merge_strategy: replace
+    platforms: [all]
+
+# Permissions（平台分类）
+permissions:
+  universal:
+    source: assets/settings/permissions-universal.json
+    merge_strategy:
+      path: permissions.allow
+      mode: merge_unique
+    platforms: [all]
+
+  mac:
+    source: assets/settings/permissions-mac.json
+    merge_strategy:
+      path: permissions.allow
+      mode: merge_unique
+    platforms: [mac]
+
+  windows:
+    source: assets/settings/permissions-windows.json
+    merge_strategy:
+      path: permissions.allow
+      mode: merge_unique
+    platforms: [windows]
+
+# Hooks 配置
+# Example:
+# hooks:
+#   statusline:
+#     depends_on: [claude-hud]
+#     mac:
+#       source: assets/hooks/mac/statusline.sh
+#       target: ~/.claude/statusline.sh
+#       runtime: bash
+#     windows:
+#       source: assets/hooks/windows/statusline.ps1
+#       target: ~/.claude/statusline.ps1
+#       runtime: powershell
+hooks: {}
+
+# CLAUDE.md（用户级指令）
+# claude_md:
+#   source: assets/claude-md/CLAUDE.md
+#   target: ~/.claude/CLAUDE.md
+#   platforms: [all]
+
+# Memory
+# memory:
+#   items:
+#     my-workflow:
+#       source: assets/memory/my-workflow.md
+#       platforms: [all]
+
+# 环境变量
+env:
+  expected:
+    - ANTHROPIC_AUTH_TOKEN
+    - ANTHROPIC_BASE_URL
+  fixed: {}
+    # CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1"
+    # ENABLE_TOOL_SEARCH: "true"
+
+# 排除列表
+exclude:
+  - ~/.claude/config.json
+  - ~/.claude.json
+  - ~/.claude/teams/
+  - ~/.claude/session-env/
+  - ~/.claude/sessions/
+  - ~/.claude/history.jsonl
+  - ~/.claude/cache/
+  - ~/.claude/telemetry/

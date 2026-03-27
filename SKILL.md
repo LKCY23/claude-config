@@ -1,13 +1,20 @@
 ---
 name: claude-config
 description: Manage Claude Code configuration across machines. Use for applying, tracking, exporting, diffing, merging, and validating config manifests.
-argument-hint: <apply|track|diff|merge|export|validate|status> [--platform <mac|windows|linux>]
+argument-hint: <apply|track|diff|merge|export|validate|status> [--platform <mac|windows|linux>] [--config-dir <path>]
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 ---
 
 # claude-config
 
 跨机器管理 Claude Code 配置的 skill。支持双向流转（Mac ↔ Windows ↔ Linux）。
+
+## 全局参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--platform <name>` | 指定平台 (mac/windows/linux) | 自动检测 |
+| `--config-dir <path>` | 配置仓库路径 | `~/claude-config-data` |
 
 ## 命令概览
 
@@ -46,19 +53,27 @@ uname -s | grep -q "Linux" && PLATFORM="linux"
 
 根据 manifest.yaml 和 plugins.yaml 安装配置到当前机器。
 
+### 参数
+
+| 参数 | 说明 |
+|------|------|
+| `--platform <name>` | 指定平台，默认自动检测 |
+| `--config-dir <path>` | 配置仓库路径，默认 `~/claude-config-data` |
+
 ### 执行流程
 
 ```
-1. 检测当前平台（如未指定 --platform）
-2. 读取 manifest.yaml 和 plugins.yaml
-3. 按平台过滤配置项（platforms 字段）
-4. 检查 env.expected 变量是否存在，缺失则警告
-5. 安装 plugins（执行 claude plugin install）
-6. 等待 plugins 安装完成
-7. 安装依赖 plugins 的 hooks（depends_on）
-8. 复制 skills/rules/agents/memory 文件
-9. 合并 settings（按 merge_strategy）
-10. 输出安装报告
+1. 确定 CONFIG_DIR（--config-dir 或默认 ~/claude-config-data）
+2. 检测当前平台（如未指定 --platform）
+3. 读取 $CONFIG_DIR/manifest.yaml 和 $CONFIG_DIR/plugins.yaml
+4. 按平台过滤配置项（platforms 字段）
+5. 检查 env.expected 变量是否存在，缺失则警告
+6. 安装 plugins（执行 claude plugin install）
+7. 等待 plugins 安装完成
+8. 安装依赖 plugins 的 hooks（depends_on）
+9. 复制 $CONFIG_DIR/assets/ 下的 skills/rules/agents/memory 文件
+10. 合并 settings（按 merge_strategy）
+11. 输出安装报告
 ```
 
 ### 具体操作

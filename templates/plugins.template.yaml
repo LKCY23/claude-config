@@ -1,0 +1,29 @@
+# Claude Config Plugins Template
+# Copy this file to your private config repo and customize
+
+# plugins:
+#   superpowers:
+#     marketplace: claude-plugins-official
+#     source: github:anthropics/claude-plugins-official
+#     package: superpowers
+#     version: "5.0.5"
+#     platforms: [all]
+#
+#   claude-hud:
+#     marketplace: claude-hud
+#     source: github:jarrodwatts/claude-hud
+#     package: claude-hud
+#     version: "0.0.10"
+#     platforms: [all]
+
+plugins: {}
+
+# marketplaces:
+#   claude-plugins-official:
+#     source: github
+#     repo: anthropics/claude-plugins-official
+#   claude-hud:
+#     source: github
+#     repo: jarrodwatts/claude-hud
+
+marketplaces: {}

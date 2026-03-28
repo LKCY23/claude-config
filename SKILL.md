@@ -31,6 +31,8 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 | `check-updates` | 检查更新 | 检查上游更新 |
 | `update-skill` | 更新 skill | 拉取最新版本 |
 | `push-skill` | 推送修改 | 推送到远程仓库 |
+| `add-tool` | 添加第三方工具 | 用 subtree 管理 |
+| `sync-upstream` | 同步上游更新 | 拉取 subtree 更新 |
 
 ---
 
@@ -721,6 +723,66 @@ Push to remote?
 ✓ Pushed successfully
 Updated last_sync: 2026-03-28
 ```
+
+---
+
+## add-tool 命令
+
+用 git subtree 添加第三方工具，支持本地定制和上游更新合并。
+
+### 用法
+
+```bash
+# 在配置仓库目录执行
+./scripts/add-tool.sh <name> <git-url> [branch]
+```
+
+### 示例
+
+```bash
+# 添加第三方 skill
+./scripts/add-tool.sh research-mate https://github.com/xxx/research-mate.git main
+
+# 添加后需要更新 manifest.yaml
+```
+
+### 执行后步骤
+
+1. 检查 skill 内容
+2. 更新 manifest.yaml，添加 `subtree: true`
+3. 执行 `/claude-config apply`
+
+---
+
+## sync-upstream 命令
+
+同步 subtree 管理的第三方工具的上游更新。
+
+### 用法
+
+```bash
+# 同步所有 subtree 工具
+./scripts/sync-upstream.sh
+
+# 同步指定工具
+./scripts/sync-upstream.sh research-mate
+```
+
+### 工作流程
+
+```
+1. 读取 manifest.yaml 中 subtree: true 的 skills
+2. 对每个工具执行 git subtree pull
+3. 自动合并上游更新（保留本地定制）
+4. 更新 last_sync 时间
+```
+
+### 冲突处理
+
+如果有冲突：
+1. 脚本会报告失败
+2. 手动解决冲突
+3. `git add . && git commit`
 
 ---
 

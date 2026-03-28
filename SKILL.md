@@ -145,17 +145,50 @@ Next steps:
 ### 执行流程
 
 ```
-1. 确定 CONFIG_DIR（--config-dir 或默认 ~/claude-config-data）
-2. 检测当前平台（如未指定 --platform）
-3. 读取 $CONFIG_DIR/manifest.yaml 和 $CONFIG_DIR/plugins.yaml
-4. 按平台过滤配置项（platforms 字段）
-5. 检查 env.expected 变量是否存在，缺失则警告
-6. 安装 plugins（执行 claude plugin install）
-7. 等待 plugins 安装完成
-8. 安装依赖 plugins 的 hooks（depends_on）
-9. 复制 $CONFIG_DIR/assets/ 下的 skills/rules/agents/memory 文件
-10. 合并 settings（按 merge_strategy）
-11. 输出安装报告
+1. 确定 CONFIG_DIR（--config-dir 参数优先，默认 ~/claude-config-data）
+2. 验证路径状态：
+   - 如果路径或 manifest.yaml 有问题，不要擅自修正
+   - 使用 AskUserQuestion 让用户决定如何处理（详见下方"路径验证原则"）
+3. 检测当前平台（如未指定 --platform）
+4. 读取 $CONFIG_DIR/manifest.yaml 和 $CONFIG_DIR/plugins.yaml
+5. 按平台过滤配置项（platforms 字段）
+6. 检查 env.expected 变量是否存在，缺失则警告
+7. 安装 plugins（执行 claude plugin install）
+8. 等待 plugins 安装完成
+9. 安装依赖 plugins 的 hooks（depends_on）
+10. 复制 $CONFIG_DIR/assets/ 下的 skills/rules/agents/memory 文件
+11. 合并 settings（按 merge_strategy）
+12. 输出安装报告
+```
+
+### 路径验证原则
+
+**核心原则**：
+- 用户明确指定了 `--config-dir`，说明有特定意图，**不要覆盖或擅自修改**
+- 遇到路径不存在、manifest.yaml 缺失等问题时，通过 **AskUserQuestion** 与用户交互
+- 不要假设用户想要什么，直接问
+
+**交互示例**（使用 AskUserQuestion）：
+
+路径不存在时：
+```
+Config directory not found: /path/user/specified
+
+What would you like to do?
+  (a) Create new config directory at this path
+  (b) Use default path instead (~\claude-config-data)
+  (c) Cancel and specify a different path
+```
+
+没有 manifest.yaml 时：
+```
+No manifest.yaml found in: /path/user/specified
+
+This may not be a valid claude-config directory.
+What would you like to do?
+  (a) Initialize manifest.yaml here
+  (b) This is wrong path, let me specify another
+  (c) Use default path instead
 ```
 
 ### 具体操作
@@ -997,6 +1030,13 @@ marketplaces:
 ---
 
 ## 注意事项
+
+### 路径验证原则
+
+**所有涉及 config-dir 的命令都必须遵循**：
+- 用户指定了 `--config-dir` → 这是明确的意图，不要擅自改路径
+- 遇到问题（路径不存在、manifest 缺失等）→ 用 AskUserQuestion 交互解决
+- 不要假设、不要"智能修正"、不要覆盖用户意图
 
 ### 敏感信息
 

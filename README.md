@@ -12,60 +12,53 @@ Claude Code 配置管理工具 - 跨机器配置同步解决方案。
 
 ## 快速开始
 
-### 方式一：一键安装
+### 第一步：安装工具
 
 ```bash
-# 安装工具框架
+# 一键安装
 curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/main/install.sh | bash
-
-# 创建你的私有配置仓库（在 GitHub 上创建一个私有仓库后）
-git clone https://github.com/<your-username>/<your-config-repo>.git ~/claude-config-data
-cd ~/claude-config-data
-
-# 初始化配置
-cp ~/.claude-config-tool/templates/*.template.yaml .
-mv manifest.template.yaml manifest.yaml
-mv plugins.template.yaml plugins.yaml
-mkdir -p assets/{skills,memory,settings,hooks/mac,hooks/windows}
-
-# 编辑 manifest.yaml，填写你的配置仓库信息
 ```
 
-### 方式二：手动安装
+这会：
+- 克隆工具框架到 `~/.claude-config-tool`
+- 安装 skill 到 `~/.claude/skills/claude-config/`
+
+### 第二步：创建私有配置仓库
+
+在 Claude Code 中执行：
+
+```
+/claude-config init
+```
+
+这个命令会引导你：
+1. 在 GitHub 创建私有仓库（或使用已有的）
+2. 在本地初始化配置目录
+3. 设置 `config_repo` 信息
+
+或者手动创建：
 
 ```bash
-# 1. 克隆工具框架
-git clone https://github.com/LKCY23/claude-config.git ~/.claude-config-tool
+# 1. 在 GitHub 上创建一个私有仓库（如 my-claude-config）
 
-# 2. 安装 skill
-mkdir -p ~/.claude/skills/claude-config
-cp ~/.claude-config-tool/SKILL.md ~/.claude/skills/claude-config/
+# 2. Clone 到本地
+git clone https://github.com/<your-username>/my-claude-config.git ~/claude-config-data
 
-# 3. 创建私有配置仓库
-# 在 GitHub 上创建一个私有仓库，然后：
-git clone https://github.com/<your-username>/<your-config-repo>.git ~/claude-config-data
+# 3. 初始化配置
 cd ~/claude-config-data
 cp ~/.claude-config-tool/templates/*.template.yaml .
 mv manifest.template.yaml manifest.yaml
 mv plugins.template.yaml plugins.yaml
-mkdir -p assets/{skills,memory,settings,hooks/mac,hooks/windows}
+mkdir -p assets/{skills,memory,settings,hooks/mac,hooks/windows,scripts}
+cp -r ~/.claude-config-tool/scripts/* assets/scripts/ 2>/dev/null || true
+
+# 4. 编辑 manifest.yaml，填写 config_repo 信息
+
+# 5. 提交初始配置
+git add -A && git commit -m "Initial config" && git push
 ```
 
-### 配置仓库地址
-
-编辑 `manifest.yaml`，在 `metadata` 中填写你的配置仓库信息：
-
-```yaml
-metadata:
-  name: my-claude-config
-  config_repo:
-    local: ~/claude-config-data           # 本地路径
-    remote: github:<username>/<repo>       # 远程仓库（用于 agent 记忆）
-```
-
-这样 Claude Code 就能记住你的配置仓库在哪里。
-
-### 应用配置
+### 第三步：应用配置
 
 在 Claude Code 中：
 
@@ -73,16 +66,33 @@ metadata:
 /claude-config apply
 ```
 
-如果配置仓库不在默认路径，指定路径：
+---
+
+## 已有配置仓库（新机器）
+
+如果你已经在另一台机器上设置过配置仓库：
+
+```bash
+# 1. 安装工具
+curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/main/install.sh | bash
+
+# 2. Clone 你的配置仓库
+git clone https://github.com/<your-username>/my-claude-config.git ~/claude-config-data
+```
+
+然后在 Claude Code 中：
 
 ```
-/claude-config apply --config-dir /path/to/your/config-repo
+/claude-config apply
 ```
+
+---
 
 ## 命令
 
 | 命令 | 功能 |
 |------|------|
+| `init` | 初始化新的配置仓库 |
 | `status` | 查看同步状态 |
 | `diff` | 对比本地与配置差异 |
 | `merge` | 交互式合并 |
@@ -96,6 +106,8 @@ metadata:
 | `push-skill` | 推送修改到远程 |
 | `add-tool` | 用 subtree 添加第三方工具 |
 | `sync-upstream` | 同步 subtree 上游更新 |
+
+---
 
 ## 目录结构
 
@@ -118,6 +130,8 @@ metadata:
     └── hooks/               # 平台特定 hooks
 ```
 
+---
+
 ## manifest.yaml 示例
 
 ```yaml
@@ -126,7 +140,7 @@ metadata:
   name: my-claude-config
   config_repo:
     local: ~/claude-config-data
-    remote: github:username/config-repo
+    remote: github:username/my-claude-config
 
 skills:
   my-skill:
@@ -142,25 +156,13 @@ skills:
       type: third-party
       repo: github:xxx/skill
       ref: main
-      subtree: true           # 用 subtree 管理
+      subtree: true
       last_sync: "2026-03-28"
 ```
 
+---
+
 ## 多机器同步
-
-### 首次在新机器上设置
-
-```bash
-# 1. 安装工具
-curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/main/install.sh | bash
-
-# 2. Clone 你的配置仓库
-git clone https://github.com/<your-username>/<your-config-repo>.git ~/claude-config-data
-
-# 3. 应用配置
-# 在 Claude Code 中：
-/claude-config apply
-```
 
 ### 日常同步
 
@@ -175,6 +177,8 @@ cd ~/claude-config-data && git pull
 /claude-config diff
 /claude-config merge
 ```
+
+---
 
 ## 详细文档
 

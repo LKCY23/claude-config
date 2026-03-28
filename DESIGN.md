@@ -1070,6 +1070,7 @@ metadata:
 
 | 命令 | 功能 |
 |------|------|
+| `init` | 初始化配置仓库 |
 | `add-skill` | 从本地或仓库添加 skill |
 | `check-updates` | 检查有远程上游的 skills 更新 |
 | `update-skill` | 从上游拉取最新版本 |

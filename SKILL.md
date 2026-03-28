@@ -1,7 +1,7 @@
 ---
 name: claude-config
 description: Manage Claude Code configuration across machines. Use for applying, tracking, exporting, diffing, merging, and validating config manifests.
-argument-hint: <apply|track|diff|merge|export|validate|status|add-skill|check-updates|update-skill|push-skill|add-tool|sync-upstream> [--platform <mac|windows|linux>] [--config-dir <path>]
+argument-hint: <init|apply|track|diff|merge|export|validate|status|add-skill|check-updates|update-skill|push-skill|add-tool|sync-upstream> [--platform <mac|windows|linux>] [--config-dir <path>]
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 ---
 
@@ -20,6 +20,7 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 
 | 命令 | 功能 | 说明 |
 |------|------|------|
+| `init` | 初始化配置仓库 | 首次使用时执行 |
 | `apply` | 安装配置到当前机器 | 直接安装，无交互 |
 | `diff` | 生成差异报告 | 对比本地与清单 |
 | `merge` | 交互式合并 | 逐项解决冲突 |
@@ -51,6 +52,81 @@ command -v powershell >/dev/null 2>&1 && PLATFORM="windows"
 
 # Linux
 uname -s | grep -q "Linux" && PLATFORM="linux"
+```
+
+---
+
+## init 命令
+
+初始化新的配置仓库。首次使用时执行。
+
+### 用法
+
+```
+/claude-config init [--config-dir <path>]
+```
+
+### 执行流程
+
+```
+1. 检查是否已有配置仓库（默认 ~/claude-config-data）
+2. 如果没有，询问用户：
+   a. 是否已在 GitHub 创建私有仓库？
+      - 是：询问仓库地址，clone
+      - 否：引导用户去 GitHub 创建
+3. 初始化配置目录结构：
+   - 复制模板文件
+   - 创建 assets/ 目录结构
+   - 复制 scripts/
+4. 询问用户的 GitHub 用户名，更新 manifest.yaml 的 config_repo
+5. 提示用户提交初始配置
+```
+
+### 输出示例
+
+```
+=== Claude Config Init ===
+
+Checking for existing config repo at ~/claude-config-data... Not found.
+
+Do you already have a private config repo on GitHub? (y/n)
+> n
+
+Please create a private repo on GitHub first:
+  1. Go to https://github.com/new
+  2. Name it something like "my-claude-config"
+  3. Keep it private
+  4. Don't initialize with README
+
+Press Enter when done, or type the repo URL now.
+> https://github.com/username/my-claude-config
+
+Cloning...
+✓ Cloned to ~/claude-config-data
+
+Initializing config structure...
+✓ Created manifest.yaml
+✓ Created plugins.yaml
+✓ Created assets/skills/
+✓ Created assets/memory/
+✓ Created assets/settings/
+✓ Created assets/hooks/mac/
+✓ Created assets/hooks/windows/
+✓ Created scripts/
+
+What's your GitHub username?
+> username
+
+Updated manifest.yaml:
+  config_repo:
+    local: ~/claude-config-data
+    remote: github:username/my-claude-config
+
+Next steps:
+  1. cd ~/claude-config-data
+  2. git add -A && git commit -m "Initial config"
+  3. git push
+  4. /claude-config apply
 ```
 
 ---

@@ -10,81 +10,100 @@ Claude Code 配置管理工具 - 跨机器配置同步解决方案。
 - **敏感信息保护** - 不追踪 API keys、OAuth sessions
 - **第三方工具集成** - git subtree 管理，支持本地定制
 
-## 快速开始
+---
 
-### 第一步：安装工具
+## 安装
+
+### macOS / Linux
 
 ```bash
 # 一键安装
 curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/main/install.sh | bash
+
+# 克隆你的私有配置仓库
+git clone https://github.com/<your-username>/my-claude-config.git ~/claude-config-data
 ```
 
-这会：
-- 克隆工具框架到 `~/.claude-config-tool`
-- 安装 skill 到 `~/.claude/skills/claude-config/`
+### Windows
 
-### 第二步：创建私有配置仓库
+**方式一：Git Bash（推荐）**
 
-在 Claude Code 中执行：
+如果你安装了 Git for Windows，打开 Git Bash：
+
+```bash
+# 一键安装
+curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/main/install.sh | bash
+
+# 克隆你的私有配置仓库
+git clone https://github.com/<your-username>/my-claude-config.git ~/claude-config-data
+```
+
+**方式二：PowerShell**
+
+```powershell
+# 1. 克隆工具
+git clone https://github.com/LKCY23/claude-config.git "$env:USERPROFILE\.claude-config-tool"
+
+# 2. 安装 skill
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.claude\skills\claude-config"
+Copy-Item "$env:USERPROFILE\.claude-config-tool\SKILL.md" "$env:USERPROFILE\.claude\skills\claude-config\"
+
+# 3. 克隆私有配置仓库
+git clone https://github.com/<your-username>/my-claude-config.git "$env:USERPROFILE\claude-config-data"
+```
+
+---
+
+## 快速开始
+
+### 第一次使用（创建配置仓库）
+
+在 Claude Code 中：
 
 ```
 /claude-config init
 ```
 
-这个命令会引导你：
-1. 在 GitHub 创建私有仓库（或使用已有的）
-2. 在本地初始化配置目录
-3. 设置 `config_repo` 信息
+按提示创建私有配置仓库。
 
-或者手动创建：
+### 已有配置仓库（新机器）
 
-```bash
-# 1. 在 GitHub 上创建一个私有仓库（如 my-claude-config）
-
-# 2. Clone 到本地
-git clone https://github.com/<your-username>/my-claude-config.git ~/claude-config-data
-
-# 3. 初始化配置
-cd ~/claude-config-data
-cp ~/.claude-config-tool/templates/*.template.yaml .
-mv manifest.template.yaml manifest.yaml
-mv plugins.template.yaml plugins.yaml
-mkdir -p assets/{skills,memory,settings,hooks/mac,hooks/windows,scripts}
-cp -r ~/.claude-config-tool/scripts/* assets/scripts/ 2>/dev/null || true
-
-# 4. 编辑 manifest.yaml，填写 config_repo 信息
-
-# 5. 提交初始配置
-git add -A && git commit -m "Initial config" && git push
-```
-
-### 第三步：应用配置
-
-在 Claude Code 中：
+安装完成后，在 Claude Code 中：
 
 ```
 /claude-config apply
+```
+
+Windows 用户指定平台：
+
+```
+/claude-config apply --platform windows
 ```
 
 ---
 
-## 已有配置仓库（新机器）
+## 平台差异
 
-如果你已经在另一台机器上设置过配置仓库：
+| 功能 | macOS | Windows | Linux |
+|------|-------|---------|-------|
+| 安装脚本 | ✓ curl \| bash | ✓ Git Bash / PowerShell | ✓ curl \| bash |
+| Hooks | bash 脚本 | PowerShell 或 Git Bash | bash 脚本 |
+| Statusline | statusline.sh | statusline.ps1 或 Git Bash | statusline.sh |
+| 路径格式 | `~/` | `$env:USERPROFILE\` 或 `~` (Git Bash) | `~/` |
 
-```bash
-# 1. 安装工具
-curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/main/install.sh | bash
+### Windows 特殊说明
 
-# 2. Clone 你的配置仓库
-git clone https://github.com/<your-username>/my-claude-config.git ~/claude-config-data
-```
+1. **Git Bash vs PowerShell**：
+   - 推荐 Git Bash，命令与 Mac/Linux 一致
+   - PowerShell 需要单独的 `.ps1` 脚本
 
-然后在 Claude Code 中：
+2. **Hooks**：
+   - Mac/Linux 使用 `bash` 执行 `.sh` 脚本
+   - Windows 可选择 Git Bash 执行 `.sh` 或 PowerShell 执行 `.ps1`
 
-```
-/claude-config apply
-```
+3. **路径**：
+   - Git Bash: `~/.claude/`（与 Mac 一致）
+   - PowerShell: `$env:USERPROFILE\.claude\`
 
 ---
 
@@ -93,10 +112,10 @@ git clone https://github.com/<your-username>/my-claude-config.git ~/claude-confi
 | 命令 | 功能 |
 |------|------|
 | `init` | 初始化新的配置仓库 |
+| `apply` | 安装配置到当前机器 |
 | `status` | 查看同步状态 |
 | `diff` | 对比本地与配置差异 |
 | `merge` | 交互式合并 |
-| `apply` | 安装配置 |
 | `track` | 发现未追踪配置 |
 | `export` | 导出配置到清单 |
 | `validate` | 验证配置完整性 |
@@ -127,7 +146,9 @@ git clone https://github.com/<your-username>/my-claude-config.git ~/claude-confi
     ├── skills/              # 自定义 skills
     ├── memory/              # 行为偏好 memory
     ├── settings/            # settings 和 permissions
-    └── hooks/               # 平台特定 hooks
+    └── hooks/
+        ├── mac/             # Mac hooks
+        └── windows/        # Windows hooks
 ```
 
 ---
@@ -172,10 +193,13 @@ cd ~/claude-config-data && git pull
 
 # 在 Claude Code 中应用
 /claude-config apply
+```
 
-# 或者检查差异后合并
-/claude-config diff
-/claude-config merge
+Windows (PowerShell):
+```powershell
+cd "$env:USERPROFILE\claude-config-data"
+git pull
+# 然后在 Claude Code 中: /claude-config apply --platform windows
 ```
 
 ---

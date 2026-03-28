@@ -15,12 +15,40 @@ platforms:
   linux: [linux, ubuntu, debian]
 
 # Skills 配置
-# Example:
-# skills:
-#   my-skill:
-#     source: assets/skills/my-skill
-#     platforms: [all]
-#     description: My custom skill
+# 支持三种上游类型：
+# - self: 本仓库内的自制 skill
+# - self (with repo): 有独立仓库的自制 skill
+# - third-party: 第三方社区 skill
+
+skills:
+  # 示例：本仓库内的自制 skill
+  # my-skill:
+  #   source: assets/skills/my-skill
+  #   platforms: [all]
+  #   upstream:
+  #     type: self
+  #   description: 我的自制 skill
+
+  # 示例：有独立仓库的自制 skill
+  # my-shared-skill:
+  #   source: assets/skills/my-shared-skill
+  #   platforms: [all]
+  #   upstream:
+  #     type: self
+  #     repo: github:user/my-shared-skill
+  #     ref: main
+  #     last_sync: "YYYY-MM-DD"
+
+  # 示例：第三方 skill
+  # third-party-skill:
+  #   source: assets/skills/third-party-skill
+  #   platforms: [all]
+  #   upstream:
+  #     type: third-party
+  #     repo: github:xxx/repo
+  #     ref: main
+  #     last_sync: "YYYY-MM-DD"
+
 skills: {}
 
 # Rules 配置

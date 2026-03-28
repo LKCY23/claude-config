@@ -1004,3 +1004,65 @@ Settings fields to EXCLUDE from base.json:
 | 7 | 项目路径权限 | 分类为 local-only，不迁移 |
 | 8 | python3/python | 使用兼容语法或分平台配置 |
 | 9 | Memory 验证 | 确认无路径引用，可安全迁移 ✓ |
+
+---
+
+## 工具同步与更新
+
+### Skill 类型定义
+
+| 类型 | 上游仓库 | 可读 | 可写 | 典型场景 |
+|------|---------|------|------|---------|
+| `self` | 配置仓库本身 | ✓ | ✓ | skill 和配置放一起 |
+| `third-party` | 社区仓库 | ✓ | ✗ | 使用他人开发的 skill |
+
+### manifest.yaml upstream 字段格式
+
+```yaml
+skills:
+  # 自制 skill（存在本仓库）
+  my-skill:
+    source: assets/skills/my-skill
+    platforms: [all]
+    upstream:
+      type: self                    # 本仓库内
+
+  # 自制 skill（有独立仓库）
+  my-shared-skill:
+    source: assets/skills/my-shared-skill
+    platforms: [all]
+    upstream:
+      type: self
+      repo: github:user/my-shared-skill
+      ref: main
+      last_sync: "2026-03-28"
+
+  # 第三方 skill
+  third-party-skill:
+    source: assets/skills/third-party-skill
+    platforms: [all]
+    upstream:
+      type: third-party
+      repo: github:xxx/repo
+      ref: main
+      last_sync: "2026-03-28"
+```
+
+### 新增命令
+
+| 命令 | 功能 |
+|------|------|
+| `add-skill` | 从本地或仓库添加 skill |
+| `check-updates` | 检查有远程上游的 skills 更新 |
+| `update-skill` | 从上游拉取最新版本 |
+| `push-skill` | 推送自制 skill 到远程仓库 |
+
+### 工作流示意
+
+```
+[上游仓库] ──pull──> [配置仓库 assets/skills/] ──apply──> [~/.claude/skills/]
+     │                     │                              │
+     │                     │<──export/track────────────────┘
+     │                     │
+     └──push（仅自制）──────┘
+```

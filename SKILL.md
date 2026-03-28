@@ -1,7 +1,7 @@
 ---
 name: claude-config
 description: Manage Claude Code configuration across machines. Use for applying, tracking, exporting, diffing, merging, and validating config manifests.
-argument-hint: <apply|track|diff|merge|export|validate|status> [--platform <mac|windows|linux>] [--config-dir <path>]
+argument-hint: <apply|track|diff|merge|export|validate|status|add-skill|check-updates|update-skill|push-skill> [--platform <mac|windows|linux>] [--config-dir <path>]
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 ---
 
@@ -27,6 +27,10 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 | `export` | 导出配置到清单 | 双向流转支持 |
 | `validate` | 验证清单完整性 | 检查文件存在性 |
 | `status` | 当前同步状态 | 概览 |
+| `add-skill` | 添加 skill | 从本地或仓库添加 |
+| `check-updates` | 检查更新 | 检查上游更新 |
+| `update-skill` | 更新 skill | 拉取最新版本 |
+| `push-skill` | 推送修改 | 推送到远程仓库 |
 
 ---
 
@@ -525,6 +529,197 @@ Memory files: 3 (all tracked)
 No pending changes
 
 Run /claude-config diff for detailed comparison.
+```
+
+---
+
+## add-skill 命令
+
+从本地路径或 GitHub 仓库添加新的 skill 到配置清单。
+
+### 用法
+
+```
+/claude-config add-skill <source> [--type self|third-party] [--ref <branch|tag>]
+```
+
+### 参数
+
+| 参数 | 说明 |
+|------|------|
+| `<source>` | 本地路径或 GitHub 仓库 (github:user/repo) |
+| `--type` | skill 类型 (self/third-party)，默认自动检测 |
+| `--ref` | 分支或 tag，默认 main |
+
+### 执行流程
+
+```
+1. 解析 source，判断是本地路径还是 GitHub 仓库
+2. 如果是本地路径：
+   - 复制 skill 文件到 assets/skills/<name>/
+3. 如果是 GitHub 仓库：
+   - 克隆仓库到临时目录
+   - 复制 skill 文件到 assets/skills/<name>/
+   - 记录 upstream 信息
+4. 更新 manifest.yaml，添加 skill 配置
+5. 询问是否立即 apply
+```
+
+### 示例
+
+```
+# 从本地路径添加
+/claude-config add-skill /path/to/my-skill
+
+# 从 GitHub 仓库添加
+/claude-config add-skill github:xxx/research-mate
+
+# 指定类型为自制 skill
+/claude-config add-skill github:LKCY23/my-skill --type self
+
+# 指定分支
+/claude-config add-skill github:xxx/skill --ref develop
+```
+
+---
+
+## check-updates 命令
+
+检查所有有远程上游的 skills 是否有更新。
+
+### 用法
+
+```
+/claude-config check-updates
+```
+
+### 执行流程
+
+```
+1. 读取 manifest.yaml 中所有 skills
+2. 对于有 upstream.repo 的 skill：
+   - fetch 上游仓库
+   - 比较 last_sync 和最新 commit
+3. 输出更新报告
+```
+
+### 输出示例
+
+```
+=== Skill Updates Check ===
+[third-party] research-mate
+  Local:  2026-03-20
+  Remote: 2026-03-28
+  → 5 commits behind
+
+[self] my-skill
+  Local:  2026-03-25
+  Remote: 2026-03-28
+  → 2 commits ahead (unpushed changes)
+
+=== Summary ===
+1 skill has updates available
+1 skill has unpushed changes
+Run /claude-config update-skill <name> to update
+Run /claude-config push-skill <name> to push changes
+```
+
+---
+
+## update-skill 命令
+
+从上游拉取 skill 的最新版本。
+
+### 用法
+
+```
+/claude-config update-skill <name>
+```
+
+### 参数
+
+| 参数 | 说明 |
+|------|------|
+| `<name>` | skill 名称（manifest.yaml 中定义的名称） |
+
+### 执行流程
+
+```
+1. 读取 skill 的 upstream.repo 和 upstream.ref
+2. fetch 上游仓库最新内容
+3. 显示 diff（本地版本 vs 上游版本）
+4. 确认后复制新文件到 assets/skills/<name>/
+5. 更新 manifest.yaml 的 last_sync 时间
+6. 询问是否 apply 到本地
+```
+
+### 输出示例
+
+```
+=== Update skill: research-mate ===
+Fetching upstream...
+
+Changes:
+  M SKILL.md (3 additions, 1 deletion)
+  A templates/new-template.md
+
+Apply update?
+(y) Yes, update and apply
+(n) No, cancel
+(d) View full diff
+```
+
+---
+
+## push-skill 命令
+
+推送自制 skill 的修改到远程仓库。
+
+### 用法
+
+```
+/claude-config push-skill <name>
+```
+
+### 参数
+
+| 参数 | 说明 |
+|------|------|
+| `<name>` | skill 名称（必须是 type: self 的 skill） |
+
+### 执行流程
+
+```
+1. 检查 skill 的 upstream.type 是否为 self
+2. 检查 upstream.repo 是否已配置
+3. 对比 assets/skills/<name>/ 和远程
+4. 显示 diff
+5. 确认后 git push
+6. 更新 manifest.yaml 的 last_sync
+```
+
+### 仅适用于
+
+- `upstream.type` 为 `self` 的 skill
+- 已配置 `upstream.repo` 的 skill
+
+### 输出示例
+
+```
+=== Push skill: my-skill ===
+Repository: LKCY23/my-skill
+Branch: main
+
+Changes to push:
+  M SKILL.md (5 additions, 2 deletions)
+  A new-feature.md
+
+Push to remote?
+(y) Yes, push
+(n) No, cancel
+
+✓ Pushed successfully
+Updated last_sync: 2026-03-28
 ```
 
 ---

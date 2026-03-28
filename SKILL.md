@@ -508,13 +508,24 @@ Status: VALID (1 warning)
 
 显示当前同步状态概览。
 
+### 执行流程
+
+```
+1. 确定 CONFIG_DIR（从 manifest.yaml metadata.config_repo.local 或默认 ~/claude-config-data）
+2. 检测当前平台
+3. 读取 manifest.yaml 和 plugins.yaml
+4. 对比本地 ~/.claude/ 状态
+5. 输出状态报告
+```
+
 ### 输出
 
 ```
 === Claude Config Status ===
 Platform: mac
-Manifest: /Users/liyao/claude-config/manifest.yaml
-Last sync: 2026-03-25 from mac
+Config Repo: ~/claude-config-data
+Remote: github:LKCY23/claude-config-data
+Last sync: 2026-03-28 from mac
 
 --- Tracked ---
 Skills: 4 (github, research-brainstorm, literature-review, read-paper)

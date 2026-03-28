@@ -7,6 +7,10 @@ metadata:
   description: 个人 Claude Code 配置清单
   last_updated: "YYYY-MM-DD"
   last_sync_platform: ""
+  # 配置仓库地址（让 agent 记住）
+  config_repo:
+    local: ~/claude-config-data           # 本地路径
+    remote: ""                             # 远程仓库，如 github:username/repo
 
 # 平台定义
 platforms:

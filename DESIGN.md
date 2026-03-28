@@ -1045,8 +1045,26 @@ skills:
       type: third-party
       repo: github:xxx/repo
       ref: main
+      subtree: true                  # 用 git subtree 管理
       last_sync: "2026-03-28"
 ```
+
+### manifest.yaml config_repo 字段
+
+在 `metadata` 中配置仓库地址，让 agent 能记住：
+
+```yaml
+metadata:
+  name: my-claude-config
+  config_repo:
+    local: ~/claude-config-data      # 本地路径
+    remote: github:username/repo      # 远程仓库（可选）
+```
+
+**用途**：
+- agent 通过 `status` 命令显示配置仓库位置
+- 新机器设置时 agent 知道去哪里找配置
+- 避免每次都要指定 `--config-dir`
 
 ### 新增命令
 

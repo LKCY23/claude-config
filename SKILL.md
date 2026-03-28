@@ -158,7 +158,8 @@ Next steps:
 9. 安装依赖 plugins 的 hooks（depends_on）
 10. 复制 $CONFIG_DIR/assets/ 下的 skills/rules/agents/memory 文件
 11. 合并 settings（按 merge_strategy）
-12. 输出安装报告
+12. 验证 settings.json 格式正确
+13. 输出安装报告
 ```
 
 ### 路径验证原则
@@ -596,12 +597,15 @@ done
 
 ```
 1. manifest.yaml 格式正确（YAML 语法）
-2. 所有 source 路径存在
-3. platforms 定义有效（mac/windows/linux/all）
-4. merge_strategy 有效（replace/merge/merge_unique）
-5. plugins.yaml marketplace 已注册
-6. 无重复配置项名称
-7. depends_on 的 plugin 在 plugins.yaml 中存在
+2. plugins.yaml 格式正确（YAML 语法）
+3. 所有 source 路径存在
+4. platforms 定义有效（mac/windows/linux/all）
+5. merge_strategy 有效（replace/merge/merge_unique）
+6. plugins.yaml marketplace 已注册
+7. 无重复配置项名称
+8. depends_on 的 plugin 在 plugins.yaml 中存在
+9. 本地 settings.json 格式正确（JSON 语法）
+10. statusLine 格式有效（必须有 type 和 command 字段）
 ```
 
 ### 输出
@@ -611,6 +615,7 @@ done
 
 ✓ manifest.yaml: valid YAML
 ✓ plugins.yaml: valid YAML
+✓ settings.json: valid JSON
 ✓ 4/4 skills sources exist
 ✓ 3/3 memory sources exist
 ✓ 4/4 settings sources exist
@@ -621,6 +626,7 @@ done
 ✓ All merge_strategy valid
 ✓ No duplicate names
 ✓ All depends_on plugins exist
+✓ statusLine format valid
 
 Status: VALID (1 warning)
 ```
@@ -1051,6 +1057,34 @@ marketplaces:
 - 用户指定了 `--config-dir` → 这是明确的意图，不要擅自改路径
 - 遇到问题（路径不存在、manifest 缺失等）→ 用 AskUserQuestion 交互解决
 - 不要假设、不要"智能修正"、不要覆盖用户意图
+
+### settings.json 格式要求
+
+**写入 settings.json 时必须确保**：
+- JSON 语法正确（无 BOM，无尾随逗号，引号正确）
+- 使用 UTF-8 无 BOM 编码
+- 写入后验证 JSON 可解析
+
+**statusLine 格式**：
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "pwsh ~/.claude/statusline.ps1"
+  }
+}
+```
+- 必须同时包含 `type` 和 `command` 两个字段
+- `type` 只能是 `"command"`
+
+**验证方法**：
+```bash
+# 验证 JSON 语法
+python3 -c "import json; json.load(open('~/.claude/settings.json'))"
+
+# 或用 jq
+jq . ~/.claude/settings.json
+```
 
 ### 敏感信息
 

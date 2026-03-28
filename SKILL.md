@@ -1,7 +1,7 @@
 ---
 name: claude-config
 description: Manage Claude Code configuration across machines. Use for applying, tracking, exporting, diffing, merging, and validating config manifests.
-argument-hint: <apply|track|diff|merge|export|validate|status|add-skill|check-updates|update-skill|push-skill> [--platform <mac|windows|linux>] [--config-dir <path>]
+argument-hint: <apply|track|diff|merge|export|validate|status|add-skill|check-updates|update-skill|push-skill|add-tool|sync-upstream> [--platform <mac|windows|linux>] [--config-dir <path>]
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 ---
 
@@ -732,25 +732,67 @@ Updated last_sync: 2026-03-28
 
 ### 用法
 
-```bash
-# 在配置仓库目录执行
-./scripts/add-tool.sh <name> <git-url> [branch]
+```
+/claude-config add-tool <name> <git-url> [--ref <branch>]
+```
+
+### 参数
+
+| 参数 | 说明 |
+|------|------|
+| `<name>` | skill 名称（将创建 assets/skills/<name>/） |
+| `<git-url>` | Git 仓库 URL |
+| `--ref` | 分支或 tag，默认 main |
+
+### 执行流程
+
+```
+1. 确定 CONFIG_DIR（默认 ~/claude-config-data）
+2. 检查 assets/skills/<name>/ 是否已存在
+3. 执行 git subtree add：
+   git subtree add --prefix=assets/skills/<name> <git-url> <ref> --squash
+4. 更新 manifest.yaml，添加 skill 配置：
+   - source: assets/skills/<name>
+   - upstream.type: third-party
+   - upstream.repo: <git-url>
+   - upstream.ref: <ref>
+   - upstream.subtree: true
+   - upstream.last_sync: 当前日期
+5. 询问是否 apply
 ```
 
 ### 示例
 
-```bash
+```
 # 添加第三方 skill
-./scripts/add-tool.sh research-mate https://github.com/xxx/research-mate.git main
+/claude-config add-tool research-mate https://github.com/xxx/research-mate.git
 
-# 添加后需要更新 manifest.yaml
+# 指定分支
+/claude-config add-tool my-tool https://github.com/user/my-tool.git --ref develop
 ```
 
-### 执行后步骤
+### 输出示例
 
-1. 检查 skill 内容
-2. 更新 manifest.yaml，添加 `subtree: true`
-3. 执行 `/claude-config apply`
+```
+=== Adding tool: research-mate ===
+  URL: https://github.com/xxx/research-mate.git
+  Branch: main
+  Target: assets/skills/research-mate
+
+Running git subtree add...
+✓ Subtree added successfully
+
+Updated manifest.yaml with:
+  research-mate:
+    source: assets/skills/research-mate
+    upstream:
+      type: third-party
+      repo: https://github.com/xxx/research-mate.git
+      subtree: true
+      last_sync: "2026-03-28"
+
+Apply now? (y/n)
+```
 
 ---
 
@@ -760,21 +802,55 @@ Updated last_sync: 2026-03-28
 
 ### 用法
 
-```bash
-# 同步所有 subtree 工具
-./scripts/sync-upstream.sh
-
-# 同步指定工具
-./scripts/sync-upstream.sh research-mate
+```
+/claude-config sync-upstream [name]
 ```
 
-### 工作流程
+### 参数
+
+| 参数 | 说明 |
+|------|------|
+| `[name]` | 可选，指定要同步的 skill 名称。不指定则同步所有 subtree 工具 |
+
+### 执行流程
 
 ```
 1. 读取 manifest.yaml 中 subtree: true 的 skills
-2. 对每个工具执行 git subtree pull
-3. 自动合并上游更新（保留本地定制）
-4. 更新 last_sync 时间
+2. 对于每个工具（或指定的工具）：
+   a. 读取 upstream.repo 和 upstream.ref
+   b. 执行 git subtree pull
+   c. 如果成功，更新 last_sync 时间
+   d. 如果有冲突，报告并停止
+3. 输出同步报告
+```
+
+### 示例
+
+```
+# 同步所有 subtree 工具
+/claude-config sync-upstream
+
+# 同步指定工具
+/claude-config sync-upstream research-mate
+```
+
+### 输出示例
+
+```
+=== Syncing all subtree tools ===
+
+--- Syncing research-mate ---
+  URL: https://github.com/xxx/research-mate.git
+  Branch: main
+  Running git subtree pull...
+  ✓ Done. Updated last_sync: 2026-03-28
+
+--- Syncing another-tool ---
+  No updates available
+
+=== Summary ===
+1 tool updated
+Run 'git status' to see changes.
 ```
 
 ### 冲突处理

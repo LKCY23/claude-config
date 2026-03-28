@@ -2,7 +2,7 @@
 # claude-config — One-line installer (macOS + Linux + Windows Git Bash)
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/master/install.sh | bash
 #   curl -fsSL ... | bash -s -- --config-dir ~/my-config
 set -euo pipefail
 
@@ -27,7 +27,7 @@ echo "  ════════════════════════
 echo ""
 
 # ════════════════════════════════════════════
-# Platform detection
+# Platform detection (with WSL detection)
 # ════════════════════════════════════════════
 detect_platform() {
     case "$(uname -s)" in
@@ -38,7 +38,40 @@ detect_platform() {
     esac
 }
 
+is_wsl() {
+    # Check if running under WSL
+    if [[ -f /proc/version ]]; then
+        grep -qiE "microsoft|wsl" /proc/version 2>/dev/null && return 0
+    fi
+    uname -r | grep -qiE "microsoft|wsl" 2>/dev/null && return 0
+    return 1
+}
+
 PLATFORM=$(detect_platform)
+
+# WSL warning for Windows users
+if [[ "$PLATFORM" == "linux" ]] && is_wsl; then
+    echo ""
+    echo "  ═══════════════════════════════════════════"
+    echo "  ⚠ WSL Environment Detected!"
+    echo "  ═══════════════════════════════════════════"
+    echo ""
+    echo "  You are running bash under WSL (Windows Subsystem for Linux)."
+    echo "  This will install to WSL paths (/root/), NOT Windows paths."
+    echo ""
+    echo "  If you want to install for Windows:"
+    echo "    → Use PowerShell: iwr -useb https://raw.githubusercontent.com/LKCY23/claude-config/master/install.ps1 | iex"
+    echo "    → Or use Git Bash (open 'Git Bash' app, not WSL bash)"
+    echo ""
+    echo "  Continue installing to WSL? (y/n)"
+    read -r response
+    if [[ ! "$response" =~ ^[Yy]$ ]]; then
+        echo "  Installation cancelled."
+        echo "  Run the PowerShell installer instead."
+        exit 0
+    fi
+    echo ""
+fi
 echo "  Platform: $PLATFORM"
 echo "  Config dir: $CONFIG_DIR"
 echo "  Tool dir: $TOOL_DIR"

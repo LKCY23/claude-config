@@ -18,7 +18,7 @@ Claude Code 配置管理工具 - 跨机器配置同步解决方案。
 
 ```bash
 # 一键安装
-curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/master/install.sh | bash
 
 # 克隆你的私有配置仓库
 git clone https://github.com/<your-username>/my-claude-config.git ~/claude-config-data
@@ -26,19 +26,31 @@ git clone https://github.com/<your-username>/my-claude-config.git ~/claude-confi
 
 ### Windows
 
-**方式一：Git Bash（推荐）**
+**⚠ WSL 警告**：如果你的 Windows 安装了 WSL，在 cmd.exe 中运行 `curl | bash` 会触发 WSL 的 bash，安装到 WSL 路径（/root/），而不是 Windows。请选择以下方式之一：
 
-如果你安装了 Git for Windows，打开 Git Bash：
+**方式一：PowerShell 一键安装（推荐）**
+
+```powershell
+# 一键安装（在 PowerShell 中运行）
+iwr -useb https://raw.githubusercontent.com/LKCY23/claude-config/master/install.ps1 | iex
+
+# 克隆你的私有配置仓库
+git clone https://github.com/<your-username>/my-claude-config.git "$env:USERPROFILE\claude-config-data"
+```
+
+**方式二：Git Bash**
+
+打开 **Git Bash** 应用（不是 cmd.exe 或 WSL）：
 
 ```bash
 # 一键安装
-curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/master/install.sh | bash
 
 # 克隆你的私有配置仓库
 git clone https://github.com/<your-username>/my-claude-config.git ~/claude-config-data
 ```
 
-**方式二：PowerShell**
+**方式三：手动安装**
 
 ```powershell
 # 1. 克隆工具
@@ -86,16 +98,17 @@ Windows 用户指定平台：
 
 | 功能 | macOS | Windows | Linux |
 |------|-------|---------|-------|
-| 安装脚本 | ✓ curl \| bash | ✓ Git Bash / PowerShell | ✓ curl \| bash |
+| 安装脚本 | ✓ curl \| bash | ✓ PowerShell 一键 / Git Bash | ✓ curl \| bash |
 | Hooks | bash 脚本 | PowerShell 或 Git Bash | bash 脚本 |
 | Statusline | statusline.sh | statusline.ps1 或 Git Bash | statusline.sh |
 | 路径格式 | `~/` | `$env:USERPROFILE\` 或 `~` (Git Bash) | `~/` |
 
 ### Windows 特殊说明
 
-1. **Git Bash vs PowerShell**：
-   - 推荐 Git Bash，命令与 Mac/Linux 一致
-   - PowerShell 需要单独的 `.ps1` 脚本
+1. **安装环境选择**：
+   - **PowerShell**：推荐，一键安装，无 WSL 干扰
+   - **Git Bash**：命令与 Mac/Linux 一致，需手动打开 Git Bash 应用
+   - **cmd.exe + curl \| bash**：会被 WSL 捕获，不推荐（除非你确实想安装到 WSL）
 
 2. **Hooks**：
    - Mac/Linux 使用 `bash` 执行 `.sh` 脚本
@@ -134,7 +147,8 @@ Windows 用户指定平台：
 ~/.claude-config-tool/       # 工具框架（公开）
 ├── SKILL.md
 ├── templates/
-└── install.sh
+├── install.sh              # Unix/Linux/Git Bash 安装脚本
+└── install.ps1             # PowerShell 安装脚本
 
 ~/claude-config-data/        # 你的私有配置（私有仓库）
 ├── manifest.yaml            # 配置清单

@@ -241,10 +241,24 @@ claude plugin install <package>@<marketplace> --version <version>
 # 复制脚本
 cp <source> <target>
 
-# 更新 settings.json 的 statusLine 或 hooks 字段
-# Windows 使用 git-bash 时：
-# settings.statusLine.command = "bash ~/.claude/statusline.sh"
+# 更新 settings.json 的 statusLine 字段
+# 注意：必须包含 type 和 command 两个字段
 ```
+
+**statusLine 格式**（写入 settings.json）：
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "pwsh ~/.claude/statusline.ps1"
+  }
+}
+```
+
+不同平台：
+- macOS/Linux: `"command": "bash ~/.claude/statusline.sh"`
+- Windows PowerShell: `"command": "pwsh ~/.claude/statusline.ps1"`
+- Windows Git Bash: `"command": "bash ~/.claude/statusline.sh"`
 
 **环境变量检查**：
 ```bash

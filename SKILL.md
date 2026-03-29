@@ -39,20 +39,41 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 
 ## 平台检测
 
-执行任何命令前，先检测当前平台：
+执行任何命令前，先检测当前平台和执行环境：
 
 ```bash
 # macOS
 uname -s | grep -q "Darwin" && PLATFORM="mac"
 
-# Windows (Git Bash / WSL)
-uname -s | grep -qE "MINGW|MSYS|CYGWIN" && PLATFORM="windows"
-# 或检测 PowerShell
-command -v powershell >/dev/null 2>&1 && PLATFORM="windows"
+# Windows 检测（优先 PowerShell）
+# 检测 PowerShell 是否可用
+if command -v pwsh >/dev/null 2>&1 || command -v powershell >/dev/null 2>&1; then
+  PLATFORM="windows"
+  EXEC_ENGINE="powershell"
+fi
 
-# Linux
-uname -s | grep -q "Linux" && PLATFORM="linux"
+# Git Bash 检测（仅在 PowerShell 不可用时作为备选）
+uname -s | grep -qE "MINGW|MSYS|CYGWIN" && PLATFORM="windows"
+if [ "$CLAUDE_CODE_GIT_BASH_PATH" ]; then
+  EXEC_ENGINE="git-bash"
+fi
+
+# Linux（原生，非 WSL）
+uname -s | grep -q "Linux" && [ ! "$WSL_DISTRO_NAME" ] && PLATFORM="linux"
+
+# WSL 检测和警告
+if [ "$WSL_DISTRO_NAME" ]; then
+  echo "⚠ Running in WSL environment"
+  echo "  For Windows native config, use PowerShell outside WSL"
+  # 询问是否继续
+fi
 ```
+
+**检测优先级**：
+1. 先检测 PowerShell（`pwsh` 或 `powershell`）→ Windows PowerShell 方案
+2. 检测 Git Bash 环境（`MINGW|MSYS|CYGWIN`）→ Windows Git Bash 方案
+3. 检测原生 Linux → Linux 方案
+4. 检测 WSL → 提示用户选择
 
 ---
 
@@ -192,6 +213,21 @@ What would you like to do?
   (c) Use default path instead
 ```
 
+### 平台选择原则
+
+**关键决策**：根据平台选择执行引擎：
+
+| 平台 | 执行引擎 | 原因 |
+|------|----------|------|
+| macOS | bash | 原生支持 |
+| Linux | bash | 原生支持 |
+| Windows | PowerShell | WSL 会拦截 bash；Git Bash 需额外配置；PowerShell 是原生方案 |
+
+**Windows 特殊处理**：
+- 检测 WSL 环境：如果 `uname -s` 返回 Linux 但 `$WSL_DISTRO_NAME` 存在，提示用户
+- 检测 Git Bash：如果用户明确要用 Git Bash，需要 `CLAUDE_CODE_GIT_BASH_PATH` 环境变量
+- 默认使用 PowerShell：纯 Windows 环境最可靠的方案
+
 ### 具体操作
 
 **Skills 安装**：
@@ -209,6 +245,9 @@ cp "$src_path/SKILL.md" "$tgt_path/SKILL.md"
 
 **批量安装所有 skills**：
 
+根据平台选择对应的脚本：
+
+**macOS/Linux (bash)**：
 ```bash
 CONFIG_DIR="$HOME/claude-config-data"
 SKILLS_DIR="$HOME/.claude/skills"
@@ -223,7 +262,32 @@ for skill_dir in "$CONFIG_DIR/assets/skills"/*; do
 done
 ```
 
-**重要**：使用 `$HOME` 而不是 `~`，确保路径正确展开。
+**Windows (PowerShell)**：
+```powershell
+# PowerShell 安装脚本 - 在纯 Windows 环境使用
+$CONFIG_DIR = "$env:USERPROFILE\claude-config-data"
+$SKILLS_DIR = "$env:USERPROFILE\.claude\skills"
+
+# 确保目标目录存在
+New-Item -ItemType Directory -Force -Path $SKILLS_DIR | Out-Null
+
+# 批量安装所有 skills
+Get-ChildItem "$CONFIG_DIR\assets\skills" -Directory | ForEach-Object {
+    $skill_name = $_.Name
+    Write-Host "Installing skill: $skill_name"
+    New-Item -ItemType Directory -Force -Path "$SKILLS_DIR\$skill_name" | Out-Null
+    if (Test-Path "$($_.FullName)\SKILL.md") {
+        Copy-Item "$($_.FullName)\SKILL.md" "$SKILLS_DIR\$skill_name\" -Force
+    }
+}
+
+Write-Host "Skills installation complete"
+```
+
+**重要**：
+- macOS/Linux 使用 `$HOME` 而不是 `~`，确保路径正确展开
+- Windows 使用 `$env:USERPROFILE` 获取用户目录
+- Windows 上不要依赖 bash/WSL，直接用 PowerShell
 
 **Memory 安装**：
 ```bash
@@ -1123,7 +1187,34 @@ jq . ~/.claude/settings.json
 
 ### Windows statusline
 
-默认使用 Git Bash 执行 .sh 脚本。如需纯 PowerShell，需手动创建 .ps1 版本。
+**推荐使用 PowerShell 方案**：
+
+原因：
+- WSL 会拦截 `bash` 命令，导致路由混乱
+- Git Bash 需要额外配置 `CLAUDE_CODE_GIT_BASH_PATH`
+- PowerShell 是 Windows 原生方案，无需额外依赖
+
+配置示例：
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "pwsh ~/.claude/statusline.ps1"
+  }
+}
+```
+
+如果坚持使用 Git Bash（已配置环境变量）：
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline.sh"
+  }
+}
+```
+
+**注意**：需要在 hooks 部分同时提供 `.sh` 和 `.ps1` 版本的脚本。
 
 ### Merge 保存
 

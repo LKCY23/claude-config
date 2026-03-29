@@ -170,21 +170,25 @@ Next steps:
 2. 验证路径状态：
    - 如果路径或 manifest.yaml 有问题，不要擅自修正
    - 使用 AskUserQuestion 让用户决定如何处理（详见下方"路径验证原则"）
-3. 检测当前平台（如未指定 --platform）
-4. 读取 $CONFIG_DIR/manifest.yaml 和 $CONFIG_DIR/plugins.yaml
-5. 按平台过滤配置项（platforms 字段）
-6. 检查 env.expected 变量是否存在，缺失则警告
-7. 安装 plugins：
+3. 同步配置仓库：
+   - 检查是否有远程更新（git fetch）
+   - 如果有更新，提示用户 git pull
+   - 用户可选择跳过同步继续 apply
+4. 检测当前平台（如未指定 --platform）
+5. 读取 $CONFIG_DIR/manifest.yaml 和 $CONFIG_DIR/plugins.yaml
+6. 按平台过滤配置项（platforms 字段）
+7. 检查 env.expected 变量是否存在，缺失则警告
+8. 安装 plugins：
    a. 检查 marketplace 是否已注册（读取 plugins.yaml 的 marketplaces 部分）
    b. 未注册的 marketplace 执行注册：`claude plugin marketplace add <name> <repo>`
    c. 安装 plugin：`claude plugin install <package>@<marketplace>`
    d. 如果指定了 version：`claude plugin install <package>@<marketplace> --version <version>`
-8. 等待 plugins 安装完成
-9. 安装依赖 plugins 的 hooks（depends_on）
-10. 复制 $CONFIG_DIR/assets/ 下的 skills/rules/agents/memory 文件
-11. 合并 settings（按 merge_strategy）
-12. 验证 settings.json 格式正确
-13. 输出安装报告
+9. 等待 plugins 安装完成
+10. 安装依赖 plugins 的 hooks（depends_on）
+11. 复制 $CONFIG_DIR/assets/ 下的 skills/rules/agents/memory 文件
+12. 合并 settings（按 merge_strategy）
+13. 验证 settings.json 格式正确
+14. 输出安装报告
 ```
 
 ### 路径验证原则
@@ -233,6 +237,55 @@ What would you like to do?
 - 默认使用 PowerShell：纯 Windows 环境最可靠的方案
 
 ### 具体操作
+
+**同步配置仓库（apply 前执行）**：
+
+**macOS/Linux (bash)**：
+```bash
+cd "$CONFIG_DIR"
+git fetch origin
+
+# 检查是否有更新
+LOCAL=$(git rev-parse HEAD)
+REMOTE=$(git rev-parse origin/main)
+
+if [ "$LOCAL" != "$REMOTE" ]; then
+  echo "Config repo has updates:"
+  git log --oneline HEAD..origin/main | head -5
+  echo ""
+  echo "Pull latest changes?"
+  read -r response
+  if [[ "$response" =~ ^[Yy] ]]; then
+    git pull --ff-only
+  fi
+fi
+```
+
+**Windows (PowerShell)**：
+```powershell
+Push-Location $CONFIG_DIR
+git fetch origin
+
+# 检查是否有更新
+$local = git rev-parse HEAD
+$remote = git rev-parse origin/main
+
+if ($local -ne $remote) {
+    Write-Host "Config repo has updates:"
+    git log --oneline HEAD..origin/main | Select-Object -First 5
+    Write-Host ""
+    Write-Host "Pull latest changes? (y/n)"
+    $response = Read-Host
+    if ($response -eq "y") {
+        git pull --ff-only
+    }
+}
+Pop-Location
+```
+
+**注意**：如果用户选择跳过同步，继续 apply 可能使用旧配置。
+
+---
 
 **Skills 安装**：
 

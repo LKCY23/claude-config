@@ -57,9 +57,13 @@ $ToolRepo = "https://github.com/LKCY23/claude-config.git"
 if (Test-Path $ToolDir) {
     Write-Host "  Updating existing installation..."
     Push-Location $ToolDir
-    git pull --ff-only 2>$null
-    if (-not $?) {
+    # git outputs progress info to stderr, PowerShell treats it as error
+    # Use Out-Null to suppress both stdout and stderr
+    $output = git pull --ff-only 2>&1
+    if ($output -match "error|fatal") {
         Write-Host "  ⚠ Could not update, using existing version" -ForegroundColor Yellow
+    } else {
+        Write-Host "  ✓ Updated successfully" -ForegroundColor Green
     }
     Pop-Location
 } else {

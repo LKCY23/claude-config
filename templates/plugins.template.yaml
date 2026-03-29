@@ -22,8 +22,21 @@ plugins: {}
 #   claude-plugins-official:
 #     source: github
 #     repo: anthropics/claude-plugins-official
+#     url: https://github.com/anthropics/claude-plugins-official
 #   claude-hud:
 #     source: github
 #     repo: jarrodwatts/claude-hud
+#     url: https://github.com/jarrodwatts/claude-hud
 
 marketplaces: {}
+
+# MCP Servers (optional)
+# Track MCP servers that provide additional tools
+# mcp_servers:
+#   bailian:
+#     source: bailian
+#     package: WebSearch
+#     description: 阿里百炼 Web Search MCP
+#     url: https://bailian.console.aliyun.com/
+#     platforms: [all]
+mcp_servers: {}

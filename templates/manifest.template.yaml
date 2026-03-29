@@ -39,7 +39,8 @@ skills:
   #   platforms: [all]
   #   upstream:
   #     type: self
-  #     repo: github:user/my-shared-skill
+  #     repo: user/my-shared-skill
+  #     url: https://github.com/user/my-shared-skill
   #     ref: main
   #     last_sync: "YYYY-MM-DD"
 
@@ -49,7 +50,8 @@ skills:
   #   platforms: [all]
   #   upstream:
   #     type: third-party
-  #     repo: github:xxx/repo
+  #     repo: xxx/repo
+  #     url: https://github.com/xxx/repo
   #     ref: main
   #     last_sync: "YYYY-MM-DD"
 

@@ -274,10 +274,37 @@ marketplaces:
   claude-plugins-official:
     source: github
     repo: anthropics/claude-plugins-official
+    url: https://github.com/anthropics/claude-plugins-official
   claude-hud:
     source: github
     repo: jarrodwatts/claude-hud
+    url: https://github.com/jarrodwatts/claude-hud
 ```
+
+**字段说明**：
+- `repo`: 简写格式（`owner/repo`），用于程序解析
+- `url`: 完整 URL，用于在编辑器/浏览器中点击跳转
+
+### MCP Servers 追踪
+
+MCP（Model Context Protocol）服务器提供额外的工具能力，可以追踪在 plugins.yaml 中：
+
+```yaml
+mcp_servers:
+  bailian:
+    source: bailian
+    package: WebSearch
+    description: 阿里百炼 Web Search MCP
+    url: https://bailian.console.aliyun.com/
+    platforms: [all]
+```
+
+**MCP 字段说明**：
+- `source`: MCP 提供商名称
+- `package`: MCP 包名/工具名
+- `description`: 功能描述
+- `url`: 提供商官网或文档
+- `platforms`: 支持的平台
 
 ---
 
@@ -1033,7 +1060,8 @@ skills:
     platforms: [all]
     upstream:
       type: self
-      repo: github:user/my-shared-skill
+      repo: user/my-shared-skill      # 简写格式
+      url: https://github.com/user/my-shared-skill  # 完整 URL（可点击）
       ref: main
       last_sync: "2026-03-28"
 
@@ -1043,11 +1071,16 @@ skills:
     platforms: [all]
     upstream:
       type: third-party
-      repo: github:xxx/repo
+      repo: xxx/repo                  # 简写格式
+      url: https://github.com/xxx/repo # 完整 URL（可点击）
       ref: main
       subtree: true                  # 用 git subtree 管理
       last_sync: "2026-03-28"
 ```
+
+**字段说明**：
+- `repo`: 简写格式（`owner/repo`），用于程序解析
+- `url`: 完整 URL，用于在编辑器/浏览器中点击跳转
 
 ### manifest.yaml config_repo 字段
 

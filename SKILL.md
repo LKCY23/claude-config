@@ -195,11 +195,35 @@ What would you like to do?
 ### 具体操作
 
 **Skills 安装**：
+
+对于每个 skill，读取 manifest.yaml 中的 source 路径，然后复制：
+
 ```bash
-# 对于每个 skill 项
-mkdir -p ~/.claude/skills/<skill-name>
-cp <source>/SKILL.md ~/.claude/skills/<skill-name>/SKILL.md
+# 示例：安装 deep-research skill
+# source: assets/skills/deep-research
+src_path="$CONFIG_DIR/assets/skills/deep-research"
+tgt_path="$HOME/.claude/skills/deep-research"
+mkdir -p "$tgt_path"
+cp "$src_path/SKILL.md" "$tgt_path/SKILL.md"
 ```
+
+**批量安装所有 skills**：
+
+```bash
+CONFIG_DIR="$HOME/claude-config-data"
+SKILLS_DIR="$HOME/.claude/skills"
+
+for skill_dir in "$CONFIG_DIR/assets/skills"/*; do
+    if [ -d "$skill_dir" ]; then
+        skill_name=$(basename "$skill_dir")
+        echo "Installing skill: $skill_name"
+        mkdir -p "$SKILLS_DIR/$skill_name"
+        cp "$skill_dir/SKILL.md" "$SKILLS_DIR/$skill_name/SKILL.md"
+    fi
+done
+```
+
+**重要**：使用 `$HOME` 而不是 `~`，确保路径正确展开。
 
 **Memory 安装**：
 ```bash

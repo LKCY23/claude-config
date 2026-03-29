@@ -174,7 +174,11 @@ Next steps:
 4. 读取 $CONFIG_DIR/manifest.yaml 和 $CONFIG_DIR/plugins.yaml
 5. 按平台过滤配置项（platforms 字段）
 6. 检查 env.expected 变量是否存在，缺失则警告
-7. 安装 plugins（执行 claude plugin install）
+7. 安装 plugins：
+   a. 检查 marketplace 是否已注册（读取 plugins.yaml 的 marketplaces 部分）
+   b. 未注册的 marketplace 执行注册：`claude plugin marketplace add <name> <repo>`
+   c. 安装 plugin：`claude plugin install <package>@<marketplace>`
+   d. 如果指定了 version：`claude plugin install <package>@<marketplace> --version <version>`
 8. 等待 plugins 安装完成
 9. 安装依赖 plugins 的 hooks（depends_on）
 10. 复制 $CONFIG_DIR/assets/ 下的 skills/rules/agents/memory 文件
@@ -317,13 +321,57 @@ manifest_rules=$(cat <source> | jq -r '.permissions.allow[]')
 ```
 
 **Plugins 安装**：
-```bash
-# 先注册 marketplace（如需要）
-claude plugin marketplace add <marketplace-name> <github-repo>
 
-# 安装 plugin
-claude plugin install <package>@<marketplace> --version <version>
+根据平台选择脚本：
+
+**macOS/Linux (bash)**：
+```bash
+# 读取 plugins.yaml
+# 先注册 marketplace（如需要）
+for marketplace in $(yq '.marketplaces | keys[]' plugins.yaml); do
+  repo=$(yq ".marketplaces.$marketplace.repo" plugins.yaml)
+  # 检查是否已注册
+  if ! claude plugin marketplace list | grep -q "$marketplace"; then
+    echo "Registering marketplace: $marketplace"
+    claude plugin marketplace add "$marketplace" "github:$repo"
+  fi
+done
+
+# 安装 plugins
+for plugin in $(yq '.plugins | keys[]' plugins.yaml); do
+  marketplace=$(yq ".plugins.$plugin.marketplace" plugins.yaml)
+  package=$(yq ".plugins.$plugin.package" plugins.yaml)
+  version=$(yq ".plugins.$plugin.version" plugins.yaml)
+
+  if [ -n "$version" ] && [ "$version" != "null" ]; then
+    echo "Installing: $package@$marketplace version $version"
+    claude plugin install "$package@$marketplace" --version "$version"
+  else
+    echo "Installing: $package@$marketplace (latest)"
+    claude plugin install "$package@$marketplace"
+  fi
+done
 ```
+
+**Windows (PowerShell)**：
+```powershell
+# 读取 plugins.yaml（需要 yq 或手动解析）
+# 先注册 marketplace（如需要）
+$marketplaces = claude plugin marketplace list
+# 对于每个 marketplace in plugins.yaml，检查并注册
+# 例如 claude-scientific-writer：
+if (-not ($marketplaces -match "claude-scientific-writer")) {
+    Write-Host "Registering marketplace: claude-scientific-writer"
+    claude plugin marketplace add claude-scientific-writer github:K-Dense-AI/claude-scientific-writer
+}
+
+# 安装 plugin（不指定 version 则安装最新）
+claude plugin install claude-scientific-writer@claude-scientific-writer
+```
+
+**重要**：
+- `plugins.yaml` 中如果没有指定 `version`，则安装最新版本
+- marketplace 必须先注册才能安装 plugin
 
 **Hooks 安装**：
 ```bash

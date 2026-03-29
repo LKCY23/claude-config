@@ -25,12 +25,14 @@ platforms:
 # - third-party: 第三方社区 skill
 
 skills:
-  # 示例：本仓库内的自制 skill
+  # 示例：本仓库内的自制 skill（无独立仓库）
   # my-skill:
   #   source: assets/skills/my-skill
   #   platforms: [all]
   #   upstream:
   #     type: self
+  #     repo: your-username/your-config-repo    # 配置仓库
+  #     url: https://github.com/your-username/your-config-repo
   #   description: 我的自制 skill
 
   # 示例：有独立仓库的自制 skill

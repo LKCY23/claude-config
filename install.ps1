@@ -57,9 +57,12 @@ $ToolRepo = "https://github.com/LKCY23/claude-config.git"
 if (Test-Path $ToolDir) {
     Write-Host "  Updating existing installation..."
     Push-Location $ToolDir
-    # git outputs progress info to stderr, PowerShell treats it as error
-    # Redirect all output to null and check exit code
-    $null = git pull --ff-only 2>&1 | Out-Null
+    # git outputs "From https://..." to stderr, PowerShell treats as error
+    # Temporarily suppress all errors
+    $prevErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    git pull --ff-only 2>&1 | Out-Null
+    $ErrorActionPreference = $prevErrorAction
     if ($LASTEXITCODE -eq 0) {
         Write-Host "  ✓ Updated successfully" -ForegroundColor Green
     } else {

@@ -25,15 +25,13 @@ platforms:
 # - third-party: 第三方社区 skill
 
 skills:
-  # 示例：本仓库内的自制 skill（无独立仓库）
-  # my-skill:
-  #   source: assets/skills/my-skill
+  # 示例：本仓库内的自制 skill（存在配置仓库内，无独立仓库）
+  # my-local-skill:
+  #   source: assets/skills/my-local-skill
   #   platforms: [all]
   #   upstream:
   #     type: self
-  #     repo: your-username/your-config-repo    # 配置仓库
-  #     url: https://github.com/your-username/your-config-repo
-  #   description: 我的自制 skill
+  #   description: 配置仓库内的 skill
 
   # 示例：有独立仓库的自制 skill
   # my-shared-skill:

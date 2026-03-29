@@ -1047,12 +1047,12 @@ Settings fields to EXCLUDE from base.json:
 
 ```yaml
 skills:
-  # 自制 skill（存在本仓库）
-  my-skill:
-    source: assets/skills/my-skill
+  # 自制 skill（存在配置仓库内，无独立仓库）
+  my-local-skill:
+    source: assets/skills/my-local-skill
     platforms: [all]
     upstream:
-      type: self                    # 本仓库内
+      type: self                    # 无需 repo/url
 
   # 自制 skill（有独立仓库）
   my-shared-skill:
@@ -1081,6 +1081,7 @@ skills:
 **字段说明**：
 - `repo`: 简写格式（`owner/repo`），用于程序解析
 - `url`: 完整 URL，用于在编辑器/浏览器中点击跳转
+- 无独立仓库的 self skill 可以省略 repo 和 url
 
 ### manifest.yaml config_repo 字段
 

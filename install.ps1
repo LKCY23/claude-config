@@ -58,12 +58,12 @@ if (Test-Path $ToolDir) {
     Write-Host "  Updating existing installation..."
     Push-Location $ToolDir
     # git outputs progress info to stderr, PowerShell treats it as error
-    # Use Out-Null to suppress both stdout and stderr
-    $output = git pull --ff-only 2>&1
-    if ($output -match "error|fatal") {
-        Write-Host "  ⚠ Could not update, using existing version" -ForegroundColor Yellow
-    } else {
+    # Redirect all output to null and check exit code
+    $null = git pull --ff-only 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
         Write-Host "  ✓ Updated successfully" -ForegroundColor Green
+    } else {
+        Write-Host "  ⚠ Could not update, using existing version" -ForegroundColor Yellow
     }
     Pop-Location
 } else {

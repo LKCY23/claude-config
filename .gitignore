@@ -1,3 +1,6 @@
+# Framework config (machine-specific, created by install.sh)
+config.yaml
+
 # Temporary files
 pending-merge.yaml
 

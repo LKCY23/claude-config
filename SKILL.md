@@ -14,20 +14,49 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `--platform <name>` | 指定平台 (mac/windows/linux) | 自动检测 |
-| `--config-dir <path>` | 配置仓库路径 | `~/claude-config-data` |
+| `--config-dir <path>` | 配置仓库路径 | 见下方解析链 |
+
+### config_dir 解析链
+
+每个命令首先确定配置目录，按以下优先级：
+
+```
+1. --config-dir 参数                （命令行覆盖，最高优先级）
+2. ~/.claude-config-tool/config.yaml 的 config_dir 字段
+3. ~/claude-config-data              （硬编码默认值，始终有效）
+```
+
+实现逻辑（每个命令开头执行）：
+
+```bash
+# 解析 config_dir
+if [ -n "$ARG_CONFIG_DIR" ]; then
+  CONFIG_DIR="$ARG_CONFIG_DIR"
+elif [ -f "$HOME/.claude-config-tool/config.yaml" ]; then
+  CONFIG_DIR=$(grep "^config_dir:" "$HOME/.claude-config-tool/config.yaml" | sed 's/^config_dir: *//' | sed "s|^~|$HOME|")
+  CONFIG_DIR=${CONFIG_DIR:-"$HOME/claude-config-data"}
+else
+  CONFIG_DIR="$HOME/claude-config-data"
+fi
+```
+
+> `config.yaml` 由 install.sh 自动创建。`update-self`（git pull）不会覆盖它（已加入 .gitignore）。用户可手动编辑修改路径。
 
 ## 命令概览
 
 | 命令 | 功能 | 说明 |
 |------|------|------|
-| `init` | 初始化配置仓库 | 首次使用时执行 |
-| `apply` | 安装配置到当前机器 | 直接安装，无交互 |
+| `init` | 初始化配置仓库 | 状态驱动，检测本地/远程后引导 |
+| `apply` | 安装配置到当前机器 | 纯本地，三阶段执行，不做 git 操作 |
+| `sync` | 同步配置仓库 | 多设备协同，处理分叉/超前/落后 |
+| `remote` | 管理远程关联 | add / remove / status |
+| `update-self` | 更新框架自身 | 升级 ~/.claude-config-tool/ |
 | `diff` | 生成差异报告 | 对比本地与清单 |
 | `merge` | 交互式合并 | 逐项解决冲突 |
 | `track` | 检测新配置 | 发现未追踪项 |
 | `export` | 导出配置到清单 | 双向流转支持 |
 | `validate` | 验证清单完整性 | 检查文件存在性 |
-| `status` | 当前同步状态 | 概览 |
+| `status` | 当前同步状态 | 含本地/远程同步状态 |
 | `add-skill` | 添加 skill | 从本地或仓库添加 |
 | `check-updates` | 检查更新 | 检查上游更新 |
 | `update-skill` | 更新 skill | 拉取最新版本 |
@@ -70,84 +99,102 @@ fi
 ```
 
 **检测优先级**：
-1. 先检测 PowerShell（`pwsh` 或 `powershell`）→ Windows PowerShell 方案
-2. 检测 Git Bash 环境（`MINGW|MSYS|CYGWIN`）→ Windows Git Bash 方案
-3. 检测原生 Linux → Linux 方案
-4. 检测 WSL → 提示用户选择
+1. 检测 macOS → macOS bash 方案
+2. 检测 Windows Git Bash（`MINGW|MSYS|CYGWIN` 或 `bash` 可用）→ Windows Git Bash 方案（首选）
+3. 检测 Windows PowerShell（`pwsh` 或 `powershell`，Git Bash 不可用时）→ Windows PowerShell 方案（备选）
+4. 检测原生 Linux → Linux bash 方案
+5. 检测 WSL → 提示用户选择（WSL 用 Linux 方案，或切到 Windows 终端）
 
 ---
 
 ## init 命令
 
-初始化新的配置仓库。首次使用时执行。
+初始化配置仓库。**状态驱动**：检测本地目录、git、远程关联，告诉用户当前状态并提供对应的操作选项。
 
 ### 用法
 
 ```
-/claude-config init [--config-dir <path>]
+/claude-config init [--config-dir <path>] [--local] [--git]
 ```
 
-### 执行流程
+### 状态检测逻辑
 
 ```
-1. 检查是否已有配置仓库（默认 ~/claude-config-data）
-2. 如果没有，询问用户：
-   a. 是否已在 GitHub 创建私有仓库？
-      - 是：询问仓库地址，clone
-      - 否：引导用户去 GitHub 创建
-3. 初始化配置目录结构：
-   - 复制模板文件
-   - 创建 assets/ 目录结构
-   - 复制 scripts/
-4. 询问用户的 GitHub 用户名，更新 manifest.yaml 的 config_repo
-5. 提示用户提交初始配置
+detect_state(config_dir):
+  if not exists(config_dir)           → A: 空空
+  if not is_git_repo(config_dir)      → B: 本地目录（非 git）
+  if not has_remote(config_dir)       → C: 本地 git（无远程）
+                                      → F: 已关联远程
 ```
 
-### 输出示例
+### 各状态的处理
+
+**状态 A（什么都没有）**：
 
 ```
-=== Claude Config Init ===
+No config directory found at ~/claude-config-data.
 
-Checking for existing config repo at ~/claude-config-data... Not found.
+What would you like to do?
+  (a) Create a local-only config directory (no git)          → --local → B
+  (b) Create a local git repo (no remote yet)                → --git   → C
+  (c) I'll clone an existing config repo myself              → 提示用户 git clone → F
 
-Do you already have a private config repo on GitHub? (y/n)
-> n
+如果用户选 (a):
+  mkdir -p ~/claude-config-data/assets/{skills,memory,settings,hooks}
+  cp $TOOL_DIR/templates/manifest.template.yaml ~/claude-config-data/manifest.yaml
+  cp $TOOL_DIR/templates/plugins.template.yaml ~/claude-config-data/plugins.yaml
+  ✓ Created local config directory
 
-Please create a private repo on GitHub first:
-  1. Go to https://github.com/new
-  2. Name it something like "my-claude-config"
-  3. Keep it private
-  4. Don't initialize with README
+如果用户选 (b):
+  mkdir -p ~/claude-config-data
+  cd ~/claude-config-data && git init
+  mkdir -p assets/{skills,memory,settings,hooks}
+  cp $TOOL_DIR/templates/manifest.template.yaml manifest.yaml
+  cp $TOOL_DIR/templates/plugins.template.yaml plugins.yaml
+  ✓ Created local git repo
 
-Press Enter when done, or type the repo URL now.
-> https://github.com/username/my-claude-config
+如果用户选 (c):
+  Ok. Run: git clone <your-repo-url> ~/claude-config-data
+  Then: /claude-config sync --apply
+```
 
-Cloning...
-✓ Cloned to ~/claude-config-data
+**状态 B（本地目录，非 git）**：
 
-Initializing config structure...
-✓ Created manifest.yaml
-✓ Created plugins.yaml
-✓ Created assets/skills/
-✓ Created assets/memory/
-✓ Created assets/settings/
-✓ Created assets/hooks/mac/
-✓ Created assets/hooks/windows/
-✓ Created scripts/
+```
+Found ~/claude-config-data, but it's not a git repo.
 
-What's your GitHub username?
-> username
+You can:
+  (a) Keep it as local-only (no changes needed)
+  (b) Initialize git version control          → init --git → C
 
-Updated manifest.yaml:
-  config_repo:
-    local: ~/claude-config-data
-    remote: github:username/my-claude-config
+如果用户选 (b):
+  cd ~/claude-config-data && git init
+  ✓ Initialized git repo
+  To add a remote later: /claude-config remote add <url>
+```
 
-Next steps:
-  1. cd ~/claude-config-data
-  2. git add -A && git commit -m "Initial config"
-  3. git push
-  4. /claude-config apply
+**状态 C（本地 git，无远程）**：
+
+```
+Config directory is git-managed but has no remote.
+
+You can:
+  (a) Keep it local-only (no changes needed)
+  (b) Add a remote: /claude-config remote add <url>
+
+Current state: local git, no remote → apply and track work normally.
+```
+
+**状态 F（已关联远程）**：
+
+```
+Config directory is ready.
+
+  Local:  ~/claude-config-data
+  Remote: github:username/repo
+  Branch: main
+
+Next step: /claude-config sync --apply
 ```
 
 ---
@@ -165,39 +212,58 @@ Next steps:
 
 ### 执行流程
 
+apply 是**纯本地操作**，读取本地 manifest.yaml 安装配置。git 同步（fetch/pull/push）由 `/claude-config sync` 命令负责。
+
+### 前置检查
+
+执行 apply 前：
+
+```
+if [ -f "$CONFIG_DIR/pending-merge.yaml" ]; then
+  通过 AskUserQuestion:
+    "⚠ 检测到未完成的 merge（pending-merge.yaml）。
+     继续 apply 可能会让这些决策过时。建议先完成 merge。"
+    (a) 先去完成 merge（取消 apply）  ← 推荐
+    (b) 继续执行 apply（pending 决策可能变 stale）
+fi
+```
+
+### 执行流程
+
 apply 分三个阶段执行：
 
 ```
 === Phase 1: Marketplace & Plugins（全自动）===
-1. 同步配置仓库（git fetch/pull）
-2. 检测当前平台（如未指定 --platform）
-3. 读取 $CONFIG_DIR/plugins.yaml
-4. 注册 marketplaces：
+1. 检测当前平台（如未指定 --platform）
+2. 读取 $CONFIG_DIR/plugins.yaml
+3. 注册 marketplaces：
    - 检查每个 marketplace 是否已注册
-   - 未注册的执行：`claude plugin marketplace add <name> <repo>`
-5. 安装 plugins（按 depends_on 排序）：
+   - 未注册的执行：`claude plugin marketplace add <repo>`
+4. 安装 plugins（按 depends_on 排序）：
    - `claude plugin install <package>@<marketplace>`
    - 注意：claude plugin install 不支持 --version，版本由 marketplace catalog 锁定
-6. 等待 plugins 安装完成
+5. 等待 plugins 安装完成
 
 === Phase 2: Static Config（全自动）===
-7. 安装 bootstrap skill（仅 claude-config）：
+6. 安装 bootstrap skill（仅 claude-config）：
    - 从 assets/skills/claude-config/ 复制 SKILL.md 到 ~/.claude/skills/
-   - 其他所有 skill 已在 Phase 1 通过 claudespace marketplace 安装
-8. 复制 memory 文件（assets/memory/ → ~/.claude/memory/）
-9. 合并 settings（base.json + permissions，按 merge_strategy）
-10. 安装 hooks（如 statusline.sh/.ps1，依赖 plugins 的 hook 已在 Phase 1 处理）
-11. 检查 env vars（expected + fixed）
-12. 验证 settings.json 格式正确
+   - 其他所有 skill 已在 Phase 1 通过 marketplace 安装
+7. 复制 memory 文件（assets/memory/ → ~/.claude/memory/）
+8. 合并 settings（base.json + permissions，按 merge_strategy）
+9. 安装 hooks（如 statusline.sh/.ps1，依赖 plugins 的 hook 已在 Phase 1 处理）
+10. 检查 env vars（expected + fixed）
+11. 验证 settings.json 格式正确
 
 === Phase 3: External Tools（分级处理）===
-13. 读取 manifest.yaml external 段
-14. 对每个 external tool，按 strategy 分级：
+12. 读取 manifest.yaml external 段
+13. 对每个 external tool，按 strategy 分级：
     - auto:   verify → 缺失则自动执行 install 命令（先告知）
     - prompt: verify → 缺失则 AskUserQuestion 询问是否安装
     - manual: verify → 缺失则打印 setup 文档链接和所需环境变量
-15. 输出安装报告
+14. 输出安装报告
 ```
+
+**重要**：apply 不再执行 git fetch/pull。如果配置仓库有远程更新，用户应先运行 `/claude-config sync` 或在日常使用 `/claude-config sync --apply`。
 
 ### 路径验证原则
 
@@ -237,67 +303,32 @@ What would you like to do?
 |------|----------|------|
 | macOS | bash | 原生支持 |
 | Linux | bash | 原生支持 |
-| Windows | PowerShell | WSL 会拦截 bash；Git Bash 需额外配置；PowerShell 是原生方案 |
+| Windows | Git Bash（首选） | 所有 bash 命令原生可用，无需翻译；Git for Windows 自带 |
+| Windows | PowerShell（备选） | Git Bash 不可用时的 fallback，agent 需翻译 bash → PowerShell |
 
-**Windows 特殊处理**：
-- 检测 WSL 环境：如果 `uname -s` 返回 Linux 但 `$WSL_DISTRO_NAME` 存在，提示用户
-- 检测 Git Bash：如果用户明确要用 Git Bash，需要 `CLAUDE_CODE_GIT_BASH_PATH` 环境变量
-- 默认使用 PowerShell：纯 Windows 环境最可靠的方案
+**Windows 执行策略**：
 
-### 具体操作
+1. **首选 Git Bash**：检测 `bash` 是否可用（通常位于 `C:\Program Files\Git\bin\bash.exe`）
+   - 如果可用 → 所有命令用 Git Bash 执行，代码块无需翻译
+2. **备选 PowerShell**：Git Bash 不可用时
+   - agent 将 bash 命令翻译为 PowerShell 等价命令
+   - `cp` → `Copy-Item`, `mkdir -p` → `New-Item -Force`, `~` → `$env:USERPROFILE`
 
-**同步配置仓库（apply 前执行）**：
-
-**macOS/Linux (bash)**：
+**Git Bash 检测**：
 ```bash
-cd "$CONFIG_DIR"
-git fetch origin
-
-# 检查是否有更新
-LOCAL=$(git rev-parse HEAD)
-REMOTE=$(git rev-parse origin/main)
-
-if [ "$LOCAL" != "$REMOTE" ]; then
-  echo "Config repo has updates:"
-  git log --oneline HEAD..origin/main | head -5
-  echo ""
-  echo "Pull latest changes?"
-  read -r response
-  if [[ "$response" =~ ^[Yy] ]]; then
-    git pull --ff-only
-  fi
+# Windows 上检测 Git Bash 是否可用
+if command -v bash >/dev/null 2>&1 || [ -f "C:/Program Files/Git/bin/bash.exe" ]; then
+  EXEC_ENGINE="git-bash"
+elif command -v powershell >/dev/null 2>&1; then
+  EXEC_ENGINE="powershell"
 fi
 ```
 
-**Windows (PowerShell)**：
-```powershell
-Push-Location $CONFIG_DIR
-git fetch origin
-
-# 检查是否有更新
-$local = git rev-parse HEAD
-$remote = git rev-parse origin/main
-
-if ($local -ne $remote) {
-    Write-Host "Config repo has updates:"
-    git log --oneline HEAD..origin/main | Select-Object -First 5
-    Write-Host ""
-    Write-Host "Pull latest changes? (y/n)"
-    $response = Read-Host
-    if ($response -eq "y") {
-        git pull --ff-only
-    }
-}
-Pop-Location
-```
-
-**注意**：如果用户选择跳过同步，继续 apply 可能使用旧配置。
-
----
+### 具体操作
 
 **Skills 安装**：
 
-重要原则：只有 `claude-config` 以文件形式安装（bootstrap skill）。其他所有 skill 已迁移至 claudespace marketplace，通过 Phase 1 的 `claude plugin install` 安装。
+重要原则：只有 `claude-config` 以文件形式安装（bootstrap skill）。其他所有 skill 通过 marketplace 安装，在 Phase 1 由 `claude plugin install` 完成。
 
 仅安装 claude-config bootstrap skill：
 
@@ -488,7 +519,7 @@ Time: 2026-06-03 12:00:00
 
 --- Phase 1: Plugins ---
 ✓ Registered 5 marketplaces
-✓ Installed 13 plugins (4 infra + 9 claudespace)
+✓ Installed 13 plugins (4 infra + 9 from your marketplace)
 
 --- Phase 2: Static Config ---
 ✓ Installed bootstrap skill: claude-config
@@ -507,6 +538,216 @@ Time: 2026-06-03 12:00:00
      See: https://github.com/aiming-lab/AutoResearchClaw
 
 Configuration complete!
+```
+
+---
+
+## sync 命令
+
+同步配置仓库的本地和远程状态。处理多设备协同场景。
+
+### 用法
+
+```
+/claude-config sync [--apply] [--config-dir <path>]
+```
+
+| 参数 | 说明 |
+|------|------|
+| `--apply` | sync 成功后自动执行 apply |
+| `--config-dir <path>` | 配置仓库路径，默认 `~/claude-config-data` |
+
+### 前置条件
+
+配置目录必须处于状态 F（已关联远程）。如果不在状态 F，提示用户先运行 `/claude-config remote add <url>`。
+
+### 前置检查
+
+执行 sync 前：
+
+```
+if [ -f "$CONFIG_DIR/pending-merge.yaml" ]; then
+  通过 AskUserQuestion:
+    "⚠ 检测到未完成的 merge（pending-merge.yaml）。
+     继续 sync 可能会让这些决策过时。建议先完成 merge。"
+    (a) 先去完成 merge（取消 sync）  ← 推荐
+    (b) 继续执行 sync（pending 决策可能变 stale）
+fi
+```
+
+### 四象限模型
+
+```
+1. git fetch origin
+2. 比较本地 HEAD vs origin/<branch>：
+
+┌──────────┬───────────┬──────────────────────────────────────┐
+│ 本地超前  │ 远程超前   │ 处理                                  │
+├──────────┼───────────┼──────────────────────────────────────┤
+│ ✗        │ ✗         │ 已同步，无事可做                        │
+│ ✓        │ ✗         │ 提示用户 push（显示未推送 commit 列表） │
+│ ✗        │ ✓         │ 自动 pull（fast-forward）              │
+│ ✓        │ ✓         │ 分叉 → 交互式解决                       │
+└──────────┴───────────┴──────────────────────────────────────┘
+```
+
+### 分叉处理
+
+```
+本地和远程分叉了（diverged）：
+
+Local commits (not on remote):
+  abc1234 添加 research-brainstorm skill
+  def5678 更新 permissions
+
+Remote commits (not local):
+  ghi9012 修改 model 设置
+  jkl3456 添加 memory 项
+
+策略:
+  (a) remote-first — 以远程为准，rebase 本地到远程之上
+  (b) local-first  — 以本地为准，远程 commit 被覆盖（force push）
+  (c) interactive  — 逐 commit 检查，手动选择
+
+建议默认 interactive：
+  [1/4] abc1234 "添加 research-brainstorm skill"
+    (a) keep  (b) drop
+  [2/4] def5678 "更新 permissions"
+    (a) keep  (b) drop
+  [3/4] ghi9012 "修改 model 设置"
+    (a) keep  (b) drop
+  [4/4] jkl3456 "添加 memory 项"
+    (a) keep  (b) drop
+
+最终合并方案：
+  - 生成 merge commit 或 rebase
+  - 冲突文件需要用户手动编辑
+```
+
+### 输出示例
+
+```
+=== Sync Report ===
+
+Fetching from github:username/my-claude-config...
+
+  Local:  abc1234 (2 commits ahead)
+  Remote: def5678 (1 commit behind)
+
+Remote has 1 new commit:
+  def5678 更新 model 设置 — 2 hours ago
+
+Pulling...
+✓ Fast-forward merge successful
+
+如果 --apply:
+  Running apply...
+  (进入 apply 流程)
+```
+
+---
+
+## remote 命令
+
+管理配置目录的远程仓库关联（状态 C ↔ F 转换）。
+
+### 用法
+
+```
+/claude-config remote status
+/claude-config remote add <url>
+/claude-config remote remove
+```
+
+### remote status
+
+```
+显示当前 remote 配置：
+
+  Remote: github:username/my-claude-config
+  URL: https://github.com/username/my-claude-config
+  Branch: main
+
+或无远程时：
+  No remote configured. Use /claude-config remote add <url>
+```
+
+### remote add
+
+```
+/claude-config remote add <url>
+
+状态 C → F:
+  git remote add origin <url>
+  git push -u origin HEAD
+
+✓ Remote added: github:username/repo
+  现在可以用 /claude-config sync 同步了
+```
+
+### remote remove
+
+```
+/claude-config remote remove
+
+状态 F → C:
+  确认后:
+    Are you sure? This only removes the remote link, not your files.
+    (a) Yes, remove remote  (b) Cancel
+
+  git remote remove origin
+
+  ✓ Remote removed
+  ⚠ 配置目录仍在本地，git 历史保留
+```
+
+---
+
+## update-self 命令
+
+更新 claude-config 框架自身。
+
+### 用法
+
+```
+/claude-config update-self
+```
+
+### 执行流程
+
+```
+1. cd ~/.claude-config-tool
+2. git fetch origin
+3. 比较版本：
+   ├─ 已最新 → 无事
+   └─ 有更新 → 显示 commit log，询问是否更新
+4. 如果更新：
+   git pull --ff-only
+   cp SKILL.md ~/.claude/skills/claude-config/SKILL.md
+   ✓ 框架已更新
+5. 如有 breaking change，提示查看 CHANGELOG
+```
+
+### 输出示例
+
+```
+=== Update claude-config ===
+
+Current:  9b4a627 (2026-06-03)
+Latest:   c8f1234 (2026-06-05)
+
+New commits:
+  c8f1234 feat: add sync command
+  a1b4567 fix: Windows PowerShell detection
+
+Update now?
+(a) Yes, update
+(b) Skip for now
+
+如果选 Yes:
+  ✓ Pulled c8f1234
+  ✓ Bootstrap skill updated
+  Done. Framework updated to c8f1234.
 ```
 
 ---
@@ -592,6 +833,11 @@ Run /claude-config merge to resolve.
 ### 执行流程
 
 ```
+0. 检查 pending-merge.yaml：
+   - 如存在 → AskUserQuestion:
+     "检测到上次保存的 N 条未执行决策。"
+     (a) 加载继续 → 逐条确认上次的决策
+     (b) 放弃 → 删除 pending-merge.yaml，重新 diff
 1. 执行 diff，收集待决策项
 2. 按类别分组（Settings / Permissions / Skills / Plugins / Memory）
 3. 对每组进行交互式决策
@@ -853,42 +1099,81 @@ Status: VALID (1 warning)
 
 ## status 命令
 
-显示当前同步状态概览。
+显示当前配置和同步状态概览。
 
 ### 执行流程
 
 ```
 1. 确定 CONFIG_DIR（从 manifest.yaml metadata.config_repo.local 或默认 ~/claude-config-data）
-2. 检测当前平台
-3. 读取 manifest.yaml 和 plugins.yaml
-4. 对比本地 ~/.claude/ 状态
-5. 输出状态报告
+2. 检测配置目录状态（A/B/C/F）
+3. 检测当前平台
+4. 如果在状态 F：检测本地/远程同步状态（ahead/behind/diverged/clean）
+5. 读取 manifest.yaml 和 plugins.yaml
+6. 对比本地 ~/.claude/ 状态
+7. 输出状态报告
 ```
 
-### 输出
+### 输出示例
+
+**状态 F（已关联，已同步）**：
 
 ```
 === Claude Config Status ===
 Platform: mac
-Config Repo: ~/claude-config-data
-Remote: github:LKCY23/claude-config-data
-Last sync: 2026-03-28 from mac
+Config Dir: ~/claude-config-data
+Remote: github:username/my-claude-config
+Sync: clean (up to date)
 
 --- Tracked ---
-Skills: 4 (github, research-brainstorm, literature-review, read-paper)
-Plugins: 2 (superpowers@5.0.5, claude-hud@0.0.10)
+Skills: 1 (claude-config bootstrap)
+Plugins: 13 (4 infra + 9 from marketplace)
 Memory: 3 items
 Permissions: 18 universal, 1 mac-specific
 
 --- Local State ---
-Installed skills: 4 (all tracked)
-Installed plugins: 2 (versions match)
-Memory files: 3 (all tracked)
-
---- Pending ---
-No pending changes
+Installed skills: 1 ✓
+Installed plugins: 13 (versions match)
+Memory files: 3 ✓
+Settings: base + merged permissions ✓
 
 Run /claude-config diff for detailed comparison.
+```
+
+**状态 F（本地超前）**：
+
+```
+Sync: ahead (2 local commits not pushed)
+  → Run /claude-config sync to push
+```
+
+**状态 F（远程超前）**：
+
+```
+Sync: behind (3 remote commits not pulled)
+  → Run /claude-config sync to pull
+```
+
+**状态 F（分叉）**：
+
+```
+Sync: diverged (2 local + 1 remote)
+  → Run /claude-config sync to resolve
+```
+
+**状态 C（本地 git，无远程）**：
+
+```
+Config Dir: ~/claude-config-data
+Sync: local only (no remote configured)
+  → Run /claude-config remote add <url> to add a remote
+```
+
+**状态 B（纯本地）**：
+
+```
+Config Dir: ~/claude-config-data
+Sync: local only (not a git repo)
+  → Run /claude-config init --git to add version control
 ```
 
 ---
@@ -935,7 +1220,7 @@ Run /claude-config diff for detailed comparison.
 /claude-config add-skill github:xxx/research-mate
 
 # 指定类型为自制 skill
-/claude-config add-skill github:LKCY23/my-skill --type self
+/claude-config add-skill github:username/my-skill --type self
 
 # 指定分支
 /claude-config add-skill github:xxx/skill --ref develop
@@ -1067,7 +1352,7 @@ Apply update?
 
 ```
 === Push skill: my-skill ===
-Repository: LKCY23/my-skill
+Repository: username/my-skill
 Branch: main
 
 Changes to push:
@@ -1254,16 +1539,15 @@ hooks:
 plugins:
   <name>:
     marketplace: <marketplace-name>  # 必需
-    source: github:<owner>/<repo>    # 必需
-    package: <package-name>          # 必需
-    version: "<version>"             # 可选，不指定则最新
+    package: <package-name>          # 可选（默认与 name 相同）
     platforms: [all]
 
 marketplaces:
   <name>:
-    source: github
     repo: <owner>/<repo>
 ```
+
+注：`version` 和 `source` 字段已弃用。`claude plugin install` 不支持 `--version`，版本由 marketplace catalog 锁定。
 
 ---
 
@@ -1317,24 +1601,14 @@ jq . ~/.claude/settings.json
 
 ### Windows statusline
 
-**推荐使用 PowerShell 方案**：
+**推荐 Git Bash 方案**（与 macOS/Linux 一致，无需维护两份脚本）：
 
 原因：
-- WSL 会拦截 `bash` 命令，导致路由混乱
-- Git Bash 需要额外配置 `CLAUDE_CODE_GIT_BASH_PATH`
-- PowerShell 是 Windows 原生方案，无需额外依赖
+- Git for Windows 自带 Git Bash，大多数 Windows 开发者已安装
+- 使用与 macOS/Linux 相同的 `.sh` 脚本，无需翻译
+- Claude Code 在 Windows 终端中可直接调用 `bash`
 
 配置示例：
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "pwsh ~/.claude/statusline.ps1"
-  }
-}
-```
-
-如果坚持使用 Git Bash（已配置环境变量）：
 ```json
 {
   "statusLine": {
@@ -1344,7 +1618,17 @@ jq . ~/.claude/settings.json
 }
 ```
 
-**注意**：需要在 hooks 部分同时提供 `.sh` 和 `.ps1` 版本的脚本。
+**备选 PowerShell 方案**（不使用 Git Bash 时）：
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "pwsh ~/.claude/statusline.ps1"
+  }
+}
+```
+
+**注意**：如果使用 Git Bash 方案，只需维护 `.sh` 版本。如果同时支持 PowerShell，需额外提供 `.ps1` 版本。
 
 ### Merge 保存
 

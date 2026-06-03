@@ -124,29 +124,17 @@ else
 fi
 
 # ════════════════════════════════════════════
-# Initialize config repository
+# Create framework config (if not exists)
 # ════════════════════════════════════════════
 echo ""
-echo "  === Setting up config directory ==="
+echo "  === Setting up framework config ==="
 
-if [[ ! -d "$CONFIG_DIR" ]]; then
-    echo "  Creating ${CONFIG_DIR}..."
-    mkdir -p "$CONFIG_DIR"
-    cd "$CONFIG_DIR"
-    git init
-
-    # Copy templates
-    cp "$TOOL_DIR/templates/manifest.template.yaml" "$CONFIG_DIR/manifest.yaml"
-    cp "$TOOL_DIR/templates/plugins.template.yaml" "$CONFIG_DIR/plugins.yaml"
-
-    # Create directory structure
-    mkdir -p "$CONFIG_DIR/assets/"{skills,memory,settings,hooks/mac,hooks/windows,claude-md}
-
-    echo "  ✓ Config directory initialized"
-    echo ""
-    echo "  ⚠ Please edit $CONFIG_DIR/manifest.yaml to add your skills/plugins"
+CONFIG_FILE="${TOOL_DIR}/config.yaml"
+if [[ -f "$CONFIG_FILE" ]]; then
+    echo "  ✓ Config exists: $CONFIG_FILE"
 else
-    echo "  ✓ Config directory exists: $CONFIG_DIR"
+    cp "$TOOL_DIR/templates/config.template.yaml" "$CONFIG_FILE"
+    echo "  ✓ Created default config: $CONFIG_FILE"
 fi
 
 # ════════════════════════════════════════════
@@ -169,13 +157,14 @@ echo "  ════════════════════════
 echo "  ✓ Installation complete!"
 echo "  ═══════════════════════════════════════════"
 echo ""
-echo "  Quick start:"
-echo "    1. Add your skills/plugins to: $CONFIG_DIR/assets/"
-echo "    2. Edit: $CONFIG_DIR/manifest.yaml"
-echo "    3. Run: claude"
-echo "    4. Use: /claude-config status"
-echo "    5. Apply: /claude-config apply --config-dir $CONFIG_DIR"
+echo "  Next steps:"
 echo ""
-echo "  Update tool:    cd $TOOL_DIR && git pull"
-echo "  Reinstall skill: cp $TOOL_DIR/SKILL.md ~/.claude/skills/claude-config/"
+echo "  If you already have a config repo:"
+echo "    git clone <your-repo-url> ~/claude-config-data"
+echo "    → Then run /claude-config sync --apply in Claude Code"
+echo ""
+echo "  If you're starting fresh:"
+echo "    → Run /claude-config init in Claude Code"
+echo ""
+echo "  Update framework: /claude-config update-self"
 echo ""

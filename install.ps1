@@ -75,40 +75,17 @@ if (Test-Path $ToolDir) {
 }
 
 # ════════════════════════════════════════════
-# Initialize config repository
+# Create framework config (if not exists)
 # ════════════════════════════════════════════
 Write-Host ""
-Write-Host "  === Setting up config directory ==="
+Write-Host "  === Setting up framework config ==="
 
-if (-not (Test-Path $ConfigDir)) {
-    Write-Host "  Creating $ConfigDir..."
-    New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
-    Push-Location $ConfigDir
-    git init
-
-    # Copy templates
-    Copy-Item "$ToolDir\templates\manifest.template.yaml" "$ConfigDir\manifest.yaml"
-    Copy-Item "$ToolDir\templates\plugins.template.yaml" "$ConfigDir\plugins.yaml"
-
-    # Create directory structure
-    $subdirs = @(
-        "assets\skills",
-        "assets\memory",
-        "assets\settings",
-        "assets\hooks\mac",
-        "assets\hooks\windows",
-        "assets\claude-md",
-        "scripts"
-    )
-    foreach ($subdir in $subdirs) {
-        New-Item -ItemType Directory -Force -Path "$ConfigDir\$subdir" | Out-Null
-    }
-
-    Write-Host "  ✓ Config directory initialized" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "  ⚠ Please edit $ConfigDir\manifest.yaml to add your skills/plugins" -ForegroundColor Yellow
+$ConfigFile = "$ToolDir\config.yaml"
+if (Test-Path $ConfigFile) {
+    Write-Host "  ✓ Config exists: $ConfigFile" -ForegroundColor Green
 } else {
-    Write-Host "  ✓ Config directory exists: $ConfigDir" -ForegroundColor Green
+    Copy-Item "$ToolDir\templates\config.template.yaml" $ConfigFile
+    Write-Host "  ✓ Created default config: $ConfigFile" -ForegroundColor Green
 }
 
 # ════════════════════════════════════════════
@@ -131,13 +108,14 @@ Write-Host "  ══════════════════════
 Write-Host "  ✓ Installation complete!" -ForegroundColor Green
 Write-Host "  ═══════════════════════════════════════════"
 Write-Host ""
-Write-Host "  Quick start:"
-Write-Host "    1. Add your skills/plugins to: $ConfigDir\assets\"
-Write-Host "    2. Edit: $ConfigDir\manifest.yaml"
-Write-Host "    3. Run: claude"
-Write-Host "    4. Use: /claude-config status"
-Write-Host "    5. Apply: /claude-config apply --platform windows"
+Write-Host "  Next steps:"
 Write-Host ""
-Write-Host "  Update tool:    cd $ToolDir; git pull"
-Write-Host "  Reinstall skill: cp $ToolDir\SKILL.md ~/.claude/skills/claude-config\"
+Write-Host "  If you already have a config repo:"
+Write-Host "    git clone <your-repo-url> $env:USERPROFILE\claude-config-data"
+Write-Host "    -> Then run /claude-config sync --apply in Claude Code"
+Write-Host ""
+Write-Host "  If you're starting fresh:"
+Write-Host "    -> Run /claude-config init in Claude Code"
+Write-Host ""
+Write-Host "  Update framework: /claude-config update-self"
 Write-Host ""

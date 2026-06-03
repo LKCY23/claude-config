@@ -1,0 +1,10 @@
+# ~/.claude-config-tool/config.yaml
+# 框架配置文件。此文件在你的本地机器上，不应同步到其他设备。
+#
+# 如果文件不存在，install.sh 会自动从 templates/config.template.yaml 创建。
+# 运行 /claude-config update-self 不会覆盖此文件（在 .gitignore 中）。
+
+# 配置数据目录（必需）
+# 支持 ~ 展开为当前用户 home 目录
+# 优先级: --config-dir 参数 > 此处的 config_dir > ~/claude-config-data
+config_dir: ~/claude-config-data

@@ -459,6 +459,39 @@ LKCY23/claudespace 是开源参考实现，提供两种 plugin 来源模式：
 | 更新方式 | `git submodule update --remote` | 手动更新 sha |
 | 适用 | 用户自己的 skill | 三方 curated skill |
 
+### 版本锁定机制：SHA
+
+**SHA 是什么**：git 中每次 commit 都有一个唯一的 40 位十六进制哈希值（SHA），是这个 commit 的不可变指纹。代码改一个字，SHA 就完全不同。因此 SHA 能精确、不可伪造地指代"代码的某个确定版本"。
+
+**版本锁在哪**：版本锁定在 marketplace catalog（`marketplace.json`），不在用户侧的 `plugins.yaml`。
+
+这就好比：
+
+```
+plugins.yaml:      "我要用 deep-research"         ← 用户声明"要什么"
+marketplace.json:  deep-research → sha: 57507ef   ← catalog 锁定"哪个版本"
+```
+
+用户只管要哪个 skill，具体版本由 catalog 权威决定。`claude plugin install` 不支持 `--version` 参数，这恰好确保了版本管理的单一来源——不会出现"用户装了一个版本、catalog 记录的是另一个版本"的错位。
+
+**两种锁定方式**：
+
+```
+Mode 1 (self-hosted):  github skill 源码在 claudespace 仓库内，作为 git submodule
+  锁定方式: submodule 记录的 commit hash
+  示例: github → submodule commit 8ba6659
+  查看: git ls-tree HEAD skills/github
+
+Mode 2 (external ref):  skill 源码在其他仓库
+  锁定方式: marketplace.json 中的 sha 字段
+  示例: "sha": "57507ef7a0b6828798d5de8f68a08b5943f43a87"
+  查看: cat .claude-plugin/marketplace.json
+```
+
+**更新可见**：当 marketplace maintainer 更新一个 skill 的 submodule commit 或 sha 字段时，`git diff marketplace.json` 就能看到版本变化。这本身就是一个变更记录。
+
+**为什么不用 plugins.yaml 里的 version 字段**：之前的 `plugins.yaml` 中有 `version: "5.0.5"` 这样的字段，但 `claude plugin install` CLI 不支持 `--version`，这个字段形同虚设。而且如果 version 写在用户侧，多台机器之间可能出现"同一个 plugin 不同版本"的漂移。把版本锁定收归 marketplace 解决了这两个问题。
+
 **为什么用 marketplace 而不是文件副本**：
 - 版本精确锁定（commit hash），不会漂移
 - shared/ 等跨 skill 依赖由上游仓库结构自然解决
@@ -629,7 +662,7 @@ marketplaces:
 - `marketplace`: marketplace 名称（需先在 marketplaces 段注册）
 - `package`: 插件包名（默认与 marketplace 下注册名相同时可省略）
 - `platforms`: 支持的平台
-- 注：`version` 字段已移除。`claude plugin install` 不支持 `--version`，版本由 marketplace catalog 锁定
+- 注：`version` 字段已移除。`claude plugin install` 不支持 `--version`，版本锁定由 marketplace catalog 的 submodule commit / sha 负责（详见 [Marketplace 机制](#版本锁定机制sha)）
 
 ### MCP Servers 追踪
 

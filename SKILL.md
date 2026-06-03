@@ -241,7 +241,7 @@ apply 分三个阶段执行：
    - 未注册的执行：`claude plugin marketplace add <repo>`
 4. 安装 plugins（按 depends_on 排序）：
    - `claude plugin install <package>@<marketplace>`
-   - 注意：claude plugin install 不支持 --version，版本由 marketplace catalog 锁定
+   - 注意：claude plugin install 不支持 --version，版本由 marketplace catalog 的 submodule commit 或 sha 锁定
 5. 等待 plugins 安装完成
 
 === Phase 2: Static Config（全自动）===
@@ -1547,7 +1547,7 @@ marketplaces:
     repo: <owner>/<repo>
 ```
 
-注：`version` 和 `source` 字段已弃用。`claude plugin install` 不支持 `--version`，版本由 marketplace catalog 锁定。
+注：`version` 和 `source` 字段已弃用。`claude plugin install` 不支持 `--version`，版本由 marketplace catalog 的 submodule commit 或 sha 锁定（详见 DESIGN.md 的 Marketplace 机制章节）。
 
 ---
 

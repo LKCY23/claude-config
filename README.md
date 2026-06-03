@@ -5,10 +5,11 @@ Claude Code 配置管理工具 - 跨机器配置同步解决方案。
 ## 功能
 
 - **双向流转** - Mac ↔ Windows ↔ Linux 配置同步
+- **Marketplace 集成** - 通过 [claudespace](https://github.com/LKCY23/claudespace) 统一管理 skill，版本精确锁定
+- **三层架构** - Plugin（marketplace） / Static config（文件） / External tools（分级安装）
 - **平台差异处理** - 自动处理平台特定配置
 - **交互式合并** - diff + merge 解决冲突
 - **敏感信息保护** - 不追踪 API keys、OAuth sessions
-- **第三方工具集成** - git subtree 管理，支持本地定制
 
 ---
 
@@ -146,23 +147,39 @@ Windows 用户指定平台：
 ```
 ~/.claude-config-tool/       # 工具框架（公开）
 ├── SKILL.md
+├── DESIGN.md
 ├── templates/
 ├── install.sh              # Unix/Linux/Git Bash 安装脚本
 └── install.ps1             # PowerShell 安装脚本
 
 ~/claude-config-data/        # 你的私有配置（私有仓库）
-├── manifest.yaml            # 配置清单
-├── plugins.yaml             # 插件清单
-├── scripts/                 # subtree 管理脚本
-│   ├── add-tool.sh
-│   └── sync-upstream.sh
+├── manifest.yaml            # 配置清单（skills 仅 bootstrap claude-config）
+├── plugins.yaml             # 插件清单（引用 claudespace + 三方 marketplace）
+├── scripts/
+├── docs/
 └── assets/
-    ├── skills/              # 自定义 skills
+    ├── skills/              # 仅 claude-config（bootstrap skill）
     ├── memory/              # 行为偏好 memory
     ├── settings/            # settings 和 permissions
-    └── hooks/
-        ├── mac/             # Mac hooks
-        └── windows/        # Windows hooks
+    ├── hooks/               # 平台特定 hooks
+    └── templates/
+```
+
+claudespace 与 claude-config 的关系：
+
+```
+LKCY23/claudespace (marketplace)   ← skill 来源 + 版本锁定
+       │
+       │  marketplace.json 定义 9 个 plugin
+       │  Mode 1 (self-hosted): 你的 4 个自有 skill
+       │  Mode 2 (external ref): 5 个三方 skill，sha 锁版本
+       │
+       ▼
+claude-config-data/plugins.yaml     ← 引用 claudespace
+       │
+       │  claude-config apply
+       ▼
+claude plugin install xxx@claudespace   ← 安装到本地
 ```
 
 ---
@@ -177,22 +194,37 @@ metadata:
     local: ~/claude-config-data
     remote: github:username/my-claude-config
 
+# 只有 claude-config 自身保留在 skills 段（bootstrap skill）
+# 其他所有 skill 通过 plugins.yaml → claudespace marketplace 安装
 skills:
-  my-skill:
-    source: assets/skills/my-skill
+  claude-config:
+    source: assets/skills/claude-config
     platforms: [all]
-    upstream:
-      type: self
+    description: 跨机器配置管理工具（bootstrap）
 
-  third-party-skill:
-    source: assets/skills/third-party-skill
-    platforms: [all]
-    upstream:
-      type: third-party
-      repo: github:xxx/skill
-      ref: main
-      subtree: true
-      last_sync: "2026-03-28"
+# 外部工具分级安装
+external:
+  codex-cli:
+    strategy: auto           # 硬依赖，apply 自动装
+    install: "npm install -g @openai/codex && codex login"
+    setup:
+      verify:
+        command: codex --help
+
+  my-tool:
+    strategy: prompt         # 软依赖，apply 询问用户
+    install: "npm install -g my-tool"
+    setup:
+      verify:
+        command: my-tool --help
+
+  complex-service:
+    strategy: manual         # 复杂设置，apply 仅提示文档
+    setup:
+      authority:
+        url: https://github.com/xxx/xxx
+      env:
+        required: [SERVICE_API_KEY]
 ```
 
 ---

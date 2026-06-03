@@ -2,36 +2,59 @@
 # Copy this file to your private config repo and customize
 
 # plugins:
+#   # --- 基础设施 ---
 #   superpowers:
 #     marketplace: claude-plugins-official
-#     source: github:anthropics/claude-plugins-official
 #     package: superpowers
-#     version: "5.0.5"
 #     platforms: [all]
 #
 #   claude-hud:
 #     marketplace: claude-hud
-#     source: github:jarrodwatts/claude-hud
 #     package: claude-hud
-#     version: "0.0.10"
 #     platforms: [all]
+#
+#   claude-scientific-writer:
+#     marketplace: claude-scientific-writer
+#     package: claude-scientific-writer
+#     platforms: [all]
+#
+#   codex:
+#     marketplace: openai-codex
+#     package: codex
+#     platforms: [all]
+#
+#   # --- 研究 skills（统一走 claudespace marketplace）---
+#   # github:
+#   #   marketplace: claudespace
+#   #   platforms: [all]
+#   #
+#   # research-brainstorm:
+#   #   marketplace: claudespace
+#   #   platforms: [all]
+#   #
+#   # deep-research:
+#   #   marketplace: claudespace
+#   #   platforms: [all]
+#   #
+#   # 更多 claudespace skill 见 https://github.com/LKCY23/claudespace
 
 plugins: {}
 
 # marketplaces:
 #   claude-plugins-official:
-#     source: github
 #     repo: anthropics/claude-plugins-official
-#     url: https://github.com/anthropics/claude-plugins-official
 #   claude-hud:
-#     source: github
 #     repo: jarrodwatts/claude-hud
-#     url: https://github.com/jarrodwatts/claude-hud
+#   claude-scientific-writer:
+#     repo: K-Dense-AI/claude-scientific-writer
+#   openai-codex:
+#     repo: openai/codex-plugin-cc
+#   claudespace:
+#     repo: LKCY23/claudespace
 
 marketplaces: {}
 
 # MCP Servers (optional)
-# Track MCP servers that provide additional tools
 # mcp_servers:
 #   bailian:
 #     source: bailian

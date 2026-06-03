@@ -101,6 +101,84 @@ claude-config/                     # 独立 git 仓库
 
 ---
 
+## 三层架构与 Marketplace 集成
+
+### 架构概览
+
+claude-config apply 分三个独立层执行，每层有不同的管理策略：
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Layer 1: Plugin Ecosystem（marketplace 管理）            │
+│                                                         │
+│  来源: plugins.yaml                                     │
+│  安装: claude plugin install <pkg>@<marketplace>        │
+│  版本: marketplace catalog 锁定（Mode 1: submodule,     │
+│        Mode 2: sha）                                    │
+│  内容: skills, agents, hooks, MCP servers               │
+│                                                         │
+│  → 全自动。apply 注册 marketplace + 安装所有 plugin     │
+│  → plugin 内部组件（skill/agent/hook/MCP）透明管理      │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│ Layer 2: Static Config（文件操作）                       │
+│                                                         │
+│  来源: assets/ 目录                                     │
+│  安装: cp / merge                                       │
+│  内容:                                                  │
+│    - claude-config/SKILL.md  (bootstrap skill, 唯一)    │
+│    - settings/base.json + permissions-*.json             │
+│    - memory/*.md                                        │
+│    - hooks/statusline.sh/.ps1                           │
+│                                                         │
+│  → 全自动。纯配置文件，无版本概念                         │
+│  → claude-config 自身是 bootstrap: 必须先有它才能调     │
+│    claude plugin 命令                                    │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│ Layer 3: External Tools（分级安装）                      │
+│                                                         │
+│  来源: manifest.yaml external 段                        │
+│  安装: 按 strategy 分级                                 │
+│    auto:   硬依赖 → 自动执行 install 命令               │
+│    prompt: 软依赖 → AskUserQuestion 询问                │
+│    manual: 复杂设置 → 仅打印文档链接                    │
+│  内容: npm 全局包、git clone 套件、外部运行时           │
+│                                                         │
+│  → 分级处理。不在 apply 时静默安装不受信任的软件         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### claudespace Marketplace
+
+[claudespace](https://github.com/LKCY23/claudespace) 是个人 Claude Code plugin marketplace，统一管理所有 skill。
+
+**两种插件来源模式**：
+
+| | Mode 1: Self-hosted | Mode 2: External reference |
+|---|---|---|
+| 代码位置 | 在 claudespace 仓库内 (git submodule) | 在外部仓库 |
+| 版本锁定 | submodule commit | marketplace.json 中的 sha |
+| 更新方式 | `git submodule update --remote` | 手动更新 sha |
+| 适用 | 自有 skill | 三方 curated skill |
+
+**为什么用 marketplace 而不是文件副本**：
+- 版本精确锁定（commit hash），不会漂移
+- shared/ 等跨 skill 依赖由上游仓库结构自然解决
+- 更新可见（git diff 能看到版本变化）
+- 安装统一：`claude plugin install xxx@claudespace`
+
+### 设计原则
+
+1. **Plugin 通道统一**：所有带版本的 skill/agent/hook/MCP 走 marketplace，不用文件副本
+2. **文件通道只管配置**：settings/memory/hooks 这些纯配置走 cp/merge
+3. **Plugin 内部不穿透**：不试图管理 plugin 内部的 skill 列表或 shared 目录
+4. **External 分级安装**：auto/prompt/manual 三级，不静默安装未审查的软件
+
+---
+
 ## manifest.yaml 格式
 
 ```yaml
@@ -118,23 +196,14 @@ platforms:
   linux: [linux, ubuntu, debian]
 
 # Skills 配置
+# 注意: 除 claude-config 外，所有 skill 已迁移至 claudespace marketplace
+# 通过 plugins.yaml 引用，由 claude plugin install 安装
+# skills 段仅保留 bootstrap skill
 skills:
-  github:
-    source: assets/skills/github
+  claude-config:
+    source: assets/skills/claude-config
     platforms: [all]
-    description: GitHub workflow skill
-
-  research-brainstorm:
-    source: assets/skills/research-brainstorm
-    platforms: [all]
-
-  literature-review:
-    source: assets/skills/literature-review
-    platforms: [all]
-
-  read-paper:
-    source: assets/skills/read-paper
-    platforms: [all]
+    description: 跨机器配置管理工具（bootstrap skill）
 
 # Rules 配置
 rules: {}
@@ -256,34 +325,40 @@ exclude:
 
 ```yaml
 plugins:
+  # --- 基础设施 ---
   superpowers:
     marketplace: claude-plugins-official
-    source: github:anthropics/claude-plugins-official
     package: superpowers
-    version: "5.0.5"
     platforms: [all]
 
   claude-hud:
     marketplace: claude-hud
-    source: github:jarrodwatts/claude-hud
     package: claude-hud
-    version: "0.0.10"
+    platforms: [all]
+
+  # --- 研究 skills（统一走 claudespace marketplace）---
+  deep-research:
+    marketplace: claudespace
+    platforms: [all]
+
+  academic-paper:
+    marketplace: claudespace
     platforms: [all]
 
 marketplaces:
   claude-plugins-official:
-    source: github
     repo: anthropics/claude-plugins-official
-    url: https://github.com/anthropics/claude-plugins-official
   claude-hud:
-    source: github
     repo: jarrodwatts/claude-hud
-    url: https://github.com/jarrodwatts/claude-hud
+  claudespace:
+    repo: LKCY23/claudespace
 ```
 
 **字段说明**：
-- `repo`: 简写格式（`owner/repo`），用于程序解析
-- `url`: 完整 URL，用于在编辑器/浏览器中点击跳转
+- `marketplace`: marketplace 名称（需先在 marketplaces 段注册）
+- `package`: 插件包名（默认与 marketplace 下注册名相同时可省略）
+- `platforms`: 支持的平台
+- 注：`version` 字段已移除。`claude plugin install` 不支持 `--version`，版本由 marketplace catalog 锁定。claudespace 通过 Mode 1 (submodule commit) 和 Mode 2 (sha) 精确控制版本
 
 ### MCP Servers 追踪
 

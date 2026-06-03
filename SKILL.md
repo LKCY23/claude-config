@@ -165,30 +165,38 @@ Next steps:
 
 ### 执行流程
 
+apply 分三个阶段执行：
+
 ```
-1. 确定 CONFIG_DIR（--config-dir 参数优先，默认 ~/claude-config-data）
-2. 验证路径状态：
-   - 如果路径或 manifest.yaml 有问题，不要擅自修正
-   - 使用 AskUserQuestion 让用户决定如何处理（详见下方"路径验证原则"）
-3. 同步配置仓库：
-   - 检查是否有远程更新（git fetch）
-   - 如果有更新，提示用户 git pull
-   - 用户可选择跳过同步继续 apply
-4. 检测当前平台（如未指定 --platform）
-5. 读取 $CONFIG_DIR/manifest.yaml 和 $CONFIG_DIR/plugins.yaml
-6. 按平台过滤配置项（platforms 字段）
-7. 检查 env.expected 变量是否存在，缺失则警告
-8. 安装 plugins：
-   a. 检查 marketplace 是否已注册（读取 plugins.yaml 的 marketplaces 部分）
-   b. 未注册的 marketplace 执行注册：`claude plugin marketplace add <name> <repo>`
-   c. 安装 plugin：`claude plugin install <package>@<marketplace>`
-   d. 如果指定了 version：`claude plugin install <package>@<marketplace> --version <version>`
-9. 等待 plugins 安装完成
-10. 安装依赖 plugins 的 hooks（depends_on）
-11. 复制 $CONFIG_DIR/assets/ 下的 skills/rules/agents/memory 文件
-12. 合并 settings（按 merge_strategy）
-13. 验证 settings.json 格式正确
-14. 输出安装报告
+=== Phase 1: Marketplace & Plugins（全自动）===
+1. 同步配置仓库（git fetch/pull）
+2. 检测当前平台（如未指定 --platform）
+3. 读取 $CONFIG_DIR/plugins.yaml
+4. 注册 marketplaces：
+   - 检查每个 marketplace 是否已注册
+   - 未注册的执行：`claude plugin marketplace add <name> <repo>`
+5. 安装 plugins（按 depends_on 排序）：
+   - `claude plugin install <package>@<marketplace>`
+   - 注意：claude plugin install 不支持 --version，版本由 marketplace catalog 锁定
+6. 等待 plugins 安装完成
+
+=== Phase 2: Static Config（全自动）===
+7. 安装 bootstrap skill（仅 claude-config）：
+   - 从 assets/skills/claude-config/ 复制 SKILL.md 到 ~/.claude/skills/
+   - 其他所有 skill 已在 Phase 1 通过 claudespace marketplace 安装
+8. 复制 memory 文件（assets/memory/ → ~/.claude/memory/）
+9. 合并 settings（base.json + permissions，按 merge_strategy）
+10. 安装 hooks（如 statusline.sh/.ps1，依赖 plugins 的 hook 已在 Phase 1 处理）
+11. 检查 env vars（expected + fixed）
+12. 验证 settings.json 格式正确
+
+=== Phase 3: External Tools（分级处理）===
+13. 读取 manifest.yaml external 段
+14. 对每个 external tool，按 strategy 分级：
+    - auto:   verify → 缺失则自动执行 install 命令（先告知）
+    - prompt: verify → 缺失则 AskUserQuestion 询问是否安装
+    - manual: verify → 缺失则打印 setup 文档链接和所需环境变量
+15. 输出安装报告
 ```
 
 ### 路径验证原则
@@ -289,62 +297,20 @@ Pop-Location
 
 **Skills 安装**：
 
-对于每个 skill，读取 manifest.yaml 中的 source 路径，然后复制：
+重要原则：只有 `claude-config` 以文件形式安装（bootstrap skill）。其他所有 skill 已迁移至 claudespace marketplace，通过 Phase 1 的 `claude plugin install` 安装。
+
+仅安装 claude-config bootstrap skill：
 
 ```bash
-# 示例：安装 deep-research skill
-# source: assets/skills/deep-research
-src_path="$CONFIG_DIR/assets/skills/deep-research"
-tgt_path="$HOME/.claude/skills/deep-research"
+# Bootstrap skill（claude-config 自身，必须先于 plugin 系统可用）
+# source: assets/skills/claude-config
+src_path="$CONFIG_DIR/assets/skills/claude-config"
+tgt_path="$HOME/.claude/skills/claude-config"
 mkdir -p "$tgt_path"
 cp "$src_path/SKILL.md" "$tgt_path/SKILL.md"
 ```
 
-**批量安装所有 skills**：
-
-根据平台选择对应的脚本：
-
-**macOS/Linux (bash)**：
-```bash
-CONFIG_DIR="$HOME/claude-config-data"
-SKILLS_DIR="$HOME/.claude/skills"
-
-for skill_dir in "$CONFIG_DIR/assets/skills"/*; do
-    if [ -d "$skill_dir" ]; then
-        skill_name=$(basename "$skill_dir")
-        echo "Installing skill: $skill_name"
-        mkdir -p "$SKILLS_DIR/$skill_name"
-        cp "$skill_dir/SKILL.md" "$SKILLS_DIR/$skill_name/SKILL.md"
-    fi
-done
-```
-
-**Windows (PowerShell)**：
-```powershell
-# PowerShell 安装脚本 - 在纯 Windows 环境使用
-$CONFIG_DIR = "$env:USERPROFILE\claude-config-data"
-$SKILLS_DIR = "$env:USERPROFILE\.claude\skills"
-
-# 确保目标目录存在
-New-Item -ItemType Directory -Force -Path $SKILLS_DIR | Out-Null
-
-# 批量安装所有 skills
-Get-ChildItem "$CONFIG_DIR\assets\skills" -Directory | ForEach-Object {
-    $skill_name = $_.Name
-    Write-Host "Installing skill: $skill_name"
-    New-Item -ItemType Directory -Force -Path "$SKILLS_DIR\$skill_name" | Out-Null
-    if (Test-Path "$($_.FullName)\SKILL.md") {
-        Copy-Item "$($_.FullName)\SKILL.md" "$SKILLS_DIR\$skill_name\" -Force
-    }
-}
-
-Write-Host "Skills installation complete"
-```
-
-**重要**：
-- macOS/Linux 使用 `$HOME` 而不是 `~`，确保路径正确展开
-- Windows 使用 `$env:USERPROFILE` 获取用户目录
-- Windows 上不要依赖 bash/WSL，直接用 PowerShell
+注意：不再遍历 assets/skills/ 目录批量安装。manifest.yaml 的 skills 段只包含 claude-config，其余 skill 均通过 plugins.yaml → claude plugin install 安装。
 
 **Memory 安装**：
 ```bash
@@ -462,20 +428,83 @@ done
 # 写入 fixed 变量到 settings.json env 字段
 ```
 
+---
+
+**External tools 安装**：
+
+Phase 3 处理 manifest.yaml 的 external 段。每个 tool 按 `strategy` 字段分级：
+
+```
+for each tool in $CONFIG_DIR/manifest.yaml external:
+
+  strategy = tool.strategy  # "auto" | "prompt" | "manual"
+  verify_cmd = tool.setup.verify.command
+  install_cmd = tool.install
+
+  if strategy == "auto":
+    1. 运行 verify_cmd
+    2. 如果成功: 跳过
+    3. 如果失败:
+       a. 打印 "Installing <name> (required by <boundary.manages>)..."
+       b. 执行 install_cmd
+       c. 再次 verify
+       d. 成功: ✓; 失败: ⚠ 警告
+
+  if strategy == "prompt":
+    1. 运行 verify_cmd
+    2. 如果成功: 跳过
+    3. 如果失败:
+       a. 通过 AskUserQuestion 询问用户:
+          "<name> not found. Description: <description>. Install now?"
+          选项: (a) Yes, install  (b) Skip for now
+       b. 如选 Yes: 执行 install_cmd → verify
+       c. 如选 Skip: 记录为跳过
+
+  if strategy == "manual":
+    1. 运行 verify_cmd
+    2. 如果成功: 跳过
+    3. 如果失败:
+       a. 打印 setup 信息:
+          - authority.url
+          - 所需 env var (env.required)
+          - 说明 (description)
+       b. 不执行任何安装命令
+```
+
+**strategy 选择原则**：
+
+| strategy | 何时使用 | 示例 |
+|----------|----------|------|
+| `auto` | 硬依赖：缺失会导致 plugin 不可用 | codex-cli（codex plugin 运行时） |
+| `prompt` | 软依赖：有用但非必需，安装有副作用 | agent-browser（npm global install） |
+| `manual` | 复杂设置：需要 API key、账号或人工判断 | autoresearchclaw（需要 DASHSCOPE_API_KEY） |
+
 ### 输出报告
 
 ```
 === Apply Report ===
-Platform: mac
-Time: 2026-03-28 10:30:00
+Platform: linux
+Time: 2026-06-03 12:00:00
 
-✓ Installed 4 skills
+--- Phase 1: Plugins ---
+✓ Registered 5 marketplaces
+✓ Installed 13 plugins (4 infra + 9 claudespace)
+
+--- Phase 2: Static Config ---
+✓ Installed bootstrap skill: claude-config
 ✓ Installed 3 memory items
-✓ Merged settings (base + permissions)
-✓ Installed 2 plugins
+✓ Merged settings (base + 18 permissions)
 ✓ Installed statusline hook
-
 ⚠ Missing env: ANTHROPIC_AUTH_TOKEN (configure cc switch)
+
+--- Phase 3: External Tools ---
+✓ codex-cli (auto-installed)
+✓ agent-browser (already installed)
+⚠ humanizer — skipped by user
+⚠ aris — 45 skills not linked (run apply again to install)
+⚠ autoresearchclaw — manual setup required
+     Required env: DASHSCOPE_API_KEY
+     See: https://github.com/aiming-lab/AutoResearchClaw
 
 Configuration complete!
 ```

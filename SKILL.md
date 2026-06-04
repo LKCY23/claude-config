@@ -239,10 +239,13 @@ apply 分三个阶段执行：
 3. 注册 marketplaces：
    - 检查每个 marketplace 是否已注册
    - 未注册的执行：`claude plugin marketplace add <repo>`
-4. 安装 plugins（按 depends_on 排序）：
+4. **刷新 marketplaces**：
+   - 对每个已注册的 marketplace 执行：`claude plugin marketplace update <name>`
+   - 确保本地缓存的 marketplace catalog 是最新版本
+5. 安装 plugins（按 depends_on 排序）：
    - `claude plugin install <package>@<marketplace>`
-   - 注意：claude plugin install 不支持 --version，版本由 marketplace catalog 的 submodule commit 或 sha 锁定
-5. 等待 plugins 安装完成
+   - 注意：claude plugin install 不支持 --version，版本由 marketplace catalog 锁定
+6. 等待 plugins 安装完成
 
 === Phase 2: Static Config（全自动）===
 6. 安装 bootstrap skill（仅 claude-config）：
@@ -387,6 +390,14 @@ for marketplace in $(yq '.marketplaces | keys[]' plugins.yaml); do
   fi
 done
 
+# 刷新所有 marketplace 缓存（确保 catalog 是最新版本）
+for marketplace in $(yq '.marketplaces | keys[]' plugins.yaml); do
+  if claude plugin marketplace list | grep -q "$marketplace"; then
+    echo "Updating marketplace: $marketplace"
+    claude plugin marketplace update "$marketplace"
+  fi
+done
+
 # 安装 plugins
 for plugin in $(yq '.plugins | keys[]' plugins.yaml); do
   marketplace=$(yq ".plugins.$plugin.marketplace" plugins.yaml)
@@ -414,6 +425,9 @@ if (-not ($marketplaces -match "claude-scientific-writer")) {
     Write-Host "Registering marketplace: claude-scientific-writer"
     claude plugin marketplace add claude-scientific-writer github:K-Dense-AI/claude-scientific-writer
 }
+
+# 刷新 marketplace 缓存
+claude plugin marketplace update claude-scientific-writer
 
 # 安装 plugin（不指定 version 则安装最新）
 claude plugin install claude-scientific-writer@claude-scientific-writer

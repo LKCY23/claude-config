@@ -10,12 +10,20 @@ set -euo pipefail
 CONFIG_DIR="${HOME}/claude-config-data"
 TOOL_REPO="https://github.com/LKCY23/claude-config.git"
 TOOL_DIR="${HOME}/.claude-config-tool"
+LOCAL_SOURCE=""
+INSTALL_AGENT="both"
+CATALOG_ROOT="${HOME}/claudespace"
+DRY_RUN=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --config-dir) CONFIG_DIR="$2"; shift 2 ;;
         --tool-dir) TOOL_DIR="$2"; shift 2 ;;
+        --local-source) LOCAL_SOURCE="$2"; shift 2 ;;
+        --agent) INSTALL_AGENT="$2"; shift 2 ;;
+        --catalog-root) CATALOG_ROOT="$2"; shift 2 ;;
+        --dry-run) DRY_RUN="plan"; shift ;;
         *) shift ;;
     esac
 done
@@ -48,6 +56,25 @@ is_wsl() {
 }
 
 PLATFORM=$(detect_platform)
+
+# Reviewed Mac deployment uses a durable local source and the native bootstrap.
+# The existing other-platform path is retained, without new Codex assumptions.
+if [[ "$PLATFORM" == "mac" && -n "$LOCAL_SOURCE" ]]; then
+    case "$INSTALL_AGENT" in claude|codex|both) ;; *) echo "Invalid --agent" >&2; exit 1 ;; esac
+    BOOTSTRAP_PYTHON=""
+    for candidate_python in python3 python; do
+        if command -v "$candidate_python" >/dev/null 2>&1 && "$candidate_python" -c 'import yaml, tomlkit' >/dev/null 2>&1; then
+            BOOTSTRAP_PYTHON="$candidate_python"; break
+        fi
+    done
+    if [[ -z "$BOOTSTRAP_PYTHON" ]]; then
+        echo "Use a Python environment with ${LOCAL_SOURCE}/requirements.txt installed." >&2
+        exit 1
+    fi
+    exec "$BOOTSTRAP_PYTHON" "$LOCAL_SOURCE/scripts/bootstrap.py" "${DRY_RUN:-apply}" \
+        --source "$LOCAL_SOURCE" --tool-dir "$TOOL_DIR" --config-dir "$CONFIG_DIR" \
+        --catalog-root "$CATALOG_ROOT" --agent "$INSTALL_AGENT"
+fi
 
 # WSL warning for Windows users
 if [[ "$PLATFORM" == "linux" ]] && is_wsl; then
@@ -146,6 +173,12 @@ echo "  === Installing claude-config skill ==="
 SKILL_DIR="${HOME}/.claude/skills/claude-config"
 mkdir -p "$SKILL_DIR"
 cp "$TOOL_DIR/SKILL.md" "$SKILL_DIR/"
+# Preserve the legacy workflow's references after the entry is made concise.
+for resource in references scripts; do
+    if [[ -d "$TOOL_DIR/$resource" ]]; then
+        cp -R "$TOOL_DIR/$resource" "$SKILL_DIR/"
+    fi
+done
 
 echo "  ✓ Skill installed to ~/.claude/skills/claude-config/"
 

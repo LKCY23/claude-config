@@ -1,5 +1,10 @@
 # Claude Config - 跨机器配置管理方案
 
+## 当前实现（2026-10-03）
+
+新增设计以 [dual-agent.md](references/dual-agent.md)、scripts/agent_config.py 和 scripts/bootstrap.py 为准：host-bound 入口读取 canonical SKILL.md，data 的 agents.yaml 独立选择 Claude/Codex 原生组件，运行记录与凭据留在本机。bootstrap 从已提交的本地源部署；插件和配置支持前置校验、幂等重试和有限回滚。自动插件版本升级不在本次 helper 范围。
+
+以下是原有 Claude-only 架构说明，供 legacy workflows 使用。旧“复制完整 SKILL.md 到 data”的做法已改为 bootstrap 指针；新 profiles 不继承其全量静态配置/插件选择。
 ## 背景
 
 Claude Code 的配置分布在多个目录和文件中，目前没有官方的跨机器同步方案。本方案旨在提供一个声明式清单 + Skill 驱动的配置管理工具，支持：

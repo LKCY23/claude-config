@@ -8,3 +8,7 @@
 # 支持 ~ 展开为当前用户 home 目录
 # 优先级: --config-dir 参数 > 此处的 config_dir > ~/claude-config-data
 config_dir: ~/claude-config-data
+
+# Optional durable local catalog checkouts (machine-specific, not synchronized)
+# catalog_roots:
+#   LKCY23/claudespace: ~/claudespace

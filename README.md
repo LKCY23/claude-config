@@ -1,5 +1,19 @@
 # claude-config
 
+## Claude Code + Codex（本机 Mac）
+
+新的 agents.yaml 路径支持两端独立声明、原生插件安装、配置合并、只读预览、来源与缓存校验、部分失败记录及按 run-id 回滚。三个层次仍各自负责：claudespace 管来源，data 管选择，framework 管部署。OAuth 和连接由本机宿主管理。
+
+使用已提交的本地源安装框架：
+
+```sh
+bash install.sh --local-source ~/claude-config --config-dir ~/claude-config-data --catalog-root ~/claudespace --agent both --dry-run
+bash install.sh --local-source ~/claude-config --config-dir ~/claude-config-data --catalog-root ~/claudespace --agent both
+```
+
+Python 3.10+ 需要 requirements.txt 的依赖。随后在对应宿主调用 `/claude-config plan`、`apply` 或 `status`；入口绑定该宿主，跨两端显式指定 `--agent both`。框架详情、profile 优先级、有限 MCP/Hook 支持和恢复边界见 [dual-agent.md](references/dual-agent.md)。当前新增适配仅在本机 Mac 验证。
+
+下面保留原有 Claude 工作流说明；有 agents.yaml 时，插件/静态配置部署以新 profiles 为准，不合并 legacy 清单。
 Claude Code 配置管理工具 - 跨机器配置同步解决方案。
 
 ## 功能

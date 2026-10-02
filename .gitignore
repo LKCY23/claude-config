@@ -1,5 +1,10 @@
 # Framework config (machine-specific, created by install.sh)
 config.yaml
+backups/
+catalogs/
+state/
+.venv/
+__pycache__/
 
 # Temporary files
 pending-merge.yaml

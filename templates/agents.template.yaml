@@ -1,0 +1,25 @@
+version: 1
+
+# Catalog membership does not select installation. Pins belong to claudespace.
+catalogs:
+  claudespace:
+    repo: LKCY23/claudespace
+    path: .
+  claudespace-candidates:
+    repo: LKCY23/claudespace
+    path: domains/candidates
+
+# Explicit selections only. Never install all catalog entries.
+agents:
+  claude:
+    plugins: []
+    # config: {source: assets/claude/settings.json}
+    # instructions: {source: assets/claude/CLAUDE.md}
+    # files:
+    #   - {source: assets/claude/agents/reviewer.md, target: agents/reviewer.md}
+  codex:
+    plugins: []
+    # config: {source: assets/codex/config.toml}
+    # instructions: {source: assets/codex/AGENTS.md}
+    # files:
+    #   - {source: assets/codex/agents/reviewer.toml, target: agents/reviewer.toml}

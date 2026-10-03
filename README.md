@@ -13,6 +13,8 @@ bash install.sh --local-source ~/claude-config --config-dir ~/claude-config-data
 
 Python 3.10+ 需要 requirements.txt 的依赖。随后在对应宿主调用 `/claude-config plan`、`apply` 或 `status`；入口绑定该宿主，跨两端显式指定 `--agent both`。框架详情、profile 优先级、有限 MCP/Hook 支持和恢复边界见 [dual-agent.md](references/dual-agent.md)。当前新增适配仅在本机 Mac 验证。
 
+默认测试验证配置管理、包装和原生接入，不调用模型或逐个评测上游 skill。运行 `python -m unittest discover -s tests -v`；已有安装用 helper 的 `validate/status` 核对，隔离原生安装及恢复按需显式执行。新增 Codex Simplifier 包装的人工派发检查单独记录条件与结果；候选质量仍是未评估。测试边界见 [Test scope and acceptance](references/dual-agent.md#test-scope-and-acceptance)。
+
 下面保留原有 Claude 工作流说明；有 agents.yaml 时，插件/静态配置部署以新 profiles 为准，不合并 legacy 清单。
 Claude Code 配置管理工具 - 跨机器配置同步解决方案。
 

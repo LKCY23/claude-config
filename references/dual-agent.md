@@ -143,8 +143,39 @@ stops if a managed key/file/plugin has since changed. Marketplace rollback refus
 removal when other installed plugins now depend on it. New MCP rollback checks
 its observed native fingerprint. Bootstrap rollback is separate from deployment.
 
-Installation, discovery and bounded smoke tests are not deep skill evaluation.
-Candidates remain not-evaluated until a dedicated evaluation or actual usage
-supports promotion. Matt's original setup helper is installed as a dependency;
-run it explicitly inside a chosen project before its first review. Do not run
-project setup globally as part of plugin installation.
+## Test scope and acceptance
+
+Default repository checks cover configuration management, source integrity,
+packaging and native installation. Run the deterministic tests without model
+calls or subagents:
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+Validate profiles through the existing helper. On a machine with the native CLIs,
+use explicit isolated runtime directories for installation/repeat/rollback tests;
+normal CI does not require OAuth or inference access. For an existing live install,
+validate/status are read-only checks; do not reinstall plugins solely to retest.
+Report native inventory, resolvable package entries and actual process discovery
+as separate evidence when the host lacks a non-inference discovery interface.
+
+Original Karpathy, code-review and setup business tasks are not deployment
+acceptance gates. Do not run upstream skills, create project setup documents,
+Agent Teams or additional worktrees as part of ordinary apply or validation.
+Skill quality comparisons belong to a separately requested evaluation.
+
+The added Codex Code Simplifier wrapper gets package-path checks and one bounded
+manual dispatch check on first integration or a material wrapper change. That
+check verifies one independent executor and hand-back, not simplification quality.
+Reuse applicable existing evidence and record its model/config conditions. Missing
+runtime evidence stays unverified; do not replace it with a prompt-text assertion
+or a mock of a dispatcher that does not exist. An own-package path or dispatch
+defect still blocks acceptance of that adapter.
+
+Report management checks, native integration, wrapper structure, manual dispatch
+and usage observations separately. Upstream-call timeouts and pre-existing model
+availability errors stay visible as observations; they are not automatically
+framework failures. Candidate quality remains not-evaluated until a separate
+evaluation or actual usage supports promotion. Matt's original setup helper is
+installed as a dependency; run it explicitly inside a chosen project when needed.

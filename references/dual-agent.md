@@ -20,6 +20,10 @@ profiles. Legacy Git synchronization and external-tool setup remain separate
 workflows in legacy-claude.md. An explicit --agent wins; the bootstrap entry binds
 the default host; a standalone helper invocation defaults to Claude.
 
+The current data repository uses agents.yaml as its only active plugin declaration.
+Legacy plugin lists under docs/archive are provenance records, not install inputs.
+Do not recreate plugins.yaml through legacy export/init when agents.yaml exists.
+
 ## Prepare and bootstrap
 
 Use Python 3.10+ with requirements.txt installed. Prepare a durable catalog clone
@@ -95,6 +99,21 @@ replace explicitly supplied keys, except Claude permissions allow/ask/deny and
 both hosts' hook-event arrays merge uniquely; Codex skills.config merges by path.
 Plugin/marketplace state uses native selection commands, not raw overlays. MCP
 registration uses mcp_servers declarations, not raw native config overlays.
+
+### Existing installed snapshots
+
+claudespace may preserve an existing installed package in a catalog.json entry
+with packaging: installed-snapshot and snapshot.version/snapshot.sha256. The
+SHA256 uses the framework package fingerprint; native .in_use process leases,
+.git, __pycache__ and .DS_Store are excluded. It pins installed content rather
+than asserting that an upstream commit reproduces it.
+
+For that catalog only, registration_policy: preserve-matching-installed may keep
+an existing registration at another path. Preflight still requires exact installed
+version and content for every selected plugin affected by that differing path.
+A missing plugin, changed source, version or cache blocks all writes. Fresh hosts
+register the prepared snapshot catalog normally. Existing registrations are never
+changed by this policy. No installation means no install lifecycle hooks are run.
 
 Optional instructions own one claude-config:begin/end block, preserving surrounding
 text. Explicit files may target agents/, rules/, hooks/ and Codex hooks.json only.

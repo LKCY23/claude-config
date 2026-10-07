@@ -16,6 +16,7 @@ Python 3.10+ 需要 requirements.txt 的依赖。随后在对应宿主调用 `/c
 默认测试验证配置管理、包装和原生接入，不调用模型或逐个评测上游 skill。运行 `python -m unittest discover -s tests -v`；已有安装用 helper 的 `validate/status` 核对，隔离原生安装及恢复按需显式执行。新增 Codex Simplifier 包装的人工派发检查单独记录条件与结果；候选质量仍是未评估。测试边界见 [Test scope and acceptance](references/dual-agent.md#test-scope-and-acceptance)。
 
 下面保留原有 Claude 工作流说明；有 agents.yaml 时，插件/静态配置部署以新 profiles 为准，不合并 legacy 清单。
+当前 data 仓库只使用 agents.yaml 选择插件，旧 plugins.yaml 已归档。下文关于 plugins.yaml 的结构和命令仅适用于没有 agents.yaml 的历史项目，不能用于重新生成当前清单。HUD 的固定安装快照及保留现有注册策略见 dual-agent.md。
 Claude Code 配置管理工具 - 跨机器配置同步解决方案。
 
 ## 功能

@@ -31,6 +31,17 @@ is a preflight conflict: preserve the installed version until the user requests
 an explicit native source update. A failed run reports its journal id; status
 and retry handle remaining work, and rollback --run-id restores its owned changes.
 
+With agents.yaml, plugin selections, plugin diff/status/export and catalog
+registration use that declaration only. Legacy workflows must not recreate a
+root plugins.yaml or import an archived plugin selection list. manifest.yaml
+continues to own separate external-tool and Desktop archive pointers.
+
+An explicitly selected installed-snapshot catalog may use
+registration_policy: preserve-matching-installed. This preserves an existing
+native registration only if every affected selected plugin is already installed
+at the snapshot's exact version and content hash. It never moves the registration
+or installs a missing plugin from that unrelated path. The default remains strict.
+
 Export only selected configuration keys. Permission lists use native merge
 semantics; unmanaged fields are preserved. Optional files deploy only explicitly
 named role, rule and hook files, not runtime folders or authentication files.

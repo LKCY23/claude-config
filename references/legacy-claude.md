@@ -7,6 +7,16 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 
 # claude-config
 
+## Routing when agents.yaml exists
+
+The sections below preserve historical workflows. In a data repository with
+agents.yaml, use scripts/agent_config.py with an explicit --agent for plugin
+selection, plan, validate, apply, status, diff and scoped export. Do not run the
+legacy plugins.yaml install phases, recreate plugins.yaml during init/export,
+or merge archived plugin choices. manifest external-tool setup, Git data sync
+and Desktop archive consumers remain separate. This guard takes precedence
+over historical plugin examples below.
+
 跨机器管理 Claude Code 配置的 skill。支持双向流转（Mac ↔ Windows ↔ Linux）。
 
 ## 全局参数

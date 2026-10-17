@@ -62,7 +62,8 @@ OWNER_LABELS = {'framework-install': '框架文件', 'resource-baseline': '资�
                 'managed-baseline': 'Agent 同步记录', 'app-managed-baseline': 'App 同步记录',
                 'profile-data-install': 'Profile 与来源目录', 'retire-legacy-declaration': '旧配置声明',
                 'native-plugin-source': '插件来源清单', 'agent-settings': 'Agent 配置',
-                'app-preferences': 'App 偏好', 'native-plugins': '原生插件操作'}
+                'app-preferences': 'App 偏好', 'native-plugins': '原生插件操作',
+                'prepared-source': '固定来源目录', 'release-record': '基线发布记录'}
 STATUS_LABELS = {'passed': '通过', 'blocked': '不通过', 'failed': '失败',
                  'not_verified': '未验证', 'skipped': '未检查', 'warning': '警告',
                  'applied': '已修改', 'unchanged': '无变化', 'planned': '待执行',

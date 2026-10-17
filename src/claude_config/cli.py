@@ -11,6 +11,7 @@ HELP = """usage: claude-config COMMAND [OPTIONS]
   init       初始化/迁移 Machine 和明确指定的 Skill 入口，默认预览
   doctor     检查安装、本机绑定及本地依赖，不运行资源业务
 专项操作：
+  fetch-baseline  获取明确发布的固定来源，不采用或部署配置
   cutover    多客户端配置统一切换与恢复（不安装工具代码）
   migration  旧配置盘点与转换候选
 
@@ -38,6 +39,9 @@ def main(argv=None):
         return run(argv[1:])
     if command == 'migration':
         from .migration import main as run
+        return run(argv[1:])
+    if command == 'fetch-baseline':
+        from .fetch_baseline import main as run
         return run(argv[1:])
     from .profile import main as run
     return run(argv)

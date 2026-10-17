@@ -1,6 +1,6 @@
 # CLI 打包、安装与迁移规范
 
-适用版本：0.1.5。源码提交、CI 构建、Release 附件和本机安装分别记录，不将其中一步当作其他步骤已完成。安装按下列明确版本的 wheel 流程进行。
+适用版本：0.2.0。源码提交、CI 构建、Release 附件和本机安装分别记录，不将其中一步当作其他步骤已完成。安装按下列明确版本的 wheel 流程进行。
 
 ## 包与命令
 
@@ -51,6 +51,7 @@ init 管 Skill 命令入口。旧脚本拷贝安装器从运行包移除。
 ## 发布与验证
 
 本地 uv build 或标准 Python 构建产出 wheel。CI 在 macOS/Linux、Python 3.11/3.12 测试包与模块并保存附件；CI 文件提交后才会执行，不能据此宣称远端测试已通过。
-发行渠道为明确版本的 GitHub Release wheel+constraints.txt+install.sh；发布必须显式进行，不自动 push 或上传个人配置。
+发行渠道为明确版本的 GitHub Release wheel+constraints.txt+install.sh；维护者显式推送与包版本一致的 `vVERSION` tag 后触发。四组测试全部通过后，独立写权限作业发布 Linux/Python 3.11 构建的通用 wheel；其他构建作为 CI 证据保留。构建后端固定版本，时间戳使用 Git 提交时间，允许同一提交重新构建后恢复未完成的发布。
+发布器先创建草稿、上传并核对全部附件，再公开 Release；重跑复用相同内容，遇到不同附件、额外附件或已发布缺件会失败，不覆盖已发布版本。资源基线使用同一发布协议，见[基线分发](baseline-distribution.md)。
 每个版本验证：任意 cwd/中文路径、退出 Conda、源目录无关、默认/显式 Machine、tmux/静态/JSON、安装重装卸载、init 预览执行恢复、旧清单篡改与文件保留、原生配置不变，以及实际 plan 耗时。
 不宣称原生 Windows 支持；Linux 不自动支持 macOS App 适配。实际尚未运行的平台列为未验证。

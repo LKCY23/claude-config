@@ -148,7 +148,7 @@ class CatalogResolver:
         manifest = {name: {'sha256': hashlib.sha256(data).hexdigest(), 'executable': bool(modes[name] & 0o111)} for name, data in files.items()}
         return selected, files, modes, fingerprint(manifest)
 
-    def resolve(self, profile, selected=None):
+    def resolve(self, profile, selected=None, *, source_only=False):
         packages = {}
         available = {ref: (group, selection) for group, entries in profile.get('resources', {}).items() for ref, selection in entries.items()}
         needed = set(available) if selected is None else set(selected)
@@ -235,9 +235,9 @@ class CatalogResolver:
             if self.manager.agent == 'codex':
                 binding = package.selection.get('bindings', {}).get('install_root')
                 require(binding is not None, 'Codex skill requires an install_root binding')
-                parent = Bindings(self.manager).resolve(binding, 'path', allow_missing=True)
+                parent = binding if source_only else Bindings(self.manager).resolve(binding, 'path', allow_missing=True)
             else:
-                parent = str(self.manager.native_path.parent / 'skills')
+                parent = 'claude-user-skills' if source_only else str(self.manager.native_path.parent / 'skills')
             identity = frontmatter(package.files[package.entry])[0].get('name')
             require(isinstance(identity, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', identity), 'Unsafe skill identity')
             group = skill_groups.setdefault(parent, {})

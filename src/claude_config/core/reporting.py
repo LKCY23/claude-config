@@ -50,6 +50,9 @@ ORIGIN_LABELS['migration_converter'] = '旧数据转换器'
 LABELS.update(profiles='Profile', exclusions='排除项', attribution='Git 署名')
 LABELS.update(clients='客户端', framework='框架文件', shared_files='共享恢复副本', data='配置数据',
               app_preference_interface='应用配置接口', native_installation='插件安装', options='运行选项', enabled='启用状态')
+LABELS.update(catalogs='资源目录', catalog_roots='本机来源目录', repo='来源仓库', commit='固定提交',
+              path='仓库内路径', release_record='发布记录', released_baseline='发布基线检查',
+              catalog_source_map='来源迁移映射', affected_sources='受影响资源来源')
 POLICY_LABELS.update({'exact-framework-release': '按已核对的框架版本更新',
                       'identical-immutable-snapshot': '合并相同的恢复副本', 'exact-profile-data': '使用已校验的 Profile',
                       'one-time-format-migration': '迁移到新版格式'})
@@ -59,7 +62,8 @@ OWNER_LABELS = {'framework-install': '框架文件', 'resource-baseline': '资�
                 'managed-baseline': 'Agent 同步记录', 'app-managed-baseline': 'App 同步记录',
                 'profile-data-install': 'Profile 与来源目录', 'retire-legacy-declaration': '旧配置声明',
                 'native-plugin-source': '插件来源清单', 'agent-settings': 'Agent 配置',
-                'app-preferences': 'App 偏好', 'native-plugins': '原生插件操作'}
+                'app-preferences': 'App 偏好', 'native-plugins': '原生插件操作',
+                'prepared-source': '固定来源目录', 'release-record': '基线发布记录'}
 STATUS_LABELS = {'passed': '通过', 'blocked': '不通过', 'failed': '失败',
                  'not_verified': '未验证', 'skipped': '未检查', 'warning': '警告',
                  'applied': '已修改', 'unchanged': '无变化', 'planned': '待执行',
@@ -241,7 +245,7 @@ def build_report(raw, *, operation, preview_only=True, manager=None, context=Non
     paths = report.get('scope')
     if paths is None:
         paths = [row.get('path', []) for row in decisions if row.get('incoming_exists', 'incoming' in row)]
-    scope = {'selected': list(dict.fromkeys('/' + '/'.join(path) for path in paths)),
+    scope = {'selected': list(dict.fromkeys(path if isinstance(path, str) else '/' + '/'.join(path) for path in paths)),
              'checked': [row['id'] for row in checks],
              'unverified': [row for row in checks if row['status'] in ('not_verified', 'skipped')],
              'note': '只检查本次选定配置与资源；未验证会话、账号或资源业务效果。'}
@@ -400,7 +404,16 @@ def conflict_lines(row, report):
 
 def outcome_lines(report):
     execution = report['execution']
-    if execution['started'] and report['errors'] and any(row.get('phase') != 'report' for row in report['errors']):
+    if report['operation'] == 'fetch-baseline':
+        if report['errors']:
+            lines = ['基线获取未完成；未修改 Profile、Machine 或原生配置。已准备的固定来源保留。']
+        else:
+            prepared = report['prepared']
+            lines = ['固定基线已获取并校验；尚未采用或部署。',
+                     '来源：' + prepared['source']['repo'] + '@' + prepared['source']['commit'],
+                     '准备目录：' + prepared['checkout'], '发布记录：' + prepared['release_record'],
+                     '下一步预览采用：' + prepared['adopt_command']]
+    elif execution['started'] and report['errors'] and any(row.get('phase') != 'report' for row in report['errors']):
         recovery = report['recovery']
         text = '执行失败'
         if recovery['status'] == 'completed':

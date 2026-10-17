@@ -20,6 +20,12 @@ STARTUP_KEYS = ('firstStartTime', 'firstStartVersion', 'machineID', 'opusProMigr
                 'seenNotifications', 'hasResetAutoModeOptInForDefaultOffer', 'migrationVersion', 'userID')
 
 
+def image_in_use(root):
+    # Claude leaves the marker directory after removing the final session lease.
+    return any(marker.is_symlink() or not marker.is_dir() or any(marker.iterdir())
+               for marker in Path(root).rglob('.in_use'))
+
+
 def image_fingerprint(path):
     value = directory_fingerprint(path)
     require(value['exists'] and bool(value['entries']), 'Native plugin image is missing')
@@ -196,7 +202,7 @@ class PluginOperation:
             old = item['previous'] or item.get('replacement')
             if old and old['version'] != item['desired']['version']:
                 root = self.cache_parent(item['desired']) / cache_version(self.agent, old['version'])
-                require(not any(path.name == '.in_use' for path in root.rglob('*')), 'Existing plugin image is in use; stop the session before upgrading')
+                require(not image_in_use(root), 'Existing plugin image is in use; stop the session before upgrading')
 
     def _json(self, path, documents=None):
         if documents is not None:
@@ -421,7 +427,7 @@ class PluginOperation:
                 if parent.exists():
                     for version_root in parent.iterdir():
                         if version_root.is_dir() and version_root.name not in before_versions:
-                            require(not any(path.name == '.in_use' for path in version_root.rglob('*')), 'Run-created image is still in use; native restoration is blocked')
+                            require(not image_in_use(version_root), 'Run-created image is still in use; native restoration is blocked')
             for path, backup in row['backups'].items():
                 require(file_fingerprint(backup)['sha256'] == backup_snapshot(row, path)['sha256'], 'Native recovery backup changed')
             work = Path(next(iter(row['backups'].values()))).parent if row['backups'] else self._restore_work
@@ -473,7 +479,7 @@ class PluginOperation:
                         if version not in versions_before:
                             matching = [pin for pin in receipt['history'] if cache_version(self.agent, pin) == version]
                             require(len(matching) == 1 and image_fingerprint(version_root) == receipt['history'][matching[0]]['image'], 'Run-created retired image changed')
-                            require(not any(path.name == '.in_use' for path in version_root.rglob('*')), 'Retired native image is still in use')
+                            require(not image_in_use(version_root), 'Retired native image is still in use')
                             # Uninstall first; then remove only the unchanged,
                             # unused image this run created and native GC retained.
                             shutil.rmtree(version_root)

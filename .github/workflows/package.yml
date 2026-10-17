@@ -18,7 +18,8 @@ jobs:
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
       - run: uv venv --python '${{ matrix.python }}'
       - run: uv pip install -e . -c constraints.txt
-      - run: uv build
+      - name: Build reproducible wheel
+        run: SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$GITHUB_SHA")" uv build
       - run: uv tool install --managed-python --python '${{ matrix.python }}' -c constraints.txt dist/*.whl
       - name: Test modules and installed command
         run: |
@@ -31,3 +32,34 @@ jobs:
             dist/*
             constraints.txt
             install.sh
+  release:
+    needs: test
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cli-ubuntu-latest-3.11
+          path: ${{ runner.temp }}/cli-release
+      - name: Verify version tag and publish installation files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYCODE'
+          import os, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          if os.environ['GITHUB_REF_NAME'] != 'v' + version:
+              raise SystemExit('Version tag must match the package version')
+          PYCODE
+          python3 scripts/release_assets.py --repo "$GITHUB_REPOSITORY" \
+            --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" --latest \
+            --title "claude-config $GITHUB_REF_NAME" \
+            --notes "Install the wheel with the accompanying install.sh and constraints.txt. Software installation does not apply Profiles or change native configuration." \
+            "$RUNNER_TEMP"/cli-release/dist/*.whl \
+            "$RUNNER_TEMP/cli-release/constraints.txt" "$RUNNER_TEMP/cli-release/install.sh"

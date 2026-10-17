@@ -12,7 +12,7 @@
 
 ## 1 适用操作与基本要求
 
-覆盖 plan、validate、apply、export、switch、rollback、adopt-baseline 和 review-conflicts。将来增加操作时沿用报告结构，补充操作专属内容。
+覆盖 plan、validate、apply、export、switch、rollback、fetch-baseline、adopt-baseline 和 review-conflicts。将来增加操作时沿用报告结构，补充操作专属内容。
 
 - 检查通过、发现差异、存在冲突和执行失败均形成完整报告。
 - 预览与执行明确区分；保存报告属于报告输出，不算部署配置。
@@ -70,6 +70,8 @@
 | 运行错误 | 命令、读取、环境、写入或原生操作未正常完成 |
 
 报告必须分别说明本次操作是否可完成、部署是否可进行。review-conflicts 能生成评审资料，不代表部署冲突已解决；export、adopt-baseline 的成功也不代表原生配置已部署。
+
+fetch-baseline 的结果说明准备好的来源目录、发布记录和下一步采用命令；它不改变配置选择。失败时保留并报告此前已准备的目录，不能把部分获取描述成已全部就绪。来源迁移的采用报告按仓库、路径、提交和 Machine 目录逐项说明变化。
 
 执行状态区分 preview、unchanged、completed、partial、failed；恢复状态另行记录。失败后恢复完成仍是本次执行失败，不能写成部署成功。用户主动选择本次保留时明确列出跳过项和仍存在的偏离，不能报告“全部已同步”。
 

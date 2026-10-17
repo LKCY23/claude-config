@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-config"
+version = "0.1.4"
+description = "Explicit Agent and App Profiles with checked configuration deployment"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6.0,<7", "tomlkit>=0.11,<1"]
+
+[project.scripts]
+claude-config = "claude_config.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+claude_config = ["resources/*.md"]

@@ -1,0 +1,3 @@
+# Versions verified by the release test suite. Used by install.sh / uv tool install -c.
+PyYAML==6.0.1
+tomlkit==0.11.1

@@ -284,6 +284,78 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'version drift'):self.manager('codex').apply()
         self.assertEqual(target.read_text(),'model="old"\n')
 
+    def snapshot_catalog(self):
+        package = self.catalog / 'packages/picked'
+        from deployment import fingerprint
+        (self.catalog / 'catalog.json').write_text(json.dumps({'plugins': [{
+            'name': 'picked', 'source': './packages/picked',
+            'packaging': 'installed-snapshot',
+            'snapshot': {'version': '1.0.0', 'sha256': fingerprint(package)}}]}))
+
+    def test_matching_snapshot_preserves_existing_registration_without_mutations(self):
+        self.manager('claude').apply()
+        self.snapshot_catalog()
+        self.host.catalogs['claude']['candidates'] = str(self.root / 'existing-registration')
+        self.declaration['catalogs']['candidates']['registration_policy'] = 'preserve-matching-installed'
+        self.save(); self.host.commands.clear()
+        result = self.manager('claude').apply()
+        self.assertIsNone(result['run_id'])
+        self.assertFalse(any(c[1:3] in (['plugin', 'install'], ['plugin', 'uninstall']) or
+                             c[1:4] == ['plugin', 'marketplace', 'add'] for c in self.host.commands))
+
+    def test_registration_mismatch_is_strict_without_explicit_snapshot_policy(self):
+        self.manager('claude').apply(); self.snapshot_catalog()
+        self.host.catalogs['claude']['candidates'] = str(self.root / 'elsewhere')
+        with self.assertRaisesRegex(ValueError, 'points elsewhere'):
+            self.manager('claude').preflight()
+
+    def test_preserved_registration_cannot_install_a_missing_snapshot_plugin(self):
+        self.snapshot_catalog()
+        self.host.catalogs['claude']['candidates'] = str(self.root / 'elsewhere')
+        self.declaration['catalogs']['candidates']['registration_policy'] = 'preserve-matching-installed'
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'points elsewhere'):
+            self.manager('claude').apply()
+        self.assertFalse(self.host.plugins['claude'])
+
+    def test_snapshot_source_and_installed_drift_are_both_rejected(self):
+        self.manager('claude').apply(); self.snapshot_catalog()
+        self.declaration['catalogs']['candidates']['registration_policy'] = 'preserve-matching-installed'
+        self.save()
+        (self.catalog / 'packages/picked/changed.txt').write_text('changed')
+        with self.assertRaisesRegex(ValueError, 'snapshot content changed'):
+            self.manager('claude').plan()
+
+    def test_fresh_host_installs_selected_snapshot_from_prepared_source(self):
+        self.snapshot_catalog()
+        self.declaration['catalogs']['candidates']['registration_policy'] = 'preserve-matching-installed'
+        self.save(); self.manager('claude').apply()
+        self.assertEqual(set(self.host.plugins['claude']), {'picked@candidates'})
+
+    def test_snapshot_ignores_native_runtime_leases(self):
+        self.snapshot_catalog()
+        lease = self.catalog / 'packages/picked/.in_use/123'
+        lease.parent.mkdir(); lease.write_text('runtime process lease')
+        self.manager('claude').plan()
+
+    def test_preserved_registration_rejects_installed_content_drift(self):
+        import shutil
+        self.manager('claude').apply(); self.snapshot_catalog()
+        cache = self.root / 'native-cache'
+        shutil.copytree(self.catalog / 'packages/picked', cache)
+        (cache / 'unexpected.txt').write_text('native cache changed')
+        self.host.plugins['claude']['picked@candidates']['installPath'] = str(cache)
+        self.host.catalogs['claude']['candidates'] = str(self.root / 'elsewhere')
+        self.declaration['catalogs']['candidates']['registration_policy'] = 'preserve-matching-installed'
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'Installed content drift'):
+            self.manager('claude').apply()
+
+    def test_legacy_plugins_file_does_not_select_extra_plugins(self):
+        (self.data / 'plugins.yaml').write_text('plugins:\n  unselected:\n    enabled: true\n')
+        self.manager('claude').apply()
+        self.assertEqual(set(self.host.plugins['claude']), {'picked@candidates'})
+
     def test_mcp_registration_retry_and_scoped_rollback(self):
         self.declaration['agents']['codex']['mcp_servers']={'fixture':{'command':'fixture-command','args':['serve']}}
         self.save(); real=self.host.run; servers={};calls=[]

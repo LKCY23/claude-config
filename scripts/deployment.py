@@ -10,7 +10,7 @@ import tomlkit
 from native_mcp import MCPMixin
 
 ABSENT = {'__claude_config_absent__': True}
-EXCLUDED = {'.git', '__pycache__', '.DS_Store'}
+EXCLUDED = {'.git', '__pycache__', '.DS_Store', '.in_use'}
 
 
 def fingerprint(root):
@@ -97,13 +97,23 @@ class DeploymentMixin(MCPMixin):
             candidate = next((p for p in json.loads(index.read_text())['plugins'] if p['name'] == entry['name']), None)
             if not candidate or candidate['source'] != entry['source']:
                 raise ValueError('Generated catalog differs from its canonical source')
-            pin = candidate['upstream']['sha']
-            if candidate.get('packaging') == 'upstream-submodule':
+            if candidate.get('packaging') == 'installed-snapshot':
+                digest = candidate.get('snapshot', {}).get('sha256', '')
+                if candidate.get('snapshot', {}).get('version') != manifest['version']:
+                    raise ValueError('Installed snapshot version differs from manifest')
+                if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+                    raise ValueError('Installed snapshot requires a SHA256 content pin')
+                if fingerprint(root) != digest:
+                    raise ValueError('Installed snapshot content changed: ' + entry['name'])
+                pin = 'sha256:' + digest
+            elif candidate.get('packaging') == 'upstream-submodule':
+                pin = candidate['upstream']['sha']
                 actual = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
                 dirty = subprocess.check_output(['git', '-C', str(root), 'status', '--porcelain', '--untracked-files=no'], text=True).strip()
                 if actual != pin or dirty:
                     raise ValueError('Original submodule pin/content changed: ' + entry['name'])
             else:
+                pin = candidate['upstream']['sha']
                 record = json.loads((root / 'UPSTREAM.json').read_text())
                 if record['sha'] != pin:
                     raise ValueError('Imported source pin differs from catalog')
@@ -135,9 +145,13 @@ class DeploymentMixin(MCPMixin):
                 expected = self.expected(host, catalog, entry)
                 old = marketplaces.get(catalog)
                 old_root = old.get('installLocation') if host == 'claude' and old else old.get('root') if old else None
-                if old_root and Path(old_root).resolve() != self.catalog_root(catalog).resolve():
-                    raise ValueError(f'{host} marketplace {catalog} points elsewhere; reconcile before apply')
                 item = installed.get(selector)
+                if old_root and Path(old_root).resolve() != self.catalog_root(catalog).resolve():
+                    policy = self.declaration['catalogs'][catalog].get('registration_policy')
+                    preserve = (policy == 'preserve-matching-installed' and item
+                                and (expected['pin'] or '').startswith('sha256:'))
+                    if not preserve:
+                        raise ValueError(f'{host} marketplace {catalog} points elsewhere; reconcile before apply')
                 if item and item.get('version') != expected['version']:
                     raise ValueError(f'Installed version drift: {selector}. Review the source update and use the native updater before applying this new pin.')
                 if item and fingerprint(self.installed_path(host, selector, item)) != expected['digest']:

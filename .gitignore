@@ -29,3 +29,8 @@ assets/skills/*/
 assets/memory/*.md
 assets/settings/*.json
 assets/hooks/*/statusline.*
+
+# Python distribution outputs
+build/
+dist/
+*.egg-info/

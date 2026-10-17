@@ -140,6 +140,9 @@ class Manager(DeploymentMixin):
         for name, profile in self.declaration.get('agents', {}).items():
             if name not in HOSTS or not isinstance(profile, dict):
                 raise ValueError('Profiles must name a supported native host')
+        for entry in self.declaration.get('catalogs', {}).values():
+            if not isinstance(entry, dict) or entry.get('registration_policy', 'strict') not in ('strict', 'preserve-matching-installed'):
+                raise ValueError('Invalid catalog registration policy')
         self.hosts = HOSTS if host == 'both' else (host,)
         self.runner = runner
         self.home = Path(home or Path.home())

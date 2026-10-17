@@ -1,5 +1,7 @@
 # App Profile 原生偏好实现
 
+2026-10-17 Claude Desktop 复验（框架 0.1.5）：已核验 `2.42304.0` 的 `.vite/build/index.chunk-muI2IV6k.js`。主题仍从用户数据目录 `config.json` 的 `userThemeMode` 读写，支持 system / light / dark；语言仍读写 `locale`，要求安装包中存在相应语言文件。主题 setter、启动读取、语言 setter、无效语言拒绝与缺失语言回退已用提取的原生函数在内存环境验证。三个第三方开关仍为布尔值、限现有第三方部署，来自 `configLibrary/_meta.json.appliedId` 选中的配置文件。只登记新接口签名，保留先前已核验的 2.26454.2；不增加同步字段、校验步骤或本机写入。审查记录（本机）：`deployment/model-and-claude-interface-20261017/`。
+
 2026-10-17 复验：Codex App 已更新到 `26.1013.31256`，相关打包脚本名称及签名变化。逐项核对后，41 个已登记偏好定义、29 个内置代码主题及其适用模式与此前一致；完整 settings-store 除压缩变量名外一致，仍读取 `config.toml` 的 `[desktop]` 并逐字段写入 `desktop.<key>`。只更新已审查接口签名，保留两个先前审查基线，不增加同步字段或校验步骤。5 项兼容性、32 项 App 配置／恢复及 3 项已安装源码／临时原生文件测试通过，包含新版后端回读、导出和恢复；未修改本机原生配置，未验证 GUI 实际效果。审查记录（本机历史记录：`deployment/codex-app-interface-audit-20261017/audit.json`）
 
 历史复验（2026-10-10）：Codex App 26.1007.21159 已完成安装源码审查；41 个偏好键、已选类型／值域、29 个代码主题及 desktop.<key> 读写接口与既有白名单一致。已登记新版本及源码 SHA256，保留 26.1002.52244 的已审查记录；未知版本／源码仍阻断。三项 App 原生读取、导出与恢复通过，GUI 实际显示和账号／组织覆盖仍未验证。新审查记录（本机历史记录：`deployment/codex-app-interface-audit-20261010/audit.json`）
@@ -38,12 +40,12 @@ claude-config switch --dry-run --machine /absolute/path/to/machine.yaml --app cl
 | App | 本批审查版本 | 原生接口 | 核实范围 |
 | --- | --- | --- | --- |
 | Codex App | 26.1013.31256；保留已审查 26.1007.21159、26.1002.52244 | 共享 `config.toml` 的 `[desktop]`，按叶字段更新 | 设置 schema、读取、原生持久化代码；真实后端隔离 config/read 回读 |
-| Claude Desktop | 2.26454.2 | `data_root/config.json` 的 `userThemeMode`、`locale` | 本地主题／界面语言 setter 与启动读取；语言要求有已安装 catalog |
+| Claude Desktop | 2.42304.0（保留已核验的 2.26454.2） | `data_root/config.json` 的 `userThemeMode`、`locale` | 本地主题／界面语言 setter 与启动读取；语言要求有已安装 catalog |
 | Claude Desktop 第三方功能 | 同上 | 现有 `configLibrary/_meta.json.appliedId` 指向的 UUID JSON | chatTabEnabled、autoModeEnabled、builtinBrowserEnabled 的类型、第三方作用域和读取来源 |
 
 Codex 当前代码的 `hostStorage` 三分类用于旧资料迁移来源；本批审查的 `settings-store` 对注册偏好的持久化已统一写 `desktop.<key>`。本实现只用已核实的新接口，不读取或修改旧 global-state 偏好来模拟兼容。此前导出和观察文件保留其历史版本含义。
 
-Claude 功能开关要求已有第三方部署且 appliedId／文件有效。2026-10-17 的 Bootstrap 候选审查确认：已检查 Desktop 构建从 `claude_desktop_config.json` 读取 `deploymentMode`；旧 0.1.3 读取 `config.json` 的问题已在本版 0.1.4 源码修正。推送源码不会替换已安装版本，使用第三方开关前须确认实际运行的是修正后的 CLI，不能通过伪造另一份模式字段绕过检查。官方本机继续使用主题／语言 Profile；三个第三方开关在实际目标端需使用已核对修正的版本再验收。工具不选择模式、不创建供应商资料、不修改 appliedId 或认证。语言指本地界面偏好，不代表账号侧网页语言。
+Claude 功能开关要求已有第三方部署且 appliedId／文件有效。2026-10-17 的 Bootstrap 候选审查确认：已检查 Desktop 构建从 `claude_desktop_config.json` 读取 `deploymentMode`；旧 0.1.3 读取 `config.json` 的问题已在 0.1.4 修正，0.1.5 延续该修正。推送源码不会替换已安装版本，使用第三方开关前须确认实际运行的是修正后的 CLI，不能通过伪造另一份模式字段绕过检查。官方本机继续使用主题／语言 Profile；三个第三方开关在实际目标端需使用已核对修正的版本再验收。工具不选择模式、不创建供应商资料、不修改 appliedId 或认证。语言指本地界面偏好，不代表账号侧网页语言。
 
 2026-10-12 修正：默认能力检查要求 App bundle 身份及已审查配置接口源码一致，并捕获 Info.plist／app.asar／所选语言 catalog 的快照。构建版本号仅记录为证据；版本号改变但接口正文一致时允许继续，并报告实际版本和对应审查基线。应用身份、接口正文或语言包未知产生 `capability_unknown`。本机 26.1007.30912 的两份相关配置接口与 26.1007.21159 准确相同。源码审查与原生解析不等于 GUI 生效、账号能力或组织策略验证。
 

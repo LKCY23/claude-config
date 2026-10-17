@@ -14,7 +14,7 @@ claude-config --version
 ```
 
 安装器使用 uv 管理的 Python 3.11 和独立工具环境。命令目录未进入 PATH 时，运行 `uv tool update-shell`，然后在已有 tmux 窗格重新加载 shell。
-本文对应 0.1.4 源码。可从明确提交构建本地 wheel，或使用对应 CI／Release 的完整安装附件；源码推送和 CI 构建不等于已经发布 PyPI 或 GitHub Release。已安装版本以 `claude-config --version` 为准。
+本文对应 0.1.5 源码。0.1.5 纳入 Claude Desktop 2.42304.0 已核验的偏好接口；字段与写入规则不变。可从明确提交构建本地 wheel，或使用对应 CI／Release 的完整安装附件；源码推送和 CI 构建不等于已经发布 PyPI 或 GitHub Release。已安装版本以 `claude-config --version` 为准。
 
 ## 日常使用
 

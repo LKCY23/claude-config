@@ -17,13 +17,16 @@ AUDITS = {
         '.vite/build/src-Dtwb7yKT.js': 'a0e4b4b014f04a9391bcfa6a0d6f2b6703590daacf3591831a62fec809b2cb76',
         '.vite/build/startup-requirements-BlaoVssN.js': '8a38b0850e36b761e0d95e07e93600716db41cb88de98c8e18fb392be25a38e6',
     }),
-    'claude-desktop': ('2.26454.2', 'com.anthropic.claudefordesktop', {
-        '.vite/build/index.chunk-D86SM5R2.js': '6dc998c3796b86042889b5338b761f1b01f3254226f2f8f5d4b1faa69092c8f9',
+    'claude-desktop': ('2.42304.0', 'com.anthropic.claudefordesktop', {
+        '.vite/build/index.chunk-muI2IV6k.js': '4a8f1c07e69231e47127d3c55fcdda84eddb089ce06d347ad29591e25b6fb5f5',
     }),
 }
 
 # Keep earlier reviewed interface signatures too.
 PREVIOUS_AUDITS = {
+    'claude-desktop': (('2.26454.2', 'com.anthropic.claudefordesktop', {
+        '.vite/build/index.chunk-D86SM5R2.js': '6dc998c3796b86042889b5338b761f1b01f3254226f2f8f5d4b1faa69092c8f9',
+    }),),
     'codex-app': (('26.1007.21159', 'com.openai.codex', {
         '.vite/build/src-CP7XXlpZ.js': '79623d50989f9efbcb8e5752c56b3cc608a0f5993c05112e03e11b718ac7a586',
         '.vite/build/startup-requirements-C6B1x9gL.js': '73f93b81152bff48cd27bcebcf27c430fb763e5c7418c67824950f4092ba933d',

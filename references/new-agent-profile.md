@@ -92,7 +92,7 @@ claude-config adopt-baseline --machine /absolute/path/to/machine.yaml --agent co
 
 默认预览，--write 执行；可用 --expect-plan-id 绑定审阅的计划。准确 checkout 和发布记录必须先准备好，工具不拉取、移动旧仓库或跟随 latest。计划核对 repo／commit／catalog 路径及 registry 摘要，扫描所有 Agent Profile 的影响、依赖和兼容声明；所选正文及子模块／外部依赖经现有固定来源解析器验证。统一更新 catalogs.yaml 的 pin 和 Machine.catalog_roots 的目录指针，其他 Profile 的值与资源选择保留，不部署原生资源。之后另跑 plan／apply。
 
-本地发布记录由 claudespace/scripts/baseline_record.py 对准确提交生成；目前验证 registry 结构和提交内容对应关系，不能把这解释为远端发布授权／签名已核实，或资源业务运行已通过。Claudespace 的候选 PR 与结构基线发布已上线；本工具的远端附件获取和采用联调仍待接入。来源、记录、数据文件或 Profile 清单在预览后变化会使计划过期。采用失败与独立 rollback 都使用公共文件执行器，不回写远端历史。
+本地发布记录由 claudespace/scripts/baseline_record.py 对准确提交生成；记录表示 registry 结构和提交内容对应关系，不能把这解释为签名验证或资源业务运行已通过。0.2.0 提供 `fetch-baseline` 从正式 Release 获取记录及已选固定来源，返回采用命令；跨仓库／路径迁移须通过 `--source-map` 提交准确映射。完整流程见[基线获取、采用与恢复](baseline-distribution.md)。来源、记录、数据文件或 Profile 清单在预览后变化会使计划过期。采用失败与独立 rollback 都使用公共文件执行器，不回写远端历史。
 
 switch 正式执行时先更新选定设置和管理基线，再完成 Machine 引用；未声明的旧值保留并报告 residual。任一步失败恢复本次已写入的内容；检测到后续改动则保留改动并报告 recovery_conflict。
 

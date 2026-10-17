@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-config"
-version = "0.1.5"
+version = "0.2.0"
 description = "Explicit Agent and App Profiles with checked configuration deployment"
 readme = "README.md"
 requires-python = ">=3.11"

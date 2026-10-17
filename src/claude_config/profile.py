@@ -87,6 +87,7 @@ def _main(argv):
     parser.add_argument('--commit', help='Full released catalog commit')
     parser.add_argument('--checkout', type=Path, help='Already prepared exact catalog repository root')
     parser.add_argument('--release-record', type=Path, help='Prepared publisher baseline record')
+    parser.add_argument('--source-map', type=Path, help='Explicit exact old/new catalog repository, commit and path mapping')
     parser.add_argument('--policy', choices=('source_wins', 'keep_target', 'fail_if_different'))
     parser.add_argument('--field-policy', action='append', default=[], metavar='POINTER=POLICY')
     parser.add_argument('--resolutions', type=Path, help='Fingerprint-scoped drift resolutions JSON')
@@ -108,6 +109,8 @@ def _main(argv):
         parser.error('adopt-baseline requires --catalog, --commit, --checkout and --release-record')
     if args.operation != 'adopt-baseline' and any(baseline_args):
         parser.error('Baseline arguments are only for adopt-baseline')
+    if args.source_map and args.operation != 'adopt-baseline':
+        parser.error('--source-map is only for adopt-baseline')
     if args.operation == 'adopt-baseline' and (args.policy or args.field_policy or args.resolutions):
         parser.error('Baseline adoption selects an exact release, not a native usage merge policy')
     if (args.operation == 'rollback') != bool(args.run):
@@ -144,7 +147,7 @@ def _main(argv):
         if resolution_source:
             manager.sources[args.resolutions.absolute()] = resolution_source[1]
         if args.operation == 'adopt-baseline':
-            plan = adopt_baseline(manager, args.catalog, args.commit, args.checkout, args.release_record)
+            plan = adopt_baseline(manager, args.catalog, args.commit, args.checkout, args.release_record, args.source_map)
         elif args.operation == 'rollback':
             plan = rollback_plan(manager, args.run)
         elif args.operation == 'export':

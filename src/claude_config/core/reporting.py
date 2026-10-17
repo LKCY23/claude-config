@@ -405,13 +405,14 @@ def outcome_lines(report):
     execution = report['execution']
     if report['operation'] == 'fetch-baseline':
         if report['errors']:
-            return ['基线获取未完成；未修改 Profile、Machine 或原生配置。已准备的固定来源保留。']
-        prepared = report['prepared']
-        return ['固定基线已获取并校验；尚未采用或部署。',
-                '来源：' + prepared['source']['repo'] + '@' + prepared['source']['commit'],
-                '准备目录：' + prepared['checkout'], '发布记录：' + prepared['release_record'],
-                '下一步预览采用：' + prepared['adopt_command']]
-    if execution['started'] and report['errors'] and any(row.get('phase') != 'report' for row in report['errors']):
+            lines = ['基线获取未完成；未修改 Profile、Machine 或原生配置。已准备的固定来源保留。']
+        else:
+            prepared = report['prepared']
+            lines = ['固定基线已获取并校验；尚未采用或部署。',
+                     '来源：' + prepared['source']['repo'] + '@' + prepared['source']['commit'],
+                     '准备目录：' + prepared['checkout'], '发布记录：' + prepared['release_record'],
+                     '下一步预览采用：' + prepared['adopt_command']]
+    elif execution['started'] and report['errors'] and any(row.get('phase') != 'report' for row in report['errors']):
         recovery = report['recovery']
         text = '执行失败'
         if recovery['status'] == 'completed':

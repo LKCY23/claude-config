@@ -3,7 +3,6 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 from unittest.mock import patch
@@ -14,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from claude_config.fetch_baseline import command, fetch, prepare_git
 from claude_config.core.baseline import adopt_baseline
 from claude_config.core.recovery import rollback_plan
+from claude_config.core.reporting import build_report, render_text, save_report
 from test_profile_resources import ResourceFixture, run_git
 
 
@@ -71,6 +71,9 @@ class FetchTests(ResourceFixture):
         second = self.fetched()
         self.assertTrue(all(row['status'] == 'unchanged' for row in second['results']))
         self.assertEqual(first['prepared'], second['prepared'])
+        report = build_report(first, operation='fetch-baseline', preview_only=False, execution_started=True)
+        save_report(report, self.state)
+        self.assertIn('完整 JSON：' + report['artifacts']['json_path'], render_text(report))
 
     def test_unpublished_moved_tag_wrong_record_and_dirty_checkout_fail(self):
         self.prepare()
@@ -214,3 +217,8 @@ class FetchTests(ResourceFixture):
         self.assertEqual(progress['results'][0]['status'], 'applied')
         self.assertTrue(Path(progress['results'][0]['path']).is_dir())
         self.assertFalse(self.native.exists())
+        report = build_report(progress, operation='fetch-baseline', preview_only=False, execution_started=True,
+                              error={'code': 'fetch_failed', 'phase': 'retrieval', 'reason': 'dependency unavailable', 'exit_code': 2})
+        save_report(report, self.state)
+        self.assertEqual(report['execution']['status'], 'partial')
+        self.assertIn('完整 JSON：' + report['artifacts']['json_path'], render_text(report))

@@ -158,9 +158,18 @@ class PluginReplacementTests(ResourceFixture):
         _, _, _, spec, cache = self.setup_replacement()
         plan = self.manager().plan(replace_plugins={'tiny@test': str(spec)})
         (cache / '.in_use').mkdir()
+        (cache / '.in_use/123').touch()
         with self.assertRaises(ValueError):
             plan.apply(self.state)
         self.assertFalse(any(args[1] in ('install', 'update', 'add') for args in self.installer.calls))
+
+    def test_empty_session_lease_directory_does_not_block_upgrade(self):
+        _, _, _, spec, cache = self.setup_replacement()
+        (cache / '.in_use').mkdir()
+        plan = self.manager().plan(replace_plugins={'tiny@test': str(spec)})
+        self.assertTrue(plan.report['ready'], plan.report['blockers'])
+        plan.apply(self.state)
+        self.assertTrue(any(args[1] in ('install', 'update') for args in self.installer.calls))
 
 
 if __name__ == '__main__':

@@ -1,0 +1,33 @@
+name: Package and verify CLI
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - run: uv venv --python '${{ matrix.python }}'
+      - run: uv pip install -e . -c constraints.txt
+      - run: uv build
+      - run: uv tool install --managed-python --python '${{ matrix.python }}' -c constraints.txt dist/*.whl
+      - name: Test modules and installed command
+        run: |
+          export CLAUDE_CONFIG_TEST_COMMAND="$(uv tool dir --bin)/claude-config"
+          PYTHONPATH=src .venv/bin/python -m unittest discover -s tests
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-${{ matrix.os }}-${{ matrix.python }}
+          path: |
+            dist/*
+            constraints.txt
+            install.sh

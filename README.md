@@ -1,345 +1,72 @@
 # claude-config
 
-## Claude Code + Codex（本机 Mac）
-
-新的 agents.yaml 路径支持两端独立声明、原生插件安装、配置合并、只读预览、来源与缓存校验、部分失败记录及按 run-id 回滚。三个层次仍各自负责：claudespace 管来源，data 管选择，framework 管部署。OAuth 和连接由本机宿主管理。
-
-使用已提交的本地源安装框架：
-
-```sh
-bash install.sh --local-source ~/claude-config --config-dir ~/claude-config-data --catalog-root ~/claudespace --agent both --dry-run
-bash install.sh --local-source ~/claude-config --config-dir ~/claude-config-data --catalog-root ~/claudespace --agent both
-```
-
-Python 3.10+ 需要 requirements.txt 的依赖。随后在对应宿主调用 `/claude-config plan`、`apply` 或 `status`；入口绑定该宿主，跨两端显式指定 `--agent both`。框架详情、profile 优先级、有限 MCP/Hook 支持和恢复边界见 [dual-agent.md](references/dual-agent.md)。当前新增适配仅在本机 Mac 验证。
-
-默认测试验证配置管理、包装和原生接入，不调用模型或逐个评测上游 skill。运行 `python -m unittest discover -s tests -v`；已有安装用 helper 的 `validate/status` 核对，隔离原生安装及恢复按需显式执行。新增 Codex Simplifier 包装的人工派发检查单独记录条件与结果；候选质量仍是未评估。测试边界见 [Test scope and acceptance](references/dual-agent.md#test-scope-and-acceptance)。
-
-下面保留原有 Claude 工作流说明；有 agents.yaml 时，插件/静态配置部署以新 profiles 为准，不合并 legacy 清单。
-当前 data 仓库只使用 agents.yaml 选择插件，旧 plugins.yaml 已归档。下文关于 plugins.yaml 的结构和命令仅适用于没有 agents.yaml 的历史项目，不能用于重新生成当前清单。HUD 的固定安装快照及保留现有注册策略见 dual-agent.md。
-Claude Code 配置管理工具 - 跨机器配置同步解决方案。
-
-## 功能
-
-- **双向流转** - Mac ↔ Windows ↔ Linux 配置同步
-- **多设备协同** - sync 命令，分叉检测 + 交互合并，不怕多台机器各自演进
-- **状态驱动初始化** - 检测本地/远程状态，按实际情况引导，不做假设
-- **Marketplace 集成** - 通过自己的 marketplace 统一管理 skill，版本精确锁定（参考实现：[claudespace](https://github.com/LKCY23/claudespace)）
-- **四层架构** - Bootstrap / Framework / Data / Marketplace，框架和数据彻底解耦
-- **三层安装** - Plugin（marketplace）/ Static config（文件）/ External tools（分级安装）
-- **平台差异处理** - 自动处理平台特定配置
-- **交互式合并** - diff + merge 解决冲突
-- **敏感信息保护** - 不追踪 API keys、OAuth sessions
-
----
-
-## 架构
-
-```
-install.sh（装引擎，不造车）
-    │
-    ▼
-~/.claude-config-tool/    Layer 1: Framework（"怎么做"）
-    │  读取/写入
-    ▼
-~/claude-config-data/     Layer 2: Data（"装什么"）
-    │  引用
-    ▼
-marketplaces              Layer 3: Marketplace（"从哪拿"）
-```
-
-| 层 | 路径 | 职责 | 更新方式 |
-|---|------|------|---------|
-| Bootstrap | install.sh | 一次性：把框架装上 | 新机器执行一次 |
-| Framework | `~/.claude-config-tool/` | 定义所有命令 | `/claude-config update-self` |
-| Framework Config | `~/.claude-config-tool/config.yaml` | 机器特定设置（如配置目录路径） | install.sh 自动创建，不进 git |
-| Data | `~/claude-config-data/` | 用户的配置声明 | git（可选远程） |
-| Marketplace | 你的 marketplace + 三方 | 提供 plugin 源码 | marketplace catalog |
-
----
+管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。
+Claudespace 托管资源正文；Profile 选择配置和资源运行参数；Machine 提供本机绑定。
 
 ## 安装
 
-### macOS / Linux
+将下列 wheel 路径替换为实际构建版本，文件中的 VERSION 是占位符。支持 macOS 和 Linux；原生 Windows 执行器尚不支持。macOS App 适配不自动适用于 Linux。
+先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后从明确版本的发布附件或本地构建取得 wheel、`constraints.txt` 和 `install.sh`：
 
-```bash
-# 一键安装框架
-curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/master/install.sh | bash
+```sh
+bash install.sh "/absolute/path/to/claude_config-VERSION-py3-none-any.whl"
+claude-config --version
 ```
 
-### Windows
-
-**⚠ WSL 警告**：如果你的 Windows 安装了 WSL，在 cmd.exe 中运行 `curl | bash` 会触发 WSL 的 bash，安装到 WSL 路径。请选择以下方式之一：
-
-**方式一：PowerShell 一键安装（推荐）**
-
-```powershell
-iwr -useb https://raw.githubusercontent.com/LKCY23/claude-config/master/install.ps1 | iex
-```
-
-**方式二：Git Bash**
-
-打开 **Git Bash** 应用（不是 cmd.exe 或 WSL）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/LKCY23/claude-config/master/install.sh | bash
-```
-
-**方式三：手动安装**
-
-```powershell
-# 1. 克隆框架
-git clone https://github.com/LKCY23/claude-config.git "$env:USERPROFILE\.claude-config-tool"
-
-# 2. 安装 bootstrap skill
-New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.claude\skills\claude-config"
-Copy-Item "$env:USERPROFILE\.claude-config-tool\SKILL.md" "$env:USERPROFILE\.claude\skills\claude-config\"
-```
-
----
-
-## 安装后 — 两条路径
-
-安装完框架后，根据你有没有配置仓库，走不同的路：
-
-### 路径 A：从零开始
-
-在 Claude Code 中：
-
-```
-/claude-config init
-```
-
-按提示选择纯本地或 git 模式，框架会创建模板、引导你关联 GitHub。
-
-### 路径 B：已有配置仓库
-
-```bash
-git clone https://github.com/<your-username>/my-claude-config.git ~/claude-config-data
-```
-
-然后在 Claude Code 中：
-
-```
-/claude-config sync --apply
-```
-
----
-
-## 自定义配置目录
-
-默认配置目录是 `~/claude-config-data`。要改为其他路径：
-
-**方式一：编辑 config.yaml（推荐）**
-
-```bash
-# 编辑 ~/.claude-config-tool/config.yaml
-config_dir: /your/custom/path
-```
-
-之后所有命令自动使用此路径。
-
-**方式二：命令行参数**
-
-```
-/claude-config apply --config-dir /your/custom/path
-```
-
-每次需要手动指定，适合临时使用。
-
-**优先级**：`--config-dir` 参数 > `config.yaml` > `~/claude-config-data`
-
----
+安装器使用 uv 管理的 Python 3.11 和独立工具环境。命令目录未进入 PATH 时，运行 `uv tool update-shell`，然后在已有 tmux 窗格重新加载 shell。
+本文对应 0.1.4 源码。可从明确提交构建本地 wheel，或使用对应 CI／Release 的完整安装附件；源码推送和 CI 构建不等于已经发布 PyPI 或 GitHub Release。已安装版本以 `claude-config --version` 为准。
 
 ## 日常使用
 
-### 最常用命令
-
-```
-/claude-config sync --apply
-```
-
-做了什么：检查远程是否有更新 → 有就拉下来 → 安装所有 plugin/settings/memory/hooks/external tools。覆盖 90% 的日常场景。
-
-### 离线修改
-
-```
-# 改了 manifest.yaml
-/claude-config apply       # 纯本地，不需要网络
-
-# 有网后
-/claude-config sync        # 检测到本地超前 → 提示 push
+```sh
+claude-config plan --agent codex
+claude-config validate --agent claude-code
+claude-config plan --app codex-app
+claude-config apply --agent codex --expect-plan-id "<reviewed-plan-id>"
+claude-config plan --agent codex --format text
+claude-config plan --agent codex --format json
 ```
 
-### 多设备协同
+默认读取 `~/.claude-config-tool/machine.yaml`；`--machine` 可以显式覆盖，不搜索当前工作目录。
+数据默认 `~/claude-config-data`，报告和私有恢复日志默认 `<config_dir>/.state/`。
+TTY/tmux 默认可展开；管道/重定向输出静态文字。所有配置操作保存完整 JSON。见 [返回协议](references/report-contract.md)。
 
-```
-桌面机:  改配置 → git commit → /claude-config sync（push）
-笔记本:  /claude-config sync --apply（pull + apply）
-```
+## 初始化与迁移
 
-如果两台机器各自改了配置导致分叉，sync 会检测到并引导你交互式合并。
-
----
-
-## 命令
-
-| 命令 | 功能 | 说明 |
-|------|------|------|
-| `init` | 初始化配置仓库 | **状态驱动**，检测本地/远程后引导 |
-| `apply` | 安装配置到当前机器 | **纯本地**，三阶段执行 |
-| `sync` | 同步配置仓库 | **新增**，多设备协同 |
-| `remote` | 管理远程关联 | **新增**，`add`/`remove`/`status` |
-| `update-self` | 更新框架自身 | **新增**，升级 claude-config 工具 |
-| `status` | 查看同步状态 | 含本地/远程同步状态 |
-| `diff` | 对比本地与配置差异 | |
-| `merge` | 交互式合并 | 逐项解决冲突 |
-| `track` | 发现未追踪配置 | |
-| `export` | 导出配置到清单 | |
-| `validate` | 验证配置完整性 | |
-| `add-skill` | 添加 skill | |
-| `check-updates` | 检查上游更新 | |
-| `update-skill` | 更新 skill | |
-| `push-skill` | 推送修改到远程 | |
-| `add-tool` | 添加第三方工具 | subtree 管理 |
-| `sync-upstream` | 同步上游更新 | |
-
----
-
-## 平台差异
-
-| 功能 | macOS | Windows | Linux |
-|------|-------|---------|-------|
-| 安装脚本 | ✓ curl \| bash | ✓ PowerShell 一键 / Git Bash | ✓ curl \| bash |
-| Hooks | bash 脚本 | PowerShell 或 Git Bash | bash 脚本 |
-| Statusline | statusline.sh | statusline.ps1 或 Git Bash | statusline.sh |
-| 路径格式 | `~/` | `$env:USERPROFILE\` 或 `~` (Git Bash) | `~/` |
-
----
-
-## 目录结构
-
-```
-~/.claude-config-tool/       # 框架（公开仓库）
-├── SKILL.md
-├── DESIGN.md
-├── README.md
-├── config.yaml              # 机器特定配置（install.sh 创建，不进 git）
-├── install.sh               # Unix/Linux/Git Bash 安装脚本
-├── install.ps1              # PowerShell 安装脚本
-└── templates/
-    ├── config.template.yaml
-    ├── manifest.template.yaml
-    └── plugins.template.yaml
-
-~/claude-config-data/        # 你的私有配置（由你管理）
-├── manifest.yaml            # 配置清单
-├── plugins.yaml             # 插件清单
-└── assets/
-    ├── skills/              # 仅 claude-config（bootstrap skill）
-    ├── memory/              # 行为偏好
-    ├── settings/            # settings 和 permissions
-    ├── hooks/               # 平台特定 hooks
-    └── templates/
+```sh
+claude-config init --config-dir ~/claude-config-data --format text
+claude-config init --config-dir ~/claude-config-data --write --expect-plan-id "<preview-id>"
+claude-config doctor --format text
 ```
 
-marketplace 与 claude-config 的关系：
+空白初始化不猜测客户端、Profile、登录或供应商。可用 `--from-machine /path/to/reviewed-machine.yaml` 导入已准备的绑定。
+`--skill codex=/absolute/.agents/skills/claude-config/SKILL.md` 为明确选择的已绑定 Agent 安装入口。
+既有脚本安装通过 `init --retire-script-install` 核对旧清单后退役；全部外部 Skill 必须用 `--skill` 明确列出。
+`init` 默认预览，`--write` 执行。`init --run <run-id>` 预览初始化恢复，使用同一 Machine、config-dir（如有）和 Skill 目标；加 `--write` 执行。
 
-```
-<your-marketplace> (你自己的 marketplace 仓库)
-       │
-       │  marketplace.json 定义 plugin 目录
-       │  Mode 1 (self-hosted): 用户自己的 skill
-       │  Mode 2 (external ref): 三方 skill，sha 锁版本
-       │
-       ▼
-<config-dir>/plugins.yaml           ← 引用你的 marketplace
-       │
-       │  /claude-config apply
-       ▼
-claude plugin install xxx@<your-marketplace>  ← 安装到本地
-```
+详见 [CLI 打包、分发与迁移](references/cli-packaging-and-distribution.md)、[命令参考](references/new-agent-profile.md)、[多客户端切换](references/framework-cutover.md)。
 
-> 参考实现：[LKCY23/claudespace](https://github.com/LKCY23/claudespace) — 可 fork 作为起点。
+## 升级、卸载与恢复
 
----
+安装新版 wheel：再次运行其配套 `install.sh`。恢复旧工具版本：安装之前的 wheel；不自动恢复 Profile 或原生配置。
+`uv tool uninstall claude-config` 只卸载程序环境及命令，保留 Machine、数据、报告和已部署配置。
+不要在配置执行过程中升级工具。仅升级工具不要求退出 Claude Desktop 或 Codex App；原生配置写入仍按现有生命周期检查执行。
 
-## manifest.yaml 示例
+## 开发
 
-```yaml
-version: 1
-metadata:
-  name: my-claude-config
-  config_repo:
-    local: ~/claude-config-data
-    remote: ""
-
-# 只有 claude-config 自身保留在 skills 段（bootstrap skill）
-# 其他所有 skill 通过 plugins.yaml → marketplace 安装
-skills:
-  claude-config:
-    source: assets/skills/claude-config
-    platforms: [all]
-    description: 跨机器配置管理工具（bootstrap）
-
-settings:
-  base:
-    source: assets/settings/base.json
-    merge_strategy: replace
-    platforms: [all]
-
-permissions:
-  universal:
-    source: assets/settings/permissions-universal.json
-    merge_strategy:
-      path: permissions.allow
-      mode: merge_unique
-    platforms: [all]
-
-# 外部工具分级安装
-external:
-  codex-cli:
-    strategy: auto           # 硬依赖，apply 自动装
-    install: "npm install -g @openai/codex && codex login"
-    setup:
-      verify:
-        command: codex --help
-
-  my-tool:
-    strategy: prompt         # 软依赖，apply 询问用户
-    install: "npm install -g my-tool"
-    setup:
-      verify:
-        command: my-tool --help
-
-  complex-service:
-    strategy: manual         # 复杂设置，apply 仅提示文档
-    setup:
-      authority:
-        url: https://github.com/xxx/xxx
-      env:
-        required: [SERVICE_API_KEY]
+```sh
+uv venv --python 3.11
+uv pip install -e . -c constraints.txt
+uv build
+PYTHONPATH=src python -m unittest discover -s tests
 ```
 
----
+原生安装冒烟测试须显式启用，使用隔离目录；正常测试不会操作真实账号和配置。
+包代码位于 `src/claude_config/`。开发源码与已安装 wheel 相互独立。
 
-## 多机器同步
+## Claude Desktop Bootstrap 接口
 
-### 日常同步
-
-```bash
-# 在 Claude Code 中（最常用）
-/claude-config sync --apply
-```
-
-### 仅同步数据（不安装）
-
-```bash
-/claude-config sync
-```
-
----
-
-## 详细文档
-
-见 [DESIGN.md](DESIGN.md)
+0.1.4 为外部启动器提供明确的 App 路径、数据目录和只读部署模式信息，详见[返回协议](references/report-contract.md#app-启动器使用的目标信息014)。
+Bootstrap 的代码与 App 构建由 claudespace 维护；它调用本工具的 plan → apply，并在成功后启动 Desktop。
+设置合并、检查、冲突、备份与恢复继续由本工具负责，不新增第二套配置引擎。
+升级本工具本身不会替换 Bootstrap、切换供应商或把本机改为第三方部署。

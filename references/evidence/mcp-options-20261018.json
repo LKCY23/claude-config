@@ -1,0 +1,161 @@
+{
+  "date": "2026-10-18",
+  "scope": "native parser, configuration resolution and isolated readback; no server/model calls",
+  "framework_version": "0.2.0",
+  "official_schema": "https://learn.chatgpt.com/docs/config-schema.json",
+  "schema_pointer": "#/definitions/RawMcpServerConfig/properties",
+  "fields": {
+    "supports_parallel_tool_calls": {
+      "default": null,
+      "type": "boolean"
+    },
+    "tool_input_schema_max_bytes": {
+      "default": null,
+      "format": "uint",
+      "minimum": 1.0,
+      "type": "integer"
+    }
+  },
+  "verified_versions": {
+    "cli": "codex-cli 0.160.0",
+    "app": "codex-cli 0.163.0-alpha.10.2",
+    "claude": "2.1.302"
+  },
+  "results": {
+    "cli": {
+      "baseline": {
+        "resolution_exit_code": 0,
+        "strict_readback": {
+          "evidence": {
+            "url": "https://example.invalid/mcp",
+            "environment_id": "local",
+            "enabled": false,
+            "tool_timeout_sec": null
+          }
+        }
+      },
+      "parallel_valid": {
+        "resolution_exit_code": 0,
+        "strict_readback": {
+          "evidence": {
+            "url": "https://example.invalid/mcp",
+            "environment_id": "local",
+            "enabled": false,
+            "supports_parallel_tool_calls": true,
+            "tool_timeout_sec": null
+          }
+        }
+      },
+      "parallel_invalid": {
+        "resolution_exit_code": 1,
+        "strict_readback": null
+      },
+      "schema_valid": {
+        "resolution_exit_code": 0,
+        "strict_readback": {
+          "evidence": {
+            "url": "https://example.invalid/mcp",
+            "environment_id": "local",
+            "enabled": false,
+            "tool_input_schema_max_bytes": 12345,
+            "tool_timeout_sec": null
+          }
+        }
+      },
+      "schema_invalid": {
+        "resolution_exit_code": 1,
+        "strict_readback": null
+      },
+      "unknown_control": {
+        "resolution_exit_code": 0,
+        "strict_readback": null
+      }
+    },
+    "app": {
+      "baseline": {
+        "resolution_exit_code": 0,
+        "strict_readback": {
+          "evidence": {
+            "url": "https://example.invalid/mcp",
+            "environment_id": "local",
+            "enabled": false,
+            "tool_timeout_sec": null
+          }
+        }
+      },
+      "parallel_valid": {
+        "resolution_exit_code": 0,
+        "strict_readback": {
+          "evidence": {
+            "url": "https://example.invalid/mcp",
+            "environment_id": "local",
+            "enabled": false,
+            "supports_parallel_tool_calls": true,
+            "tool_timeout_sec": null
+          }
+        }
+      },
+      "parallel_invalid": {
+        "resolution_exit_code": 1,
+        "strict_readback": null
+      },
+      "schema_valid": {
+        "resolution_exit_code": 0,
+        "strict_readback": {
+          "evidence": {
+            "url": "https://example.invalid/mcp",
+            "environment_id": "local",
+            "enabled": false,
+            "tool_input_schema_max_bytes": 12345,
+            "tool_timeout_sec": null
+          }
+        }
+      },
+      "schema_invalid": {
+        "resolution_exit_code": 1,
+        "strict_readback": null
+      },
+      "unknown_control": {
+        "resolution_exit_code": 0,
+        "strict_readback": null
+      }
+    },
+    "claude": {
+      "timeout_1000": {
+        "exit_code": 0,
+        "persisted_value": 1000
+      },
+      "timeout_string": {
+        "exit_code": 1
+      }
+    }
+  },
+  "regression_tests": {
+    "file": "tests/test_native_mcp_options.py",
+    "transports": [
+      "stdio",
+      "http"
+    ],
+    "extra_negative_values": {
+      "supports_parallel_tool_calls": [
+        1
+      ],
+      "tool_input_schema_max_bytes": [
+        0,
+        -1
+      ]
+    },
+    "false_defaults": "required and supports_parallel_tool_calls may be omitted in resolved config/read"
+  },
+  "native_suite": {
+    "tests": 16,
+    "passed": 16,
+    "duration_seconds": 8.372
+  },
+  "unverified": [
+    "earliest supporting version",
+    "parallel scheduling behavior",
+    "input schema compaction behavior",
+    "live authentication and tool calls"
+  ]
+}

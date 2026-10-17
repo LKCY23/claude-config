@@ -75,6 +75,10 @@ PYTHONPATH=src python -m unittest discover -s tests
 原生安装冒烟测试须显式启用，使用隔离目录；正常测试不会操作真实账号和配置。
 包代码位于 `src/claude_config/`。开发源码与已安装 wheel 相互独立。
 
+## 支持证据与当前边界
+
+七类资源的运行参数、已验证版本、Hook 事件及未验证的运行行为见[参数证据清单](references/resource-parameter-evidence.md)。框架接受、官方字段存在、原生解析和业务生效分别记录；原生新增字段不会自动纳入同步。
+
 ## Claude Desktop Bootstrap 接口
 
 0.1.4 为外部启动器提供明确的 App 路径、数据目录和只读部署模式信息，详见[返回协议](references/report-contract.md#app-启动器使用的目标信息014)。

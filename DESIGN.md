@@ -1,6 +1,6 @@
 # claude-config 架构与配置合同
 
-更新：2026-10-17。本文描述独立 Agent Profile、App Profile 和 Machine 的现行实现；日常入口是安装后的 `claude-config`。当前源码版本为 0.1.4，已安装工具版本独立，远端发布状态以 [打包说明](references/cli-packaging-and-distribution.md) 为准。
+更新：2026-10-18。本文描述独立 Agent Profile、App Profile 和 Machine 的现行实现；日常入口是安装后的 `claude-config`。当前已发布版本为 0.2.0，已安装工具版本独立，远端发布状态以 [打包说明](references/cli-packaging-and-distribution.md) 为准。
 
 ## 职责
 
@@ -73,7 +73,7 @@ claude-config rollback --agent codex --run "<run-id>"
 - `init` 管理本机 Machine 和明确选择的 Skill 命令入口。
 - `migration inventory/convert` 只处理显式提供的旧数据副本，生成可审阅候选；旧声明不是运行时回退来源。
 - `cutover` 使用 v2 spec 组合数据、Machine 和客户端配置写入，不再复制框架 release。
-- Claudespace 检查上游、生成候选 PR、验证并发布新基线。`adopt-baseline` 明确采用已准备的准确 checkout 和基线记录，再由 `plan/apply` 更新本机。远端附件自动获取与采用联调仍待接入。
+- Claudespace 检查上游、生成候选 PR、验证并发布准确提交的 GitHub Release。`fetch-baseline` 获取正式记录及已选固定来源，`adopt-baseline` 明确采用，再由 `plan/apply` 更新本机；跨仓库／路径须有精确来源映射。正式分发、私有历史衔接及本机采用已完成联调，见[基线分发](references/baseline-distribution.md)。
 
 历史 `manifest.yaml`、`plugins.yaml`、`agents.yaml` 及旧脚本入口不参与日常部署。历史恢复使用对应运行保存的记录和当时封存工具，不能把旧 spec 当新格式执行。
 

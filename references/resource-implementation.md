@@ -1,20 +1,20 @@
 # 固定资源与本机绑定：当前实现
 
-更新：2026-10-17。固定来源、静态正文、MCP／command Hook 注册及 Plugins 原生安装、更新、启用和恢复已接入已安装 CLI；本机已完成新版数据与入口迁移。以下支持范围以实际白名单和适配器为准。
+更新：2026-10-18。固定来源、静态正文、MCP／command Hook 注册及 Plugins 原生安装、更新、启用和恢复已接入已安装 CLI；本机已完成新版数据与入口迁移。以下支持范围以实际白名单和适配器为准。
 
 现有用户插件的准确名称接管、同名重复安装阻断、启用状态保留及原生来源更换／恢复已接入；详见 [插件接管规范](plugin-adoption.md)。接管要求固定包匹配版本及文件，包装更新不能借此跳过更新审阅；保留未知旧缓存，不将其纳入固定来源。
 
 ## 设计职责与当前实现
 
-职责规范统一在 [资源专项第 2 节](resource-implementation.md)：claudespace 管理定义、固有配置、支持的入口和约束；Agent Profile 保存资源选择与运行配置；Machine 提供本机依赖及凭据引用；本框架解析和生成原生部署产物。组合到同一原生文件不改变来源归属。自定义代理的提示词、工具清单、权限及内部 MCP／Hook 定义归来源，不扩成 Profile 的任意覆盖字段。
+职责规范见 [架构合同](../DESIGN.md#资源和本机依赖)：claudespace 管理定义、固有配置、支持的入口和约束；Agent Profile 保存资源选择与运行配置；Machine 提供本机依赖及凭据引用；本框架解析和生成原生部署产物。组合到同一原生文件不改变来源归属。自定义代理的提示词、工具清单、权限及内部 MCP／Hook 定义归来源，不扩成 Profile 的任意覆盖字段。
 
 每端 compatibility.entry 是显式默认入口，MCP 可附加 entries 名称到固定包内模板路径映射；Profile options.entry 选择名称，未声明时采用来源默认。默认及所有具名文件都核对固定清单，所选模板实际引用的绑定必须提供。框架记录入口与原生连接变化，指纹区分所选模板；导出保留逻辑选择，不从本机连接猜测。该结构性选择不进入普通字段合并策略，不支持 transport 通配或自动协议转换。
 
-逐字段 review 清单见 [七类资源运行参数](resource-implementation.md)。它区分模板字段与 Profile options、Hook 统一控制与逐处理器控制，并记录原生调用控制及尚需进一步证据的字段；整理清单不改变当前源码白名单。
+逐字段范围与实际版本证据见 [资源参数证据清单](resource-parameter-evidence.md)。它区分模板字段与 Profile options、Hook 统一控制与逐处理器控制，并记录原生调用控制及尚需进一步证据的字段；整理清单不改变当前源码白名单。
 
 ## 来源与协议
 
-`catalog.py` 从配置数据的 catalogs.yaml 读取固定 repo／完整 commit／path，以 Machine.catalog_roots 的 catalog 别名找到已准备的仓库根。它只检查已准备来源，不 fetch、checkout 或跟随 HEAD 最新版本。核对真实 Git 根、origin 身份、准确 HEAD、工作区状态；catalog JSON 和资源文件还逐一比对提交对象，防止 assume-unchanged 等标记隐藏修改。外部来源须预先准备到 state_dir/sources/<owner--repo>/<commit>；submodule 同时核对父 Gitlink、子仓库 HEAD 和身份。
+`catalog.py` 从配置数据的 catalogs.yaml 读取固定 repo／完整 commit／path，以 Machine.catalog_roots 的 catalog 别名找到已准备的仓库根。它只检查已准备来源，不 fetch、checkout 或跟随 HEAD 最新版本；正式来源准备由独立的 `fetch-baseline` 负责。核对真实 Git 根、origin 身份、准确 HEAD、工作区状态；catalog JSON 和资源文件还逐一比对提交对象，防止 assume-unchanged 等标记隐藏修改。外部来源须预先准备到 state_dir/sources/<owner--repo>/<commit>；submodule 同时核对父 Gitlink、子仓库 HEAD 和身份。
 
 新登记协议的维护源为 claudespace/scripts/resource_catalog.py。框架随源码携带字节一致的受审副本 src/claude_config/core/catalog_schema.py，使框架独立运行且不 import 选定仓库的 Python 代码。修改协议时同步副本并检查一致性；副本不是第二套资源登记。
 
@@ -24,7 +24,7 @@
 
 ## 已接入的正文和控制
 
-| 类型 | 当前接入 | 尚未完成的范围 |
+| 类型 | 当前接入 | 当前未覆盖或未验证的范围 |
 | --- | --- | --- |
 | 独立 Skills | 完整目录保留执行位；Claude enabled（skillOverrides on/off）、disable-model-invocation／user-invocable；Codex allow_implicit_invocation 与 skills.config.enabled 分开管理，省略保留；显式资源使用选项导出 | 其他原生控制、原生策略／运行会话的覆盖验收 |
 | 全局指令 | 保留区块外文字；包内 Markdown 目标检查；Claude 引用完整固定包入口，检查导入图；Codex 入口链接重定位；引用包纳入导出、漂移与恢复 | 原生实际加载／业务效果未验收；Codex 不承诺 Claude-style 导入，本机／包外引用需明确适配 |
@@ -33,7 +33,7 @@
 | 状态栏 Hook 脚本 | status-line 模式完整包，由 typed command 生成命令，不重复注册 | 输出协议、运行效果 |
 | 生命周期 Hooks | 原生事件与 matcher 分组、command 处理器、完整脚本包；未知归属／分组修改／重复歧义阻断；注册、普通设置和恢复共用计划；均一处理器选项导出 | 其他处理器及事件、运行效果和原生信任 |
 | MCP | Claude 用户 .claude.json／Codex config.toml 的原生服务；来源具名模板选择、具名依赖、环境凭据引用、使用选项、归属和恢复；匹配所选模板后的选项导出 | 连接、认证；自由连接参数覆盖、OAuth／动态 header helper 等扩展配置 |
-| Plugins | 固定完整原生包、本地 marketplace、用户安装／更新、独立启用状态、库存与正文核对、副作用日志、失败和独立恢复；准确库存匹配后的启用状态导出 | 绑定渲染、身份替换、组件控制；真实业务加载和运行仍未自动验收 |
+| Plugins | 固定完整原生包、本地 marketplace、用户安装／更新、独立启用状态、库存与正文核对、副作用日志、失败和独立恢复；准确库存匹配后的启用状态导出 | 插件内部绑定渲染、自动身份重命名和组件控制；真实业务加载和运行仍未自动验收 |
 
 Claude Skills 部署到 config_root/skills/<原生 name>。Codex USER Skills 使用原生 `$HOME/.agents/skills` 布局：登记 requires.bindings.install_root 为 path，Profile 引用 Machine 的路径绑定，路径必须以 .agents/skills 结尾。该目标目录可不存在，写入时创建；其他普通依赖默认必须存在。原生 name 与 catalog ID 分别保留，不擅自改名。[Codex Skills 原生路径与控制](https://learn.chatgpt.com/docs/build-skills#where-to-save-skills)。
 
@@ -63,7 +63,7 @@ Codex 资源 options.control.enabled 写入 config.toml 的 skills.config 路径
 
 ## 资源选项的策略与报告
 
-已接入的范围：Plugins enabled、Skills 的调用控制及 Codex enabled、MCP 已登记使用叶子和工具选项、command Hook 的 timeout／async／statusMessage、Agents 的 model 与 Codex model_reasoning_effort。其他选项和组件控制尚未接入策略注册表，不能声明任意路径。
+已接入的范围：Plugins enabled、Skills 的调用控制及两端 enabled、MCP 已登记使用叶子和工具选项、command Hook 的 timeout／async／statusMessage、Agents 的 model 与 Codex model_reasoning_effort。其他选项和组件控制尚未接入策略注册表，不能声明任意路径。
 
 这些是明确登记的运行选项，不授权改写资源职责。来源仍维护默认值和约束；尤其 Agents 的工具／权限清单与 Hook 的事件、matcher、处理器正文继续随来源版本管理。后续适配以选中资源实际需要的运行选项和依赖为范围，不追求覆盖所有原生字段。
 
@@ -89,7 +89,7 @@ Machine 具名引用按组和完整名称解析（名称含点号也不拆散）
 
 ## MCP 原生模板与选项
 
-具名模板及 Profile 的准确例子见 [运行参数清单第 11.4 节](resource-implementation.md)。options.entry 只供框架选模板，不写原生 server；闭合的 native options 与连接模板继续分开校验及合并。不同模板所需槽位可以在 requires 中声明可选，但当前选择实际使用的槽位必须在 Profile／Machine 提供。
+具名模板由 catalog 的 compatibility.entries 声明；实际参数范围见 [运行参数证据](resource-parameter-evidence.md#mcp-字段与单位)。options.entry 只供框架选模板，不写原生 server；闭合的 native options 与连接模板继续分开校验及合并。不同模板所需槽位可以在 requires 中声明可选，但当前选择实际使用的槽位必须在 Profile／Machine 提供。
 
 每端 compatibility.entry 指向本资源包里的 JSON 模板。模板采用对应端原生 server 字段，只有本机依赖位置使用封闭占位对象；不是新的跨端传输协议，也不是可执行字符串模板：
 
@@ -142,7 +142,7 @@ Claude 注册在 settings.json 的 hooks；Codex 注册在 config_root/hooks.jso
 
 已核实归属的同事件／唯一 matcher 分组保持处理器数量时，使用选项按处理器顺序逐字段增量合并，省略 timeout／async 等不会恢复默认，并返回 preserve 决策。分组或处理器布局变化导致省略选项无法定位时返回 hook_options_ambiguous，要求明确使用选项后重新规划；不同事件／matcher 是新的原生分组身份，不隐式继承其他分组的控制。
 
-Codex feature 开关、原生 enabled／exact hash trust 继续由原生流程控制；本计划不设置 trusted_hash、不绕过原生确认，不因注册成功宣称 Hook 可运行。其他原生策略控制和反向导出仍待接入。[Claude Hooks](https://code.claude.com/docs/en/hooks)、[Codex Hooks 与信任](https://learn.chatgpt.com/docs/hooks)。
+Codex feature 开关、原生 enabled／exact hash trust 继续由原生流程控制；本计划不设置 trusted_hash、不绕过原生确认，不因注册成功宣称 Hook 可运行。已登记 timeout／async／statusMessage 的反向导出已实现；其他原生策略控制仍不在当前支持范围。[Claude Hooks](https://code.claude.com/docs/en/hooks)、[Codex Hooks 与信任](https://learn.chatgpt.com/docs/hooks)。
 
 ## 文件恢复与插件副作用边界
 
@@ -160,7 +160,7 @@ compatibility.entry 必须为包根的 .claude-plugin/plugin.json／.codex-plugi
 
 options.enabled 显式覆盖；省略时保留受管状态，新安装报告原生默认。移除选择保留安装和归属并返回 residual；同一 marketplace 的其他条目保留。无变化的 apply 不调用安装器。Codex enabled 通过其原生 config.toml 字段单独写入，保留其余字段和注释；Claude 使用原生 enable／disable。
 
-恢复首先核对完整当前库存、缓存和元数据与记录结果，再通过原生接口卸载或重建旧版本。旧正文从已验证历史固定来源读取，不复制缓存来伪造安装。Claude 的原生 .orphaned_at 回收标记按元数据备份恢复；原生卸载留下的、本次新建且正文未改、未在用的退役版本缓存目录才会清理。检测 .in_use 时，在卸载前阻断恢复；不删活跃缓存、不清空插件目录。失败会报告具体阶段和 recovery_conflict；恢复本身的失败也使用同一反向执行协议。
+恢复首先核对完整当前库存、缓存和元数据与记录结果，再通过原生接口卸载或重建旧版本。旧正文从已验证历史固定来源读取，不复制缓存来伪造安装。Claude 的原生 .orphaned_at 回收标记按元数据备份恢复；原生卸载留下的、本次新建且正文未改、未在用的退役版本缓存目录才会清理。存在文件型 .in_use、符号链接或非空租约目录时，在卸载前阻断恢复；会话退出留下的空目录不代表占用。不删活跃缓存、不清空插件目录。失败会报告具体阶段和 recovery_conflict；恢复本身的失败也使用同一反向执行协议。
 
 当前原生适配不渲染插件内部的 Machine 依赖，不修改插件组件选项，不复用旧 catalog 格式，不同步认证数据库或授予原生信任。声明这些未支持内容时完整预检阻断。
 
@@ -180,7 +180,7 @@ test_native_plugin_smoke.py 使用 Claude、Codex CLI 和 App 后端在临时目
 
 新增资源选项专项测试覆盖选择器归属、重复、手改、缺失文件、策略优先级、数组顺序、空列表、整份阻断、共享 skills 表、恢复及普通导出保留资源策略。原生验收在 CLI／App 后端确认技能禁用仍安装、启用可回读、调用控制与省略保留。
 
-资源反向导出、本地已准备基线采用和旧数据转换已接入，本机迁移已完成。Claudespace 的更新发布流程已上线；远端附件获取与消费者采用联调仍待完成。新选择的资源仍按运行入口、依赖和管理归属逐项检查。Desktop 本地 MCP／桌面扩展继续排除，不增加任意资源定义覆盖。
+资源反向导出、本地已准备基线采用和旧数据转换已接入，本机迁移已完成。Claudespace 的更新发布、永久 Release、远端附件获取和消费者采用已完成真实联调，跨仓库来源使用精确映射；HUD 也已接入正式更新流程。新选择的资源仍按运行入口、依赖和管理归属逐项检查。Desktop 本地 MCP／桌面扩展继续排除，不增加任意资源定义覆盖。
 
 2026-10-10：具名 MCP 入口 9 项及引用布局 13 项测试通过，覆盖缺失／越界目标、原生导入循环与包装后的深度、文件名转义、入口切换、使用选项保留、未知绑定／入口、结构性选择的策略拒绝、连接漂移、引用包导出、预览过期、指令资源切换和回滚。当前 code-review／code-simplifier／karpathy 包内 Markdown 检查通过；专用代码字符串路径继续使用既有构建校验器。2 项新增原生用例在当前 Codex CLI 和 App 后端回读所选 HTTP 模板并导出；未验证服务连接或原生指令实际加载。详细总体结果及独立 App 审查阻断见 本批验证报告（本机历史记录：`deployment/resource-runtime-and-references-20261010/README.md`）。
 

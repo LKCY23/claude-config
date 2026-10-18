@@ -45,7 +45,7 @@ claude-config switch --dry-run --machine /absolute/path/to/machine.yaml --app cl
 
 Codex 当前代码的 `hostStorage` 三分类用于旧资料迁移来源；本批审查的 `settings-store` 对注册偏好的持久化已统一写 `desktop.<key>`。本实现只用已核实的新接口，不读取或修改旧 global-state 偏好来模拟兼容。此前导出和观察文件保留其历史版本含义。
 
-Claude 功能开关要求已有第三方部署且 appliedId／文件有效。2026-10-17 的 Bootstrap 候选审查确认：已检查 Desktop 构建从 `claude_desktop_config.json` 读取 `deploymentMode`；旧 0.1.3 读取 `config.json` 的问题已在 0.1.4 修正，0.1.5 延续该修正。推送源码不会替换已安装版本，使用第三方开关前须确认实际运行的是修正后的 CLI，不能通过伪造另一份模式字段绕过检查。官方本机继续使用主题／语言 Profile；三个第三方开关在实际目标端需使用已核对修正的版本再验收。工具不选择模式、不创建供应商资料、不修改 appliedId 或认证。语言指本地界面偏好，不代表账号侧网页语言。
+Claude 功能开关要求已有第三方部署且 appliedId／文件有效。2026-10-17 的 Bootstrap 候选审查确认：已检查 Desktop 构建从 `claude_desktop_config.json` 读取 `deploymentMode`；旧 0.1.3 读取 `config.json` 的问题已在 0.1.4 修正，当前 0.2.0 延续该修正。推送源码不会替换已安装版本，使用第三方开关前须确认实际运行的是修正后的 CLI，不能通过伪造另一份模式字段绕过检查。官方本机继续使用主题／语言 Profile；三个第三方开关在实际目标端需使用已核对修正的版本再验收。工具不选择模式、不创建供应商资料、不修改 appliedId 或认证。语言指本地界面偏好，不代表账号侧网页语言。
 
 2026-10-12 修正：默认能力检查要求 App bundle 身份及已审查配置接口源码一致，并捕获 Info.plist／app.asar／所选语言 catalog 的快照。构建版本号仅记录为证据；版本号改变但接口正文一致时允许继续，并报告实际版本和对应审查基线。应用身份、接口正文或语言包未知产生 `capability_unknown`。本机 26.1007.30912 的两份相关配置接口与 26.1007.21159 准确相同。源码审查与原生解析不等于 GUI 生效、账号能力或组织策略验证。
 
@@ -127,3 +127,5 @@ Codex Chrome 主题的 accent、accentSource、contrast、ink、surface、opaque
 | Claude | `chatTabEnabled` | boolean |
 | Claude | `autoModeEnabled` | boolean |
 | Claude | `builtinBrowserEnabled` | boolean |
+
+Bootstrap 2.0 的[源码与构建说明](https://github.com/LKCY23/claudespace/tree/main/claude-desktop-bootstrap)由 Claudespace 维护。启动器使用本工具已有 plan → apply 合同；成功后才打开同一绑定应用，配置恢复沿用本工具日志。源码发布、目标机器构建和真实第三方 GUI 验收分开；官方部署不因发布或工具升级被切换。

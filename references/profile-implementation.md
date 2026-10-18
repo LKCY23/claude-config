@@ -37,7 +37,7 @@
 
 ## 剩余工作与排除项
 
-1. 框架自 0.1.4 起已包含 Bootstrap 所需的只读目标信息及 Claude 第三方部署模式读取修正；Bootstrap 2.0.0 启动器仍是单独候选，未替换已发布或本机安装的启动器。相应边界，见 [App 偏好边界](app-profile-implementation.md)。
+1. 框架自 0.1.4 起已包含 Bootstrap 所需的只读目标信息及 Claude 第三方部署模式读取修正；Bootstrap 2.0 使用[独立源码 Release](https://github.com/LKCY23/claudespace/releases/tag/bootstrap-v2.0.0)，目标机器按明确 Machine 构建 Dock App；升级框架不会替换本机启动器。真实第三方部署的 GUI／账号验收仍单独进行。相应边界，见 [App 偏好边界](app-profile-implementation.md)。
 2. 新选择资源仍需核对具体运行入口、本机依赖、管理归属及实际业务。Agents 内嵌 MCP／Hook 按实际资源需求适配，不承诺所有组合可用。
 3. App command bindings 和未登记资源模板参数不属于当前支持范围；只有实际需要时才讨论适配，不自动增加开发任务。精确边界见对应适配器和资源文档。
 

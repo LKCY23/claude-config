@@ -58,7 +58,7 @@ def rollback_plan(manager, run):
             if row['status'] not in ('started', 'applied', 'recovery_conflict'):
                 continue
             current = operation.world()
-            matched = row.get('safe_recovery') and current == row.get('after')
+            matched = (row.get('safe_recovery') or row.get('cleanup_safe')) and current == row.get('after')
             restored = current == row['before']
             if not (matched or restored):
                 blockers.append({'code': 'recovery_conflict', 'path': ['recovery', str(operation.root)],

@@ -26,10 +26,20 @@ def image_in_use(root):
                for marker in Path(root).rglob('.in_use'))
 
 
+class ImageContentMismatch(SchemaError):
+    """Installed image carries content the fixed package does not declare."""
+
+
+def require_image(condition, message):
+    """Reject unexpected image content, while marking it safe to unwind."""
+    if not condition:
+        raise ImageContentMismatch(message)
+
+
 def image_fingerprint(path):
     value = directory_fingerprint(path)
-    require(value['exists'] and bool(value['entries']), 'Native plugin image is missing')
-    require(all('sha256' in entry for entry in value['entries'].values()), 'Native plugin image contains symlinks')
+    require_image(value['exists'] and bool(value['entries']), 'Native plugin image is missing')
+    require_image(all('sha256' in entry for entry in value['entries'].values()), 'Native plugin image contains symlinks')
     return fingerprint({name: {'sha256': entry['sha256'], 'executable': bool(entry['mode'] & 0o111)} for name, entry in value['entries'].items()
                         if '.orphaned_at' not in Path(name).parts})
 
@@ -70,8 +80,10 @@ def cache_version(agent, version):
 
 def validate_native_row(row, operation):
     from .recovery import snapshot
-    closed(row, ('kind', 'path', 'owner', 'action', 'operation_id', 'definition', 'before', 'after', 'status', 'backups', 'safe_recovery', 'recovery_error'),
+    closed(row, ('kind', 'path', 'owner', 'action', 'operation_id', 'definition', 'before', 'after', 'status', 'backups', 'safe_recovery', 'recovery_error', 'cleanup_safe'),
            ('kind', 'path', 'owner', 'action', 'operation_id', 'definition', 'before', 'status', 'backups', 'safe_recovery'), 'native operation journal')
+    if 'cleanup_safe' in row:
+        require(type(row['cleanup_safe']) is bool, 'Invalid native cleanup classification')
     if 'recovery_error' in row:
         closed(row['recovery_error'], ('code', 'error_type', 'reason'), ('code', 'error_type', 'reason'), 'native recovery error')
         require(row['recovery_error']['code'] == 'native_recovery_blocked' and all(isinstance(value, str) for value in row['recovery_error'].values()),
@@ -290,12 +302,8 @@ class PluginOperation:
         return {'installed': item is not None, 'version': item.get('version') if self.agent == 'claude-code' and item else version if self.agent == 'codex' else None,
                 'image': image_fingerprint(cache) if item is not None else None, 'enabled': enabled, 'marketplace': known is not None}
 
-    def _call(self, args, work):
-        self.preflight()
-        if self.runner:
-            self.runner(self, args, work)
-            return
-        home = private_dir(work / 'native-home')
+    def install_environment(self, home):
+        """Environment for every native installer call, install and restore alike."""
         env = {'PATH': os.environ.get('PATH', ''), 'HOME': str(home), 'TMPDIR': str(home),
                'CODEX_HOME': str(self.root), 'DISABLE_AUTOUPDATER': '1', 'DISABLE_TELEMETRY': '1', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'}
         if self.agent == 'claude-code':
@@ -304,6 +312,18 @@ class PluginOperation:
             else:
                 require(self.root.name == '.claude' and self.user_config == self.root.parent / '.claude.json', 'Claude default native layout is not consistent')
                 env['HOME'] = str(self.root.parent)
+            # A fixed package already contains its runtime artifacts; installing
+            # development dependencies would add a second, unrelated image.
+            env['npm_config_omit'] = 'dev'
+        return env
+
+    def _call(self, args, work):
+        self.preflight()
+        if self.runner:
+            self.runner(self, args, work)
+            return
+        home = private_dir(work / 'native-home')
+        env = self.install_environment(home)
         result = subprocess.run([self.definition['executable'], *args], cwd=home, env=env, capture_output=True, timeout=40)
         if result.returncode:
             raise RuntimeError('Native plugin CLI operation failed')
@@ -362,6 +382,11 @@ class PluginOperation:
         try:
             self.accept_effects(row)
             row['safe_recovery'] = True
+        except ImageContentMismatch:
+            # The installer added content of its own. Nothing outside this
+            # operation changed, so the run can still be unwound exactly.
+            row['safe_recovery'] = False
+            row['cleanup_safe'] = True
         except (ValueError, OSError):
             row['safe_recovery'] = False
 
@@ -404,10 +429,12 @@ class PluginOperation:
             entries = row['after']['directories'][str(self.cache_parent(receipt))]['entries']
             allowed_versions = {cache_version(self.agent, version) for version in receipt['history']}
             retained = set(receipt.get('retained_versions', []))
-            require(all(name.split('/')[0] in retained or name.split('/')[0] in allowed_versions and 'sha256' in value
-                        for name, value in entries.items()), 'Native installer wrote outside declared plugin images')
+            require_image(all(name.split('/')[0] in retained or name.split('/')[0] in allowed_versions and 'sha256' in value
+                              for name, value in entries.items()), 'Native installer wrote outside declared plugin images')
             before = row['before']['directories'][str(self.cache_parent(receipt))]['entries']
             keep = lambda values: {name: value for name, value in values.items() if name.split('/')[0] in retained}
+            # Retained images were never ours: their content cannot be rebuilt,
+            # so a change there stays a conflict rather than a cleanup.
             require(keep(before) == keep(entries), 'Native installer changed retained unowned historical images')
 
     def verify(self, row):
@@ -420,7 +447,18 @@ class PluginOperation:
 
     def restore(self, row):
         try:
-            require(row.get('safe_recovery') and self.world() == row.get('after'), 'Native state changed after this operation')
+            # An install can also fail because the installer added content of its
+            # own. That run is still exactly recorded, and every addition sits
+            # inside an image this run created, so it unwinds like a clean one.
+            cleanup = bool(row.get('cleanup_safe')) and not row.get('safe_recovery')
+            require((row.get('safe_recovery') or cleanup) and self.world() == row.get('after'), 'Native state changed after this operation')
+            if cleanup:
+                # Only a fresh install can be unwound this way: nothing existed
+                # before, so backed-up metadata plus deleting this run's image
+                # is a complete reversal. The installer is not asked to remove
+                # anything, which keeps retained images out of reach.
+                require(all(self.prior_receipt(row, item['desired']) is None for item in self.plugins),
+                        'Cleanup recovery cannot replace an earlier installed version')
             for item in self.plugins:
                 parent = self.cache_parent(item['desired'])
                 before_versions = {name.split('/')[0] for name in row['before']['directories'][str(parent)]['entries']}
@@ -438,6 +476,8 @@ class PluginOperation:
             try:
                 for item in reversed(self.plugins):
                     desired = item['desired']
+                    if cleanup:
+                        continue
                     previous = self.prior_receipt(row, desired)
                     actual = self.native(desired, item.get('adoption', item.get('replacement', {})).get('registration_root'))
                     if ('adoption' in item or 'replacement' in item) and previous and actual['installed'] and all(actual[key] == previous[key] for key in ('version', 'image')):
@@ -478,7 +518,8 @@ class PluginOperation:
                         version = version_root.name
                         if version not in versions_before:
                             matching = [pin for pin in receipt['history'] if cache_version(self.agent, pin) == version]
-                            require(len(matching) == 1 and image_fingerprint(version_root) == receipt['history'][matching[0]]['image'], 'Run-created retired image changed')
+                            if not cleanup:
+                                require(len(matching) == 1 and image_fingerprint(version_root) == receipt['history'][matching[0]]['image'], 'Run-created retired image changed')
                             require(not image_in_use(version_root), 'Retired native image is still in use')
                             # Uninstall first; then remove only the unchanged,
                             # unused image this run created and native GC retained.
@@ -547,7 +588,7 @@ class PluginRestoreOperation(PluginOperation):
 
     def preflight(self):
         super().preflight()
-        require(self.original.get('safe_recovery') and self.world() == self.original.get('after'), 'Native recovery state differs from the recorded result')
+        require((self.original.get('safe_recovery') or self.original.get('cleanup_safe')) and self.world() == self.original.get('after'), 'Native recovery state differs from the recorded result')
         for path, backup in self.original['backups'].items():
             require(file_fingerprint(backup)['sha256'] == backup_snapshot(self.original, path)['sha256'], 'Native recovery backup changed')
 

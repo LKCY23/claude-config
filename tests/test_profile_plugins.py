@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
@@ -84,6 +85,7 @@ class PluginTests(ResourceFixture):
     def setUp(self):
         super().setUp()
         self.installer = FakeInstaller()
+        self.native_call = PluginOperation._call
         self.patch = patch.object(PluginOperation, '_call', lambda operation, args, work: self.installer(operation, args, work))
         self.patch.start()
         self.addCleanup(self.patch.stop)
@@ -115,6 +117,40 @@ class PluginTests(ResourceFixture):
         self.assertEqual(plan.native_operations[0].native(receipt)['image'], receipt['image'])
         self.assertFalse(plan.native_operations[0].native(receipt)['enabled'])
         self.assertTrue(json.loads(self.manager().state_path.read_text())['resources']['tiny@test']['native']['plugin'])
+
+    def test_claude_installer_environment_excludes_development_dependencies(self):
+        # Pinned packages ship their runtime artifacts; a lockfile-driven install
+        # would otherwise add node_modules and break the exact-image contract.
+        self.native = self.root / '.claude'
+        self.machine['agents']['claude-code']['binding']['config_root'] = str(self.native)
+        self.plugin()
+        self.save()
+        operation = self.manager().plan().native_operations[0]
+        env = operation.install_environment(self.root / 'native-home')
+        self.assertEqual(env['npm_config_omit'], 'dev')
+        self.assertEqual(Path(env['CLAUDE_CONFIG_DIR']).resolve(), self.native.resolve())
+
+    def test_codex_installer_environment_is_unchanged(self):
+        self.plugin(agent='codex')
+        self.save()
+        operation = self.manager().plan().native_operations[0]
+        self.assertNotIn('npm_config_omit', operation.install_environment(self.root / 'native-home'))
+
+    def test_installer_call_receives_runtime_only_environment(self):
+        self.native = self.root / '.claude'
+        self.machine['agents']['claude-code']['binding']['config_root'] = str(self.native)
+        self.plugin()
+        self.save()
+        operation = self.manager().plan().native_operations[0]
+        seen = {}
+        def fake_run(argv, **kwargs):
+            seen['argv'] = argv
+            seen['kwargs'] = kwargs
+            return SimpleNamespace(returncode=0)
+        with patch('claude_config.core.native_plugins.subprocess.run', fake_run):
+            self.native_call(operation, ['plugin', 'install', 'tiny@test', '--scope', 'user', '--json'], self.root / 'work')
+        self.assertEqual(seen['argv'][1:3], ['plugin', 'install'])
+        self.assertEqual(seen['kwargs']['env']['npm_config_omit'], 'dev')
 
     def test_noop_apply_does_not_call_installer(self):
         self.plugin()
@@ -335,21 +371,32 @@ class PluginTests(ResourceFixture):
         self.assertEqual(operation.world(), before)
         self.assertFalse(Path(desired['manifest']).exists())
 
-    def test_symlink_in_managed_image_is_still_blocked(self):
+    def test_unexpected_image_content_is_rejected_and_unwound(self):
+        # An installer that adds content of its own (for example a dependency
+        # tree with .bin symlinks) must fail verification and still leave the
+        # native configuration exactly as it was before the run.
         self.plugin()
         self.save()
         plan = self.manager().plan()
+        operation = plan.native_operations[0]
+        desired = operation.plugins[0]['desired']
+        before = operation.world()
         def mutate(operation, args):
             if args[1] == 'install':
-                desired = operation.plugins[0]['desired']
-                (operation.cache_parent(desired) / desired['version'] / 'unexpected-link').symlink_to('body.txt')
+                image = operation.cache_parent(desired) / desired['version']
+                (image / 'body.txt').write_text('installer addition')
+                (image / 'unexpected-link').symlink_to('body.txt')
         self.installer.after = mutate
         with self.assertRaises(ValueError):
             plan.apply(self.state)
         journal = json.loads(Path(plan.report['recovery']).read_text())
         row = next(row for row in journal['operations'] if row.get('kind') == 'native-plugin')
         self.assertFalse(row['safe_recovery'])
-        self.assertEqual(row['status'], 'recovery_conflict')
+        self.assertTrue(row['cleanup_safe'])
+        self.assertEqual(row['status'], 'rolled_back')
+        self.assertEqual(operation.world(), before)
+        self.assertFalse(self.manager().state_path.exists())
+        self.assertEqual([p.name for p in operation.cache_parent(desired).iterdir()] if operation.cache_parent(desired).exists() else [], [])
 
     def test_unrelated_mutation_during_installer_is_preserved_as_conflict(self):
         self.plugin()

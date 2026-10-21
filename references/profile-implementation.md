@@ -1,6 +1,6 @@
 # Profile 实现进度
 
-更新：2026-10-18。独立 Agent/App Profiles、七类资源的基础部署、字段与选项合并、导出、恢复、资源冲突审阅、统一报告及 tmux 查看已接入 `claude-config` CLI。本机已完成新版配置和入口迁移，当前已发布版本为 0.2.0，已核验 Claude Desktop 2.42304.0 的应用偏好接口。源码与已安装 wheel 独立；安装状态以 `claude-config --version` 为准，推送源码不会升级本机工具。
+更新：2026-10-18。独立 Agent/App Profiles、七类资源的基础部署、字段与选项合并、导出、恢复、资源冲突审阅、统一报告及 tmux 查看已接入 `claude-config` CLI。本机已完成新版配置和入口迁移，当前已发布版本为 0.3.0，已核验 Claude Desktop 2.42304.0 的应用偏好接口。源码与已安装 wheel 独立；安装状态以 `claude-config --version` 为准，推送源码不会升级本机工具。
 
 ## 当前入口与模块
 

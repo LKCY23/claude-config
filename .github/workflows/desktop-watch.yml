@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/desktop_compatibility.py
+      - scripts/open_desktop_compatibility_pr.py
+      - .github/workflows/desktop-watch.yml
 permissions:
   contents: read
 concurrency:
@@ -33,7 +38,7 @@ jobs:
           if-no-files-found: warn
   report-pr:
     needs: probe
-    if: needs.probe.outputs.status == 'needs-review'
+    if: github.event_name != 'pull_request' && needs.probe.outputs.status == 'needs-review'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

@@ -85,3 +85,5 @@ PYTHONPATH=src python -m unittest discover -s tests
 [Bootstrap 2.0 的代码与目标机器 App 构建](https://github.com/LKCY23/claudespace/tree/main/claude-desktop-bootstrap)由 claudespace 维护，使用独立源码 Release；它调用本工具的 plan → apply，并在成功后启动 Desktop。
 设置合并、检查、冲突、备份与恢复继续由本工具负责，不新增第二套配置引擎。
 升级本工具本身不会替换 Bootstrap、切换供应商或把本机改为第三方部署。
+
+新版 Desktop 的自动检查和订阅 Codex 修复入口见[兼容性自动化](references/desktop-compatibility-automation.md)：Actions 生成待核验草稿 PR，用户在 PR 下委派给 `@codex`，独立 macOS CI 验证修复。无需在仓库保存 OpenAI API Key 或订阅登录凭据；不自动升级用户机器。

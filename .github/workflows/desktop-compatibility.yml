@@ -1,0 +1,60 @@
+name: Desktop compatibility
+on:
+  pull_request:
+    paths:
+      - 'compatibility/claude-desktop/*.json'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact version from compatibility/claude-desktop/VERSION.json'
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: Desktop compatibility
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - run: |
+          uv venv --python 3.11
+          uv pip install -e . -c constraints.txt
+      - name: Select pinned report
+        id: report
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os, re, subprocess
+          from pathlib import Path
+          requested = os.environ['REQUESTED_VERSION']
+          if requested:
+              if not re.fullmatch(r'\d+\.\d+\.\d+', requested):
+                  raise SystemExit('Invalid version')
+              reports = [f'compatibility/claude-desktop/{requested}.json']
+          else:
+              files = subprocess.check_output(['git', 'diff', '--name-only', os.environ['BASE_SHA'], 'HEAD'], text=True).splitlines()
+              reports = [p for p in files if re.fullmatch(r'compatibility/claude-desktop/\d+\.\d+\.\d+\.json', p)]
+          if len(reports) != 1 or not Path(reports[0]).is_file():
+              raise SystemExit('Expected one pinned Desktop report')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write('path=' + reports[0] + '\n')
+          PY
+      - name: Verify exact release using proposed adapter
+        env:
+          REPORT: ${{ steps.report.outputs.path }}
+        run: .venv/bin/python scripts/desktop_compatibility.py --report "$REPORT" --out "$RUNNER_TEMP/desktop-verification" --require-compatible
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: desktop-verification
+          path: ${{ runner.temp }}/desktop-verification/
+          retention-days: 7
+          if-no-files-found: warn

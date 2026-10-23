@@ -61,6 +61,18 @@ class ReleaseTests(unittest.TestCase):
             with patch.object(watch.subprocess, 'run', return_value=result), self.assertRaises(ValueError):
                 watch.inspect(app, '3.6556.2')
 
+    def test_unknown_asar_format_still_produces_review_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory); (app / 'Contents/Resources').mkdir(parents=True)
+            (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({
+                'CFBundleIdentifier': watch.BUNDLE, 'CFBundleShortVersionString': '3.6556.2'}))
+            (app / 'Contents/Resources/app.asar').write_bytes(b'new-format')
+            result = subprocess.CompletedProcess([], 0, '', 'TeamIdentifier=' + watch.TEAM + '\n')
+            with patch.object(watch.subprocess, 'run', return_value=result):
+                report = watch.run(release(), app, app=app)
+            self.assertEqual(report['status'], 'needs-review')
+            self.assertEqual(report['candidate_modules'], [])
+
     def test_unknown_interface_is_review_not_compatible_and_does_not_run_smoke(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(watch, 'inspect', return_value=(
                 [{'status': 'blocked', 'code': 'capability_unknown'}], [])), patch.object(watch.subprocess, 'run') as run:

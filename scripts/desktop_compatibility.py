@@ -120,20 +120,28 @@ def inspect(app, expected_version):
     settings = dict(userThemeMode='dark', locale='en-US', chatTabEnabled=True, autoModeEnabled=False, builtinBrowserEnabled=True)
     checks = AppProbe().check('claude-desktop', app, settings, {})
     # Diagnostic fingerprints are evidence only. They never authorize writes.
-    archive = (app / 'Contents/Resources/app.asar').read_bytes()
-    header_size, json_size = struct.unpack_from('<I', archive, 4)[0], struct.unpack_from('<I', archive, 12)[0]
-    tree = json.loads(archive[16:16 + json_size]); modules = []
-    def walk(node, prefix=''):
-        for name, item in node.get('files', {}).items():
-            path = prefix + name
-            if 'files' in item:
-                walk(item, path + '/')
-            elif path.endswith('.js') and 'offset' in item:
-                start = 8 + header_size + int(item['offset']); data = archive[start:start + item['size']]
-                present = [key for key in FIELDS if key.encode() in data]
-                if len(present) == len(FIELDS):
-                    modules.append({'path': path, 'sha256': hashlib.sha256(data).hexdigest(), 'fields': present})
-    walk(tree)
+    modules = []
+    try:
+        archive = (app / 'Contents/Resources/app.asar').read_bytes()
+        header_size, json_size = struct.unpack_from('<I', archive, 4)[0], struct.unpack_from('<I', archive, 12)[0]
+        if not 16 + json_size <= 8 + header_size <= len(archive):
+            raise ValueError('Unrecognized source archive bounds')
+        tree = json.loads(archive[16:16 + json_size]); modules = []
+        def walk(node, prefix=''):
+            for name, item in node.get('files', {}).items():
+                path = prefix + name
+                if 'files' in item:
+                    walk(item, path + '/')
+                elif path.endswith('.js') and 'offset' in item:
+                    start = 8 + header_size + int(item['offset']); data = archive[start:start + item['size']]
+                    present = [key for key in FIELDS if key.encode() in data]
+                    if len(present) == len(FIELDS):
+                        modules.append({'path': path, 'sha256': hashlib.sha256(data).hexdigest(), 'fields': present})
+        walk(tree)
+    except (OSError, ValueError, TypeError, KeyError, struct.error, RecursionError):
+        # Diagnostic extraction must not suppress an unknown-interface report.
+        print("Preference-module diagnostics unavailable; retaining interface check result.", flush=True)
+        modules = []
     return checks, modules
 
 

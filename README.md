@@ -72,6 +72,14 @@ uv build
 PYTHONPATH=src python -m unittest discover -s tests
 ```
 
+Codex Cloud 环境选择 Python 3.11 或更新版本，在 **Setup script** 填写：
+
+```sh
+bash scripts/setup-cloud.sh
+```
+
+可在 Maintenance script 中使用同一命令。脚本自动定位仓库根目录，在仓库 `.venv` 内安装开发依赖和 CLI，可重复运行。后续使用 `.venv/bin/python` 和 `.venv/bin/claude-config`；脚本不依赖跨会话保留的 shell 激活状态。macOS 专用验证仍由 GitHub macOS 工作流完成。
+
 原生安装冒烟测试须显式启用，使用隔离目录；正常测试不会操作真实账号和配置。
 包代码位于 `src/claude_config/`。开发源码与已安装 wheel 相互独立。
 

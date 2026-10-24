@@ -109,6 +109,12 @@ class AppProfileManager:
                 return result, stores, checks
             library = self.data_root / 'configLibrary'
             metadata, _, _ = self._read(library / '_meta.json', parse_json)
+            # Desktop's hybrid reader substitutes bootstrap configuration for
+            # appliedId. Do not write/export an inactive local feature store.
+            if 'hybridPointer' in metadata:
+                checks.append({'name': 'claude_applied_profile', 'status': 'blocked', 'code': 'capability_unknown',
+                               'reason': 'Hybrid configuration does not verify a locally applied feature store'})
+                return result, stores, checks
             applied = metadata.get('appliedId')
             if not isinstance(applied, str) or not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', applied):
                 checks.append({'name': 'claude_applied_profile', 'status': 'blocked', 'code': 'capability_unknown',

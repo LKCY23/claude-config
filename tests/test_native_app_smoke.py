@@ -2,6 +2,8 @@
 import json
 import os
 from pathlib import Path
+import plistlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -10,7 +12,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from claude_config.core.app_manager import AppProfileManager
-from claude_config.core.app_native import AppProbe
+from claude_config.core.app_native import AppProbe, asar_entries
 from claude_config.core.native import NativeProbe
 from claude_config.core.fields import leaves
 from claude_config.core.recovery import rollback_plan
@@ -59,20 +61,42 @@ class NativeAppSmoke(unittest.TestCase):
             probe = IsolatedAppProbe(root)
             manager = AppProfileManager(path, app, probe=probe)
             before = manager.native_path.read_bytes() if manager.native_path.exists() else None
+            before_native = {p.relative_to(native): p.read_bytes() for p in native.rglob('*') if p.is_file()}
             plan = manager.plan()
             self.assertTrue(plan.report['ready'], plan.report['blockers'])
             self.assertNotIn('LOCAL_ONLY', json.dumps(plan.report))
             result = plan.apply(root / 'state')
+            if app == 'claude-desktop':
+                info = plistlib.loads((Path(application) / 'Contents/Info.plist').read_bytes())
+                if info['CFBundleShortVersionString'] == '3.6556.2':
+                    # Execute only selected, hash-pinned native readers/setters
+                    # with in-memory dependencies, never the Electron entrypoint.
+                    resources = Path(application) / 'Contents/Resources'
+                    module = '.vite/build/index.chunk-jPKPzV-P.js'
+                    source = asar_entries((resources / 'app.asar').read_bytes(), [module])[module]
+                    source_path = root / 'source.js'
+                    source_path.write_bytes(source)
+                    files = {p.relative_to(native).as_posix(): p.read_text() for p in native.rglob('*.json')}
+                    proc = subprocess.run(['node', str(Path(__file__).with_name('claude_desktop_36556_probe.cjs')), str(source_path)],
+                                          input=json.dumps({'files': files, 'settings': settings,
+                                                            'catalogs': [p.name for p in resources.glob('*.json')]}),
+                                          capture_output=True, text=True, timeout=30)
+                    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    print(proc.stdout.strip())
             if backend:
                 env = {'PATH': os.environ.get('PATH', ''), 'HOME': str(root), 'CODEX_HOME': str(home), 'TMPDIR': str(root)}
                 readback = NativeProbe._codex_read(backend, home, env)
                 self.assertIsInstance(readback, dict)
                 self.assertEqual({key: readback['desktop'].get(key) for key in settings}, settings)
             selectors = ['/settings/' + '/'.join(path) for path, _ in leaves(settings)]
-            exported = AppProfileManager(path, app, probe=probe).export(selectors)
+            export_name = f'profiles/apps/{app}/exported.yaml'
+            exported = AppProfileManager(path, app, probe=probe).export(selectors, profile=export_name)
             self.assertTrue(exported.report['ready'], exported.report['blockers'])
+            exported.apply(root / 'state')
+            self.assertEqual(yaml.safe_load((root / 'data' / export_name).read_text())['settings'], settings)
             rollback_plan(AppProfileManager(path, app, probe=probe), Path(result['recovery']).parent.name).apply(root / 'state')
             self.assertEqual(manager.native_path.read_bytes() if manager.native_path.exists() else None, before)
+            self.assertEqual({p.relative_to(native): p.read_bytes() for p in native.rglob('*') if p.is_file()}, before_native)
 
     def test_codex_app_preferences_backend_readback(self):
         backend = os.environ.get('CLAUDE_CONFIG_NATIVE_CODEX_APP')

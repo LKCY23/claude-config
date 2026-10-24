@@ -304,6 +304,42 @@ class AppTests(unittest.TestCase):
         self.assertEqual(profile['settings'], {'chatTabEnabled': False})
         self.assertEqual(json.loads(path.read_text())['inferenceGatewayApiKey'], 'PRIVATE_GATEWAY')
 
+    def test_claude_hybrid_pointer_blocks_feature_apply_and_export(self):
+        entry = self.features()
+        meta = entry.parent / '_meta.json'
+        for pointer in ({'bootstrapUrl': 'https://example.invalid/PRIVATE'}, {}, None):
+            meta.write_text(json.dumps({'appliedId': entry.stem, 'hybridPointer': pointer}))
+            before = {p: p.read_bytes() for p in (entry, meta, self.root / 'claude-desktop/config.json')}
+            for key in ('chatTabEnabled', 'autoModeEnabled', 'builtinBrowserEnabled'):
+                with self.subTest(pointer=pointer, key=key):
+                    self.profile('claude-desktop', {key: True})
+                    manager = self.manager('claude-desktop')
+                    for plan in (manager.plan(), manager.export(['/settings/' + key])):
+                        self.assertFalse(plan.report['ready'])
+                        self.assertIn('claude_applied_profile', [r['name'] for r in plan.report['blockers']])
+                        self.assertNotIn('PRIVATE', json.dumps(plan.report))
+                    self.assertEqual({p: p.read_bytes() for p in before}, before)
+
+    def test_claude_hybrid_pointer_does_not_block_theme_and_locale(self):
+        entry = self.features()
+        meta = entry.parent / '_meta.json'
+        meta.write_text(json.dumps({'appliedId': entry.stem, 'hybridPointer': {'bootstrapUrl': 'https://example.invalid/'}}))
+        before = {p: p.read_bytes() for p in (entry, meta)}
+        self.profile('claude-desktop', {'userThemeMode': 'dark', 'locale': 'en-US'})
+        self.manager('claude-desktop').plan().apply(self.state)
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+
+    def test_claude_hybrid_pointer_added_after_plan_prevents_write(self):
+        entry = self.features()
+        self.profile('claude-desktop', {'autoModeEnabled': False})
+        plan = self.manager('claude-desktop').plan()
+        before = entry.read_bytes()
+        (entry.parent / '_meta.json').write_text(json.dumps({
+            'appliedId': entry.stem, 'hybridPointer': {'bootstrapUrl': 'https://example.invalid/'}}))
+        with self.assertRaises(PlanStale):
+            plan.apply(self.state)
+        self.assertEqual(entry.read_bytes(), before)
+
     def test_rollback_restores_only_owned_run_and_preserves_later_changes(self):
         self.profile(settings={'reviewDelivery': 'detached'})
         path = self.native(value={'desktop': {'reviewDelivery': 'inline'}})

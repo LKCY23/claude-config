@@ -17,14 +17,16 @@ AUDITS = {
         '.vite/build/src-Dtwb7yKT.js': 'a0e4b4b014f04a9391bcfa6a0d6f2b6703590daacf3591831a62fec809b2cb76',
         '.vite/build/startup-requirements-BlaoVssN.js': '8a38b0850e36b761e0d95e07e93600716db41cb88de98c8e18fb392be25a38e6',
     }),
-    'claude-desktop': ('2.42304.2', 'com.anthropic.claudefordesktop', {
-        '.vite/build/index.chunk-BkhOOUzl.js': '07d785c56978eb335c933562a514b3eba79cc5f307b4cd46f7f84e2dca5c83ec',
+    'claude-desktop': ('3.6556.2', 'com.anthropic.claudefordesktop', {
+        '.vite/build/index.chunk-jPKPzV-P.js': '6e898798943b990e6eefa9209c61d977866b7898f681864f02c8cad3bb691ed5',
     }),
 }
 
 # Keep earlier reviewed interface signatures too.
 PREVIOUS_AUDITS = {
-    'claude-desktop': (('2.42304.0', 'com.anthropic.claudefordesktop', {
+    'claude-desktop': (('2.42304.2', 'com.anthropic.claudefordesktop', {
+        '.vite/build/index.chunk-BkhOOUzl.js': '07d785c56978eb335c933562a514b3eba79cc5f307b4cd46f7f84e2dca5c83ec',
+    }), ('2.42304.0', 'com.anthropic.claudefordesktop', {
         '.vite/build/index.chunk-muI2IV6k.js': '4a8f1c07e69231e47127d3c55fcdda84eddb089ce06d347ad29591e25b6fb5f5',
     }), ('2.26454.2', 'com.anthropic.claudefordesktop', {
         '.vite/build/index.chunk-D86SM5R2.js': '6dc998c3796b86042889b5338b761f1b01f3254226f2f8f5d4b1faa69092c8f9',

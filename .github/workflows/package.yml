@@ -18,6 +18,10 @@ jobs:
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
       - run: uv venv --python '${{ matrix.python }}'
       - run: uv pip install -e . -c constraints.txt
+      - name: Verify cloud setup from another working directory
+        run: |
+          cd "$RUNNER_TEMP"
+          bash "$GITHUB_WORKSPACE/scripts/setup-cloud.sh"
       - name: Build reproducible wheel
         run: SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$GITHUB_SHA")" uv build
       - run: uv tool install --managed-python --python '${{ matrix.python }}' -c constraints.txt dist/*.whl

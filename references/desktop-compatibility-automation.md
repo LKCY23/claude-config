@@ -14,6 +14,12 @@ The job does not install or start Desktop, log in, access user configuration or 
 
 The monitor repeats checks on schedule, but deduplicates PRs; it has no installer cache or background daemon. An interrupted publication that leaves a branch but no PR fails safely and requires inspection rather than force-pushing over that branch.
 
+## Codex Cloud environment setup
+
+GitHub code review can work before a repair environment exists. If the connector asks to create an environment, create one for `LKCY23/claude-config`, default branch `master`, and select Python 3.11 or newer. Set **Setup script** to `bash scripts/setup-cloud.sh`; the same command is suitable for maintenance after a cached checkout changes.
+
+This installs the editable development package and pinned dependencies into the repository `.venv`, without a global tool install or native Agent/App configuration. No API key or local machine data is needed. The cloud environment itself must still finish setup successfully; local or GitHub tests do not prove it was created. Use `.venv/bin/python -m unittest discover -s tests` for Python checks. Signed macOS application verification runs in the existing GitHub macOS workflow.
+
 ## Human subscription handoff
 
 Copy the `@codex` instruction from the draft PR into a **new PR comment**, or paste it into a Codex task with the PR context. GitHub's connected Codex can then prepare the adaptation using `.github/codex/desktop-compatibility.md`. The workflow does not post a bot-authored delegation comment or claim such comments activate subscription tasks.

@@ -369,7 +369,8 @@ class TmuxReportTests(unittest.TestCase):
                               + 'r=build_report(p.report(), operation="plan", context={"agent_type":"codex"})\n'
                               + f'save_report(r, {str(root / "state")!r})\n'
                               + 'code=output_report(r,"auto")\n'
-                              + f'Path({str(root / "done")!r}).write_text(str(code))\n'
+                              + f'Path({str(root / "done.tmp")!r}).write_text(str(code))\n'
+                              + f'Path({str(root / "done.tmp")!r}).replace({str(root / "done")!r})\n'
                               + 'time.sleep(10)\n')
             socket = 'cc-report-' + root.name
             command = ['tmux', '-L', socket, '-f', '/dev/null']

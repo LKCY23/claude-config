@@ -329,7 +329,7 @@ class FilePlan:
         progress('等待配置写入锁')
         with interruption_handlers(), lock(global_root / 'execution.lock'), lock(locks / 'execution.lock'):
             self._recheck()
-            if self.report.get('operation') != 'rollback' and self.scopes:
+            if self.report.get('operation') not in ('rollback', 'reconcile-run') and self.scopes:
                 pending = unfinished(root, self.scopes) + registered_pending(global_root, self.scopes)
                 if pending:
                     raise UnfinishedRun(pending)
@@ -345,6 +345,8 @@ class FilePlan:
             self.report['results'] = journal['operations']
             progress('运行 ' + run_dir.name + '；恢复记录：' + self.report['recovery'])
             try:
+                if self.report.get('operation') == 'reconcile-run':
+                    register_run(global_root, self.scopes, Path(self.report['reconciled_journal']), atomic_write)
                 register_run(global_root, self.scopes, run_dir / 'journal.json', atomic_write)
                 for index, change in enumerate(self.steps):
                     if index % 25 == 0 or not isinstance(change, FileChange):

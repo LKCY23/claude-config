@@ -30,6 +30,8 @@ claude-config plan --agent codex --format json
 ```
 
 默认读取 `~/.claude-config-tool/machine.yaml`；`--machine` 可以显式覆盖，不搜索当前工作目录。
+
+跨设备的 Profile 选择保存在配置仓库 `machines/<machine_id>.yaml`；本机 Machine 通过 `profile_selection` 显式引用，只保留路径与依赖。`init --profile-selection machines/<machine_id>.yaml` 预览接管当前选择，`--write --expect-plan-id <ID>` 执行；Git 拉取不会自动 apply。格式、切换与恢复见 [机器绑定规范](references/machine-profile-bindings.md)。
 数据默认 `~/claude-config-data`，报告和私有恢复日志默认 `<config_dir>/.state/`。
 TTY/tmux 默认可展开；管道/重定向输出静态文字。所有配置操作保存完整 JSON。见 [返回协议](references/report-contract.md)。
 

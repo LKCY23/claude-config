@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-config"
-version = "0.3.2"
+version = "0.4.0"
 description = "Explicit Agent and App Profiles with checked configuration deployment"
 readme = "README.md"
 requires-python = ">=3.11"

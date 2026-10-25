@@ -10,6 +10,7 @@ import yaml
 
 from .profile import ReportParser, UsageError, output_report, report_format
 from .core.merge import fingerprint
+from .core.machine_profiles import MachineProfiles
 from .core.native import parse_json, parse_yaml, snapshot_read
 from .core.recovery import rollback_plan
 from .core.reporting import build_report, fallback_state_root, save_report
@@ -52,7 +53,20 @@ class Setup:
             self.machine.pop('runtime', None)
         if args.config_dir:
             self.machine['config_dir'] = str(args.config_dir.expanduser().absolute())
-        validate_machine(self.machine)
+        if getattr(args, 'profile_selection', None):
+            previous = {group: {name: entry.get('profile') for name, entry in self.machine[group].items()}
+                        for group in ('agents', 'apps')}
+            self.machine['profile_selection'] = args.profile_selection
+            for group in ('agents', 'apps'):
+                for entry in self.machine[group].values():
+                    entry.pop('profile', None)
+        resolved = MachineProfiles(source, self.machine, expected=pin)
+        self.machine_profiles = resolved
+        if getattr(args, 'profile_selection', None):
+            require(all(profile is None or profile == resolved.effective[group][name]['profile']
+                        for group, entries in previous.items() for name, profile in entries.items()),
+                    'Repository choices differ from the current Machine; reconcile before adopting the selection file')
+        self.sources.update(resolved.sources)
         self.state_root = state_directory(self.machine)
         self.skills = {}
         for item in args.skill:
@@ -131,8 +145,11 @@ def doctor(machine_path):
     checks = [{'name': 'python_runtime', 'status': 'passed', 'reason': sys.executable}]
     raw, pin = snapshot_read(machine_path)
     require(pin['exists'], '未找到 Machine；请先运行 claude-config init，或指定 --machine')
-    machine = validate_machine(parse_yaml(raw))
+    selected = MachineProfiles(machine_path)
+    machine = selected.effective
     checks.append({'name': 'machine_binding', 'status': 'passed', 'reason': str(machine_path)})
+    if selected.selection_path is not None:
+        checks.append({'name': 'machine_profile_selection', 'status': 'passed', 'reason': str(selected.selection_path)})
     checks.append({'name': 'configuration_directory', 'status': 'passed' if Path(machine['config_dir']).is_dir() else 'warning',
                    'reason': machine['config_dir']})
     for group in ('agents','apps'):
@@ -164,6 +181,7 @@ def main(argv):
     if argv[0] == 'init':
         parser.add_argument('--from-machine', type=Path)
         parser.add_argument('--config-dir', type=Path)
+        parser.add_argument('--profile-selection', help='Adopt machines/<machine_id>.yaml without changing current Profile choices')
         parser.add_argument('--skill', action='append', default=[], metavar='AGENT=SKILL.md')
         parser.add_argument('--retire-script-install', action='store_true')
         parser.add_argument('--write', action='store_true')

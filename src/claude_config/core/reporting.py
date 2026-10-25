@@ -47,7 +47,7 @@ ORIGIN_LABELS = {'program_default': '程序默认策略', 'run_field': '本次�
                  'profile_default': 'Profile 的默认策略', 'machine_default': 'Machine 的默认策略',
                  'resource_adapter': '资源处理规则', 'structural': '结构处理规则', 'preflight': '检查规则', 'profile_switch': 'Profile 切换规则'}
 ORIGIN_LABELS['migration_converter'] = '旧数据转换器'
-LABELS.update(profiles='Profile', exclusions='排除项', attribution='Git 署名')
+LABELS.update(profiles='Profile', exclusions='排除项', attribution='Git 署名', machine_profile_selection='机器的 Profile 选择')
 LABELS.update(clients='客户端', framework='框架文件', shared_files='共享恢复副本', data='配置数据',
               app_preference_interface='应用配置接口', native_installation='插件安装', options='运行选项', enabled='启用状态')
 LABELS.update(catalogs='资源目录', catalog_roots='本机来源目录', repo='来源仓库', commit='固定提交',
@@ -269,6 +269,9 @@ def build_report(raw, *, operation, preview_only=True, manager=None, context=Non
             target['deployment_mode'] = getattr(manager, 'deployment_mode', None)
             target['default_third_party_data_root'] = str(Path.home() / 'Library/Application Support/Claude-3p')
     target['profile_file'] = str(manager.root / target['profile']) if manager and target['profile'] else None
+    selections = getattr(manager, 'machine_profiles', None)
+    if selections is not None and selections.selection_path is not None:
+        target['profile_selection_file'] = str(selections.selection_path)
     ready = bool(report.get('ready', not blockers)) and not error
     deployment = report.get('deployment_ready', ready if operation in ('plan', 'validate', 'apply', 'switch') else None)
     attempted = any(row['status'] not in ('planned', 'unchanged') for row in results)
@@ -595,6 +598,8 @@ def overview_lines(report):
         lines.append('机器配置指针：' + target['control_file'])
     if target.get('profile_file'):
         lines.append('Profile 文件：' + target['profile_file'])
+    if target.get('profile_selection_file'):
+        lines.append('机器的 Profile 选择：' + target['profile_selection_file'])
     lines += [f"检查：{counts['passed']} 项通过，{counts['blocked'] + counts['failed']} 项不通过，{counts['warning']} 项警告，{counts['not_verified'] + counts['skipped']} 项未验证或未检查。",
               f"{'计划差异' if report['execution']['started'] else '待更新'}：{stats['changes']} 项；{stats['unresolved_conflicts']} 处未解决冲突，{stats['resolved_conflicts']} 处已处理冲突，{stats['blockers']} 项阻断。"]
     for row in report['decisions']:

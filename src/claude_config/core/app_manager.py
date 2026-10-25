@@ -14,19 +14,21 @@ from .fields import leaves
 from .merge import MISSING, MergePlan, get, same
 from .native import parse_json, parse_native, parse_yaml, projection, put, render_native, snapshot_read
 from .schema import (as_pointer, closed, mapping, pointer, require, state_directory,
-                     validate_machine, validate_profile, version, within)
+                     validate_profile, version, within)
 from .transaction import FileChange, FilePlan, PlanStale
+from .machine_profiles import MachineProfiles
 
 
 class AppProfileManager:
     def __init__(self, machine_file, app, probe=None, *, state_root=None):
         require(app in ('codex-app', 'claude-desktop'), 'Explicit app is required')
         self.machine_path = Path(machine_file).absolute()
-        data, expected = snapshot_read(self.machine_path)
-        self.machine = validate_machine(parse_yaml(data))
+        self.machine_profiles = MachineProfiles(self.machine_path)
+        self.local_machine = self.machine_profiles.local
+        self.machine = self.machine_profiles.effective
         require(app in self.machine['apps'], 'Machine has no binding for ' + app)
         self.app, self.probe = app, probe or AppProbe()
-        self.sources = {self.machine_path: expected}
+        self.sources = dict(self.machine_profiles.sources)
         self.references = {}
         self.root = Path(self.machine['config_dir'])
         self.entry = self.machine['apps'][app]
@@ -210,10 +212,7 @@ class AppProfileManager:
                 changes.append(FileChange(self.state_path, (json.dumps(new_state, indent=2, ensure_ascii=False) + '\n').encode(),
                                           'app-managed-baseline', lambda data: self._validate_state(parse_json(data)), state_expected))
             if profile and profile != self.entry['profile']:
-                machine = deepcopy(self.machine)
-                machine['apps'][self.app]['profile'] = name
-                changes.append(FileChange(self.machine_path, yaml.safe_dump(machine, allow_unicode=True, sort_keys=False).encode(),
-                                          'machine-binding', lambda data: validate_machine(parse_yaml(data)), self.sources[self.machine_path]))
+                changes.append(self.machine_profiles.switch('apps', self.app, name))
         operation = 'switch' if profile is not None or state and state['profile'] != name else 'apply'
         plan = self._file_plan(merge, changes, checks, operation, native_write, prepare=prepare)
         plan.report['binding'] = {'previous_profile': state.get('profile', self.entry['profile']), 'profile': name}

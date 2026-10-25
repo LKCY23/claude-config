@@ -345,6 +345,8 @@ class FilePlan:
             self.report['results'] = journal['operations']
             progress('运行 ' + run_dir.name + '；恢复记录：' + self.report['recovery'])
             try:
+                if self.report.get('operation') == 'reconcile-run':
+                    register_run(global_root, self.scopes, Path(self.report['reconciled_journal']), atomic_write)
                 register_run(global_root, self.scopes, run_dir / 'journal.json', atomic_write)
                 for index, change in enumerate(self.steps):
                     if index % 25 == 0 or not isinstance(change, FileChange):

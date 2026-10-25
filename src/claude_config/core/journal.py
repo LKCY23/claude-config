@@ -224,7 +224,9 @@ def register_run(directory, scopes, journal_path, writer, *, remove=False):
         # Keep other outstanding executions. A recovery in a different state
         # directory must not overwrite their registry entries.
         active = {row['journal'] for row in registered_pending(directory, [scope])}
-        locations = [location for location in locations if location in active]
+        # Reconciled failures remain discoverable: changing their original
+        # evidence invalidates the receipt and must restore cross-state gating.
+        locations = [location for location in locations if location in active or reconciliation(Path(location))]
         if remove:
             locations = [location for location in locations if location != str(journal_path)]
         else:

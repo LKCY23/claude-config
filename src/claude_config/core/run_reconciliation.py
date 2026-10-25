@@ -90,6 +90,6 @@ def reconcile_plan(manager, run):
     report = {'operation': 'reconcile-run', 'agent_type': manager.agent, 'ready': True,
               'plan_id': fingerprint(receipt), 'checks': [{'name': 'later_management', 'status': 'passed',
               'reason': 'Later successful deployment and current plugin images match; original failure evidence is retained'}],
-              'decisions': [], 'blockers': [], 'reconciliation': receipt}
+              'decisions': [], 'blockers': [], 'reconciliation': receipt, 'reconciled_journal': str(path)}
     return FilePlan([FileChange(target, (json.dumps(receipt, indent=2) + '\n').encode(), 'run-reconciliation', parse_json)],
                     sources=sources, directories=directories, scopes=[str(manager.native_path.resolve())], report=report)

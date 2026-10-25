@@ -60,7 +60,12 @@ def main(argv=None):
     else:
         for row in rows:
             print(f"{row['run_id']}  {row['status']}  process={row['process']}  {row['operations']}")
+            if row.get('reconciliation'):
+                print('已核对：保留后续已验证配置；依据运行 ' + row['reconciliation']['superseding_run'] + '；上方 failed 为保留的历史记录。')
             if args.run:
                 print('当前内容：' + json.dumps(row['current_matches'], ensure_ascii=False))
-        print('查看不会恢复或认领内容；恢复使用 rollback --run <ID> 预览。')
+        if args.run and rows[0].get('reconciliation'):
+            print('原失败证据已保留；无需为此历史记录回滚当前配置。')
+        else:
+            print('查看不会恢复或认领内容；使用 rollback 预览恢复，或用 reconcile-run 核对已被后续部署取代的旧记录。')
     return 0

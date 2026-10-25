@@ -354,6 +354,10 @@ class ResourcePlan:
                                  'cache': str(item['cache']), 'files': deepcopy(old.get('files', {})) if old else {}, 'native': {}}
             slots = self.binder.slots(package)
             item['slots'] = slots
+            from .runtime_requirements import check_runtime
+            runtime_check = check_runtime(package, slots)
+            if runtime_check:
+                self.checks.append(runtime_check)
             self.checks.append({'name': 'fixed_resource_source', 'ref': ref, 'status': 'passed', 'commit': package.commit, 'source_fingerprint': package.source_fingerprint,
                                 'level': 'pinned-content'})
             self.checks.append({'name': 'package_references', 'ref': ref, 'status': 'passed', 'level': 'tracked-package-layout',

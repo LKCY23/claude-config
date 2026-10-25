@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -25,6 +26,13 @@ def command(args, *, timeout=120):
         env.pop(key, None)
     result = subprocess.run(args, capture_output=True, env=env, timeout=timeout)
     if result.returncode:
+        diagnostic = result.stderr.decode(errors='replace').lower()
+        if '401' in diagnostic or 'requires authentication' in diagnostic or 'not logged' in diagnostic:
+            raise SchemaError('GitHub 凭据当前不可用或被拒绝；检查当前执行环境的登录和钥匙串可访问性，不能仅据此认定 token 过期。')
+        if '403' in diagnostic or '404' in diagnostic or 'repository not found' in diagnostic:
+            raise SchemaError('GitHub 拒绝访问或找不到明确来源；核对仓库、Release 和当前账号权限。')
+        if any(text in diagnostic for text in ('could not resolve', 'timed out', 'failed to connect', 'network is unreachable')):
+            raise SchemaError('获取固定来源时网络不可达或超时；已保留准备好的来源，未采用配置。')
         raise SchemaError('获取失败：检查 GitHub 访问权限、网络及 Git/gh 配置；未修改配置选择。')
     return result.stdout
 
@@ -85,7 +93,8 @@ def prepare_git(root, repo, commit):
 
 def fetch(manager, alias, release, source_map=None, *, report=None):
     report = {} if report is None else report
-    report.update(ready=False, checks=[], decisions=[], blockers=[], results=[], scope=[['catalogs', alias]])
+    report.update(ready=False, checks=[], decisions=[], blockers=[], results=[], scope=[['catalogs', alias]],
+                  fetch_programs={name: shutil.which(name) for name in ('git', 'gh')})
     require(isinstance(alias, str) and NAME.fullmatch(alias), 'Invalid catalog alias')
     require(release.startswith('baseline-') and COMMIT.fullmatch(release[9:]),
             '--release requires baseline- followed by the exact 40-character commit')

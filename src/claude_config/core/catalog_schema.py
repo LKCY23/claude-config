@@ -106,7 +106,7 @@ def validate_catalog(value):
                 require(validation.get('level') in ('structural', 'native', 'runtime'), 'Validation must record its level')
                 path(validation.get('evidence'))
         requires = item['requires']
-        obj(requires, ('resources', 'bindings'), (), 'requires')
+        obj(requires, ('resources', 'bindings', 'runtime'), (), 'requires')
         refs = requires.get('resources', [])
         require(isinstance(refs, list) and all(isinstance(ref, str) and REF.fullmatch(ref) for ref in refs), 'Invalid dependency references')
         require(len(set(refs)) == len(refs), 'Duplicate dependency reference')
@@ -117,6 +117,16 @@ def validate_catalog(value):
             obj(entry, ('kind', 'required'), ('kind', 'required'), 'required binding')
             require(entry['kind'] in ('executable', 'path', 'endpoint', 'secret') and type(entry['required']) is bool,
                     'Invalid binding requirement')
+        if 'runtime' in requires:
+            runtime = requires['runtime']
+            keys = ('kind', 'binding', 'major', 'platforms', 'architectures', 'modules_abi')
+            obj(runtime, keys, keys, 'runtime requirement')
+            require(runtime['kind'] == 'node' and type(runtime['major']) is int and runtime['major'] >= 1, 'Unsupported runtime requirement')
+            require(isinstance(runtime['binding'], str) and runtime['binding'] in bindings and
+                    bindings[runtime['binding']] == {'kind': 'executable', 'required': True}, 'Runtime requires a mandatory executable slot')
+            for key, allowed in (('platforms', {'darwin', 'linux'}), ('architectures', {'arm64', 'x64'})):
+                require(isinstance(runtime[key], list) and runtime[key] and all(x in allowed for x in runtime[key]), 'Invalid runtime ' + key)
+            require(isinstance(runtime['modules_abi'], str) and runtime['modules_abi'].isdigit(), 'Invalid Node module ABI')
         update = item['update']
         obj(update, ('strategy', 'target'), ('strategy',), 'update')
         require(update['strategy'] in ('branch', 'release', 'manual'), 'Unknown update strategy')

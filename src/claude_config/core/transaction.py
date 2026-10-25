@@ -12,13 +12,52 @@ import os
 from pathlib import Path
 import tempfile
 import uuid
+import signal
+import threading
+import time
+
+from .journal import JournalWriter, unfinished, registered_pending, register_run
 
 from .merge import fingerprint
 from .execution_context import progress
 
 
 class PlanStale(RuntimeError):
-    pass
+    def __init__(self, message, *, path=None, expected=None, actual=None, phase='recheck'):
+        super().__init__(message)
+        self.detail = {'phase': phase, 'path': str(path) if path is not None else None,
+                       'expected': expected, 'actual': actual}
+
+
+class UnfinishedRun(RuntimeError):
+    def __init__(self, runs):
+        super().__init__('Unfinished execution requires inspection or recovery')
+        self.runs = runs
+
+
+@contextmanager
+def interruption_handlers():
+    previous = {}
+    if threading.current_thread() is threading.main_thread():
+        def interrupted(signum, frame):
+            raise KeyboardInterrupt('Execution interrupted')
+        for name in ('SIGTERM', 'SIGHUP'):
+            signum = getattr(signal, name, None)
+            if signum is not None:
+                previous[signum] = signal.signal(signum, interrupted)
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def file_fingerprint(path):
@@ -76,6 +115,7 @@ def atomic_write(path, content, mode=0o600):
             os.fsync(stream.fileno())
         os.chmod(name, mode)
         os.replace(name, path)
+        sync_directory(path.parent)
     finally:
         Path(name).unlink(missing_ok=True)
 
@@ -100,7 +140,16 @@ def lock(path):
         raise RuntimeError('This file executor requires POSIX locks') from exc
     fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     with os.fdopen(fd, 'wb') as stream:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        last = time.monotonic()
+        while True:
+            try:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() - last >= 5:
+                    progress('仍在等待配置写入锁；尚未写入')
+                    last = time.monotonic()
+                time.sleep(0.1)
         try:
             yield
         finally:
@@ -178,6 +227,9 @@ class FilePlan:
                 path = Path(path).absolute()
                 if path not in self.paths:
                     self._snapshot(path)
+        self.aliases = {}
+        for path, snapshot in self.paths.items():
+            self.aliases.setdefault(snapshot['resolved'], []).append(path)
         if prepare:
             self._validate_all()
             for operation in self.native_operations:
@@ -203,12 +255,23 @@ class FilePlan:
              'action': 'delete' if change.delete else 'write',
              'status': 'unchanged' if self._unchanged(change, self.paths[change.path]['file']) else 'planned'}
             for change in self.changes]
-        self.report['results'] += [{'path': str(op.root), 'owner': 'native-plugins', 'action': 'native_plugin', 'status': 'planned'} for op in self.native_operations]
+        self.report['results'] += [{'path': str(op.root), 'owner': 'native-plugins', 'action': 'native_plugin', 'status': 'unchanged' if self._native_unchanged(op) else 'planned'} for op in self.native_operations]
         progress(f'{progress_label}完成：{len(self.changes)} 项')
 
     def _validate_all(self):
         for change in self.changes:
             change.validator(change.content)
+
+    @staticmethod
+    def _native_unchanged(operation):
+        if hasattr(operation, 'original'):
+            return False
+        try:
+            return getattr(operation, 'unchanged', lambda: False)()
+        except (ValueError, OSError):
+            # Invalid native state is already explained by planner checks. A
+            # display optimization must not replace that report with an error.
+            return False
 
     def _run_guards(self):
         for guard in self.guards:
@@ -228,29 +291,29 @@ class FilePlan:
             try:
                 current = {'file': file_fingerprint(path), 'resolved': str(path.resolve())}
             except (ValueError, OSError) as exc:
-                raise PlanStale('plan_stale: ' + str(path)) from exc
+                raise PlanStale('Input can no longer be checked', path=path, expected=snapshot) from exc
             if snapshot != current:
-                raise PlanStale('plan_stale: ' + str(path))
+                raise PlanStale('Input changed', path=path, expected=snapshot, actual=current)
         for root, expected in self.directories.items():
             try:
                 current = directory_fingerprint(root)
             except (ValueError, OSError) as exc:
-                raise PlanStale('plan_stale resource directory') from exc
+                raise PlanStale('Resource directory cannot be checked', path=root, expected=fingerprint(expected)) from exc
             if current != expected:
-                raise PlanStale('plan_stale resource directory')
+                raise PlanStale('Resource directory changed', path=root, expected=fingerprint(expected), actual=fingerprint(current))
 
     def _recheck_target(self, path):
         path = Path(path).absolute()
         expected = self.paths[path]
+        current = None
         try:
             current = {'file': file_fingerprint(path), 'resolved': str(path.resolve())}
-            aliases = [(alias, snapshot) for alias, snapshot in self.paths.items()
-                       if snapshot['resolved'] == expected['resolved']]
+            aliases = [(alias, self.paths[alias]) for alias in self.aliases[expected['resolved']]]
             if current != expected or any(str(alias.resolve()) != snapshot['resolved'] or snapshot != current
                                           for alias, snapshot in aliases):
-                raise PlanStale('plan_stale target: ' + str(path))
+                raise PlanStale('Target changed', path=path, expected=expected, actual=current)
         except (ValueError, OSError) as exc:
-            raise PlanStale('plan_stale target: ' + str(path)) from exc
+            raise PlanStale('Target changed', path=path, expected=expected, actual=current) from exc
 
     def apply(self, state_dir, *, writer=atomic_write):
         if not self.prepared:
@@ -260,67 +323,75 @@ class FilePlan:
         root = private_dir(state_dir).resolve()
         ignore_local_state(root)
         locks = private_dir(root / 'locks')
-        # One state-root lock serializes even disjoint plans, without one open
-        # descriptor per input/output. Scopes still identify owned recovery runs.
+        # A user-wide lock also covers two state directories bound to the same
+        # native target, without one descriptor per file.
+        global_root = private_dir(Path('/tmp').resolve() / ('claude-config-execution-' + str(os.getuid())))
         progress('等待配置写入锁')
-        with lock(locks / 'execution.lock'):
+        with interruption_handlers(), lock(global_root / 'execution.lock'), lock(locks / 'execution.lock'):
             self._recheck()
+            if self.report.get('operation') != 'rollback' and self.scopes:
+                pending = unfinished(root, self.scopes) + registered_pending(global_root, self.scopes)
+                if pending:
+                    raise UnfinishedRun(pending)
             progress('重新检查配置和来源；尚未写入')
             self._run_guards()
             self._validate_all()
             run_dir = private_dir(root / 'runs' / uuid.uuid4().hex)
-            journal = {'schema_version': 1, 'kind': 'profile-file-run',
+            journal = {'schema_version': 2, 'kind': 'profile-file-run',
                        'plan_id': self.report['plan_id'], 'created_at': datetime.now(timezone.utc).isoformat(),
                        'status': 'running', 'scopes': list(self.scopes), 'operations': []}
-            def save():
-                atomic_write(run_dir / 'journal.json', (json.dumps(journal, indent=2) + '\n').encode())
-            save()
+            events = JournalWriter(run_dir / 'journal.json', journal, atomic_write)
             self.report['recovery'] = str(run_dir / 'journal.json')
-            # Keep live execution evidence even if a later journal save fails.
-            # The command's report must not retain the original planned rows
-            # after writes or restoration have actually occurred.
             self.report['results'] = journal['operations']
+            progress('运行 ' + run_dir.name + '；恢复记录：' + self.report['recovery'])
             try:
+                register_run(global_root, self.scopes, run_dir / 'journal.json', atomic_write)
                 for index, change in enumerate(self.steps):
                     if index % 25 == 0 or not isinstance(change, FileChange):
-                        progress(f'执行迁移并校验：{index + 1}/{len(self.steps)}')
+                        progress(f'执行并校验：{index + 1}/{len(self.steps)}')
                     if not isinstance(change, FileChange):
                         self._recheck()
                         self._run_guards()
                         if self.step_guard is not None:
                             self.step_guard(change)
                         change.preflight()
+                        if getattr(change, 'unchanged', lambda: False)() and not hasattr(change, 'original'):
+                            journal['operations'].append({'step': index, 'path': str(change.root), 'owner': 'native-plugins',
+                                                          'action': 'native_plugin', 'status': 'unchanged'})
+                            continue
                         row = change.capture(run_dir, index)
+                        row['step'] = index
                         journal['operations'].append(row)
-                        save()
+                        events.operation(row)
+                        change.checkpoint = events.operation
                         try:
                             change.perform(row, run_dir)
                         finally:
                             change.observe(row)
-                            save()
+                            events.operation(row)
                         change.verify(row)
                         if self.step_guard is not None:
                             self.step_guard(change)
                         row['status'] = 'applied'
-                        for path in self.paths:
-                            if path.resolve() in {p.resolve() for p in change.paths}:
+                        affected = {str(p.resolve()) for p in change.paths}
+                        for path in list(self.paths):
+                            if self.paths[path]['resolved'] in affected:
                                 self._snapshot(path)
-                        for root in change.directories:
-                            self.directories[Path(root).absolute()] = directory_fingerprint(root)
+                        for directory in change.directories:
+                            self.directories[Path(directory).absolute()] = directory_fingerprint(directory)
                         self._recheck()
                         self._run_guards()
-                        save()
+                        events.operation(row)
                         continue
                     self._recheck_target(change.path)
                     before = self.paths[change.path]['file']
                     unchanged = self._unchanged(change, before)
-                    row = {'path': str(change.path), 'owner': change.owner, 'before': before,
+                    row = {'step': index, 'path': str(change.path), 'owner': change.owner, 'before': before,
                            'action': 'delete' if change.delete else 'write',
                            'after_sha256': None if change.delete else hashlib.sha256(change.content).hexdigest(),
                            'status': 'unchanged' if unchanged else 'planned'}
                     journal['operations'].append(row)
                     if unchanged:
-                        save()
                         continue
                     if self.step_guard is not None:
                         self.step_guard(change)
@@ -331,9 +402,10 @@ class FilePlan:
                     row['status'] = 'started'
                     mode = change.mode if change.mode is not None else before.get('mode', 0o600)
                     row['expected_after'] = {'exists': False} if change.delete else {'exists': True, 'sha256': row['after_sha256'], 'mode': mode}
-                    save()
+                    events.operation(row)
                     if change.delete:
                         change.path.unlink()
+                        sync_directory(change.path.parent)
                     else:
                         writer(change.path, change.content, mode)
                     current = file_fingerprint(change.path)
@@ -343,28 +415,30 @@ class FilePlan:
                     row['after'] = current
                     row['status'] = 'applied'
                     resolved = str(change.path.resolve())
-                    for path, snapshot in self.paths.items():
-                        if snapshot['resolved'] == resolved:
-                            if str(path.resolve()) != resolved:
-                                raise PlanStale('File alias changed during execution')
-                            self.paths[path] = {'file': current, 'resolved': resolved}
-                    for root, snapshot in self.directories.items():
-                        if change.path.is_relative_to(root):
-                            relative = change.path.relative_to(root).as_posix()
+                    for path in self.aliases[resolved]:
+                        if str(path.resolve()) != resolved:
+                            raise PlanStale('File alias changed during execution', path=path)
+                        self.paths[path] = {'file': current, 'resolved': resolved}
+                    for directory, snapshot in self.directories.items():
+                        if change.path.is_relative_to(directory):
+                            relative = change.path.relative_to(directory).as_posix()
                             if change.delete:
                                 snapshot['entries'].pop(relative, None)
                             else:
                                 snapshot['entries'][relative] = current
                                 snapshot['exists'] = True
-                    save()
+                    events.operation(row)
                     if self.step_guard is not None:
                         self.step_guard(change)
                 self._recheck()
                 self._run_guards()
-                journal['status'] = 'applied'
+                # Checkpoint failure is an execution failure, and must still
+                # enter recovery rather than claim a successful installation.
+                events.status('applied')
+                events.checkpoint()
+                register_run(global_root, self.scopes, run_dir / 'journal.json', atomic_write, remove=True)
             except (Exception, KeyboardInterrupt) as exc:
-                progress('迁移未完成，正在恢复本次已写入的内容')
-                # Record a classification, not exception text which may contain secrets.
+                progress('执行未完成，正在恢复本次已写入的内容')
                 journal['error_type'] = type(exc).__name__
                 recovery_stopped = False
                 for row in reversed(journal['operations']):
@@ -372,29 +446,33 @@ class FilePlan:
                         continue
                     if recovery_stopped:
                         row['status'] = 'recovery_conflict'
-                        continue
-                    try:
-                        if self.recovery_guard is not None:
-                            self.recovery_guard()
-                        if row.get('kind') == 'native-plugin':
-                            operation = next(op for op in self.native_operations if op.identifier == row['operation_id'])
-                            operation.restore(row)
-                        else:
-                            self._restore(row)
-                    except Exception:
-                        row['status'] = 'recovery_conflict'
-                    # Earlier writes may be dependencies of this operation.
-                    # Preserve them for retry instead of leaving dangling sources.
+                    else:
+                        try:
+                            if self.recovery_guard is not None:
+                                self.recovery_guard()
+                            if row.get('kind') == 'native-plugin':
+                                operation = next(op for op in self.native_operations if op.identifier == row['operation_id'])
+                                operation.restore(row)
+                            else:
+                                self._restore(row)
+                        except Exception:
+                            row['status'] = 'recovery_conflict'
                     recovery_stopped = row['status'] == 'recovery_conflict'
-                    if recovery_stopped:
-                        progress('恢复遇到冲突；保留之前的写入和依赖文件，等待继续恢复')
+                    try:
+                        events.operation(row)
+                    except OSError:
+                        pass  # Preserve live evidence and attempt final checkpoint.
                 journal['status'] = 'failed'
-                save()
+                try:
+                    events.status('failed', error_type=type(exc).__name__)
+                    events.checkpoint()
+                    if not any(row['status'] in ('started', 'applied', 'recovery_conflict') for row in journal['operations']):
+                        register_run(global_root, self.scopes, run_dir / 'journal.json', atomic_write, remove=True)
+                except OSError:
+                    pass
                 self.report['results'] = journal['operations']
                 raise
-            save()
-            self.report['results'] = journal['operations']
-            progress(f'迁移执行完成：{len(self.steps)} 项；正在生成报告')
+            progress(f'执行完成：{len(self.steps)} 项；正在生成报告')
             return self.report
 
     @staticmethod
@@ -410,6 +488,7 @@ class FilePlan:
                     atomic_write(path, content, row['before']['mode'])
                 else:
                     path.unlink()
+                    sync_directory(path.parent)
                 row['status'] = 'rolled_back'
             elif current == row['before']:
                 row['status'] = 'failed'  # Write never happened.

@@ -1,5 +1,7 @@
 """Plugin ownership, guarded side effects and shared-plan failures."""
 import json
+import os
+import subprocess
 from pathlib import Path
 import shutil
 import sys
@@ -117,6 +119,33 @@ class PluginTests(ResourceFixture):
         self.assertEqual(plan.native_operations[0].native(receipt)['image'], receipt['image'])
         self.assertFalse(plan.native_operations[0].native(receipt)['enabled'])
         self.assertTrue(json.loads(self.manager().state_path.read_text())['resources']['tiny@test']['native']['plugin'])
+
+    def test_process_exit_after_native_install_before_observation_is_recoverable(self):
+        self.plugin()
+        self.save()
+        worker = '''
+import os,sys
+from pathlib import Path
+from unittest.mock import patch
+from claude_config.core.manager import ProfileManager
+from claude_config.core.native_plugins import PluginOperation
+from test_profile_plugins import FakeInstaller
+installer=FakeInstaller()
+manager=ProfileManager(Path(sys.argv[1]),'claude-code',probe=lambda *args: [{'name':'isolated','status':'passed'}])
+with patch.object(PluginOperation,'_call',lambda op,args,work: installer(op,args,work)):
+    plan=manager.plan()
+    plan.native_operations[0].observe=lambda row: os._exit(23)
+    plan.apply(manager.state_root)
+'''
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(Path(__file__).resolve().parents[1] / 'src'), str(Path(__file__).parent)]))
+        result = subprocess.run([sys.executable, '-c', worker, str(self.machine_path)], env=env, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 23, result.stderr)
+        run = next((self.state / 'runs').glob('*/journal.json')).parent.name
+        plan = rollback_plan(self.manager(), run)
+        self.assertTrue(plan.report['ready'], plan.report['blockers'])
+        plan.apply(self.state)
+        self.assertFalse(self.manager().native_path.exists())
+        self.assertFalse(self.manager().state_path.exists())
 
     def test_claude_installer_environment_excludes_development_dependencies(self):
         # Pinned packages ship their runtime artifacts; a lockfile-driven install
@@ -397,6 +426,63 @@ class PluginTests(ResourceFixture):
         self.assertEqual(operation.world(), before)
         self.assertFalse(self.manager().state_path.exists())
         self.assertEqual([p.name for p in operation.cache_parent(desired).iterdir()] if operation.cache_parent(desired).exists() else [], [])
+
+    def test_five_existing_plugins_survive_failed_fresh_install_without_reinstall(self):
+        for number in range(5):
+            self.plugin('existing-' + str(number))
+        self.save()
+        previous = self.deploy()
+        before = previous.native_operations[0].world()
+        self.plugin('new-plugin')
+        self.save()
+        plan = self.manager().plan()
+        operation = plan.native_operations[0]
+        expected = operation.world()
+        self.installer.calls.clear()
+        def mutate(op, args):
+            if args[1] == 'install' and args[2].startswith('new-plugin@'):
+                receipt = next(x['desired'] for x in op.plugins if x['desired']['selector'] == args[2])
+                (op.cache_parent(receipt) / receipt['version'] / 'unexpected-link').symlink_to('body.txt')
+        self.installer.after = mutate
+        with self.assertRaises(ValueError):
+            plan.apply(self.state)
+        self.assertEqual(operation.world(), expected)
+        self.assertTrue(all(not any('existing-' in arg for arg in call) for call in self.installer.calls))
+        journal = json.loads(Path(plan.report['recovery']).read_text())
+        native = next(row for row in journal['operations'] if row.get('kind') == 'native-plugin')
+        self.assertEqual(native['status'], 'rolled_back')
+        for path, snapshot in before['directories'].items():
+            self.assertEqual(operation.world()['directories'][path], snapshot)
+
+    def test_bad_upgrade_image_restores_previous_version_for_each_agent(self):
+        for agent in ('claude-code', 'codex'):
+            with self.subTest(agent=agent):
+                # Each subcase uses its own source, native inventory and journal.
+                fixture = PluginTests()
+                fixture.setUp()
+                try:
+                    root, entry = fixture.plugin(agent=agent)
+                    fixture.save()
+                    first = fixture.deploy()
+                    document = json.loads((root / entry).read_text())
+                    document['version'] = '1.1.0'
+                    (root / entry).write_text(json.dumps(document))
+                    fixture.save()
+                    plan = fixture.manager().plan()
+                    before = plan.native_operations[0].world()
+                    def mutate(op, args):
+                        if args[1] in ('install', 'update', 'add'):
+                            receipt = op.plugins[0]['desired']
+                            image = op.cache_parent(receipt) / receipt['version']
+                            if image.exists():
+                                (image / 'unexpected-link').symlink_to('body.txt')
+                    fixture.installer.after = mutate
+                    with self.assertRaises(ValueError):
+                        plan.apply(fixture.state)
+                    self.assertEqual(plan.native_operations[0].world(), before)
+                finally:
+                    fixture.doCleanups()
+                    fixture.tearDown()
 
     def test_unrelated_mutation_during_installer_is_preserved_as_conflict(self):
         self.plugin()

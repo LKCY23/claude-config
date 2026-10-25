@@ -288,6 +288,10 @@ def build_report(raw, *, operation, preview_only=True, manager=None, context=Non
                   artifacts={'saved': False, 'json_path': None, 'review_directories': []},
                   ready=ready,
                   status='error' if error and error.get('exit_code', 2) != 1 else 'blocked' if error or not ready else 'ok')
+    # The public v1 contract uses fingerprints. Internal planner copies can
+    # contain tens of thousands of paths; serializing both doubles the evidence.
+    report.pop('file_snapshots', None)
+    report.pop('directory_snapshots', None)
     # A previewed directory is not an artifact that has been generated.
     if execution_started and not error:
         report['artifacts']['review_directories'] = report.get('review_directories', [])

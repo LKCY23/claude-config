@@ -11,7 +11,9 @@ from claude_config.core.manager import ProfileManager
 from claude_config.core.app_manager import AppProfileManager
 from claude_config.core.native import parse_json, snapshot_read
 from claude_config.core.schema import SchemaError
-from claude_config.core.transaction import PlanStale
+from claude_config.core.transaction import PlanStale, UnfinishedRun
+from claude_config.core.execution_context import progress_output, progress
+from claude_config.core.journal import unfinished
 from claude_config.core.recovery import rollback_plan
 from claude_config.core.baseline import adopt_baseline
 from claude_config.core.reporting import build_report, encode_json, exit_code, fallback_state_root, render_text, save_report
@@ -38,6 +40,7 @@ class ReportParser(argparse.ArgumentParser):
 
 
 def output_report(report, mode):
+    progress(None)
     viewed = False
     if report['artifacts']['saved'] and terminal_interactive(mode):
         viewed = show_report(report)
@@ -56,6 +59,11 @@ def report_format(argv):
 
 
 def main(argv=None):
+    with progress_output(sys.stderr):
+        return _entry(argv)
+
+
+def _entry(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     operations = ('plan', 'validate', 'apply', 'export', 'switch', 'rollback', 'adopt-baseline', 'review-conflicts')
     operation = next((item for item in argv if item in operations), 'unknown')
@@ -144,6 +152,11 @@ def _main(argv):
         resolution_source = snapshot_read(args.resolutions) if args.resolutions else None
         resolutions = parse_json(resolution_source[0]) if resolution_source else None
         manager = AppProfileManager(args.machine, args.app) if args.app else ProfileManager(args.machine, args.agent)
+        progress('检查 ' + (args.app or args.agent) + ' 的配置、资源及未完成事务')
+        if args.operation in ('plan', 'validate', 'apply', 'switch'):
+            pending = unfinished(manager.state_root, [str(manager.native_path.resolve())])
+            if pending:
+                raise UnfinishedRun(pending)
         if resolution_source:
             manager.sources[args.resolutions.absolute()] = resolution_source[1]
         if args.operation == 'adopt-baseline':
@@ -187,10 +200,11 @@ def _main(argv):
         report = plan.report if plan else {'checks': [], 'decisions': [], 'blockers': [], 'results': []}
         started = started and bool(report.get('recovery'))
         syntax_error = isinstance(exc, (yaml.YAMLError, json.JSONDecodeError)) or isinstance(exc, ValueError) and str(exc) == 'Native configuration cannot be parsed; no writes are allowed'
-        code = ('interrupted' if isinstance(exc, KeyboardInterrupt) else 'plan_stale' if isinstance(exc, PlanStale)
+        code = ('unfinished_run' if isinstance(exc, UnfinishedRun) else 'interrupted' if isinstance(exc, KeyboardInterrupt) else 'plan_stale' if isinstance(exc, PlanStale)
                 else 'invalid_configuration' if isinstance(exc, SchemaError) else 'invalid_configuration_syntax' if syntax_error
                 else 'file_access_failed' if isinstance(exc, OSError) else 'operation_failed')
-        reason = {'interrupted': '操作被中断；请核对本次修改与恢复记录。',
+        reason = {'unfinished_run': '目标存在未完成事务；先使用 runs 检查，再预览 rollback。',
+                  'interrupted': '操作被中断；请核对本次修改与恢复记录。',
                   'plan_stale': '来源、目标或处理决策已变化；请重新预览后再执行。',
                   'invalid_configuration': '配置声明或原生接口检查不通过；请核对选定 Profile、字段范围及本机绑定。',
                   'invalid_configuration_syntax': '配置文件无法解析；请检查 JSON、TOML 或 YAML 的语法。',
@@ -198,6 +212,10 @@ def _main(argv):
                   'operation_failed': '配置操作未完成；请核对出错阶段、目标路径及恢复日志。'}[code]
         error = {'code': code, 'phase': phase, 'error_type': type(exc).__name__, 'reason': reason,
                  'exit_code': 130 if isinstance(exc, KeyboardInterrupt) else 1 if not started and (syntax_error or isinstance(exc, (SchemaError, PlanStale))) else 2}
+        if isinstance(exc, PlanStale):
+            error['detail'] = exc.detail
+        if isinstance(exc, UnfinishedRun):
+            error['runs'] = exc.runs
         if isinstance(exc, OSError):
             error['errno'] = exc.errno
             if exc.filename:

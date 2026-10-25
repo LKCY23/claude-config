@@ -6,17 +6,19 @@ Claudespace 托管资源正文；Profile 选择配置和资源运行参数；Mac
 ## 安装
 
 支持 macOS 和 Linux；原生 Windows 执行器尚不支持。macOS App 适配不自动适用于 Linux。
-先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后从明确版本的 [GitHub Release](https://github.com/LKCY23/claude-config/releases) 取得 wheel、`constraints.txt` 和 `install.sh`。使用已登录的 GitHub CLI 下载 0.3.0：
+先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后从明确版本的 [GitHub Release](https://github.com/LKCY23/claude-config/releases) 取得 wheel、`constraints.txt` 和 `install.sh`。使用已登录的 GitHub CLI 下载 0.5.0：
 
 ```sh
-gh release download v0.3.0 --repo LKCY23/claude-config --dir ./claude-config-v0.3.0 \
+gh release download v0.5.0 --repo LKCY23/claude-config --dir ./claude-config-v0.5.0 \
   --pattern '*.whl' --pattern constraints.txt --pattern install.sh
-bash ./claude-config-v0.3.0/install.sh ./claude-config-v0.3.0/claude_config-0.3.0-py3-none-any.whl
+bash ./claude-config-v0.5.0/install.sh ./claude-config-v0.5.0/claude_config-0.5.0-py3-none-any.whl
 claude-config --version
 ```
 
 安装器使用 uv 管理的 Python 3.11 和独立工具环境。命令目录未进入 PATH 时，运行 `uv tool update-shell`，然后在已有 tmux 窗格重新加载 shell。
-本文对应 0.3.0。版本 tag 的 macOS/Linux、Python 3.11/3.12 检查全部通过后，CI 才发布固定安装附件；不发布到 PyPI。已安装版本以 `claude-config --version` 为准。
+本文对应 0.5.0。版本 tag 的 macOS/Linux、Python 3.11/3.12 检查全部通过后，CI 才发布固定安装附件；不发布到 PyPI。已安装版本以 `claude-config --version` 为准。
+
+0.5.0 的事务日志、混合插件恢复、进度和运行依赖说明见[执行与恢复](references/execution-recovery.md)。
 
 ## 日常使用
 

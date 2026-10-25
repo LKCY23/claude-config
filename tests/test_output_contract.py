@@ -19,6 +19,14 @@ from claude_config.core.report_viewer import ReportTree
 
 
 class OutputContractTests(unittest.TestCase):
+    def test_file_evidence_has_one_canonical_location(self):
+        files = {'/fixture/file': {'file': {'exists': False}, 'resolved': '/fixture/file'}}
+        report = build_report({'file_snapshots': files, 'directory_snapshots': {}}, operation='plan')
+        self.assertEqual(report['schema_version'], 1)
+        self.assertEqual(report['fingerprints']['files'], files)
+        self.assertNotIn('file_snapshots', report)
+        self.assertNotIn('directory_snapshots', report)
+
     def test_all_entrypoints_reject_removed_flag_and_honor_error_format(self):
         entries = [(profile_config, ['plan', '--machine', '/fixture/machine', '--agent', 'codex']),
                    (cutover_config, ['plan', '--spec', '/fixture/spec']),

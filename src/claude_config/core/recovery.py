@@ -9,6 +9,7 @@ from .merge import fingerprint
 from .native import parse_json, snapshot_read
 from .schema import closed, require, version
 from .transaction import FileChange, FilePlan, file_fingerprint
+from .journal import read_journal, owner_status
 
 
 def snapshot(value):
@@ -28,20 +29,26 @@ def rollback_plan(manager, run):
     require(not (manager.state_root / 'runs').is_symlink() and root.resolve().is_relative_to(manager.state_root.resolve())
             and root.resolve().parent == (manager.state_root / 'runs').resolve() and not root.is_symlink(), 'Recovery run escapes its state root')
     original, expected = snapshot_read(path)
-    journal = parse_json(original)
-    version(journal)
-    closed(journal, ('schema_version', 'kind', 'plan_id', 'created_at', 'status', 'scopes', 'operations', 'error_type'),
+    journal = read_journal(path)
+    require(journal['schema_version'] in (1, 2), 'Unsupported execution journal version')
+    if journal['schema_version'] == 2 and journal['status'] == 'running':
+        require(owner_status(journal.get('owner')) == 'exited', 'Execution owner is still active or cannot be verified')
+    closed(journal, ('schema_version', 'kind', 'plan_id', 'created_at', 'status', 'scopes', 'operations', 'error_type', 'events', 'owner', 'updated_at', 'unchanged_count'),
            ('schema_version', 'kind', 'plan_id', 'created_at', 'status', 'scopes', 'operations'), 'recovery journal')
     require(journal['kind'] == 'profile-file-run', 'Recovery supports only the new file executor journal')
     scopes = manager.recovery_scopes if hasattr(manager, 'recovery_scopes') else [str(manager.native_path.resolve())]
     require(journal['scopes'] == scopes, 'Run does not belong to this native configuration binding')
-    require(journal['status'] in ('applied', 'failed', 'running', 'rolled_back'), 'Unknown recovery run state')
+    require(journal['status'] in ('applied', 'failed', 'running', 'interrupted', 'rolled_back'), 'Unknown recovery run state')
     require(isinstance(journal['operations'], list), 'Invalid recovery operation list')
     sources = {**manager.sources, path: expected}
+    if journal['schema_version'] == 2:
+        sources[path.with_name('events.jsonl')] = file_fingerprint(path.with_name('events.jsonl'))
     changes, decisions, blockers = [], [], []
     native_operations, steps, virtual = [], [], {}
     seen = set()
     for row in reversed(journal['operations']):
+        if row.get('action') == 'native_plugin' and row.get('status') == 'unchanged':
+            continue
         if row.get('kind') == 'native-plugin':
             require(not hasattr(manager, 'app'), 'App recovery cannot operate native Agent plugins')
             from .native_plugins import PluginOperation, PluginRestoreOperation, validate_native_row, backup_snapshot
@@ -58,6 +65,14 @@ def rollback_plan(manager, run):
             if row['status'] not in ('started', 'applied', 'recovery_conflict'):
                 continue
             current = operation.world()
+            if 'after' not in row and row['status'] == 'started' and current != row['before']:
+                # Only v2 per-plugin intent can support reconstruction of a
+                # missing completion observation. Legacy ambiguity stays blocked.
+                if journal['schema_version'] == 2 and row.get('plugin_actions'):
+                    try:
+                        operation.inspect_interrupted(row)
+                    except (ValueError, OSError):
+                        pass
             matched = (row.get('safe_recovery') or row.get('cleanup_safe')) and current == row.get('after')
             restored = current == row['before']
             if not (matched or restored):
@@ -87,7 +102,7 @@ def rollback_plan(manager, run):
                 steps.append(restoration)
             virtual.update({str(Path(path).resolve()): value for path, value in row['before']['files'].items()})
             continue
-        closed(row, ('path', 'owner', 'before', 'action', 'after_sha256', 'status', 'backup', 'expected_after', 'after'),
+        closed(row, ('path', 'owner', 'before', 'action', 'after_sha256', 'status', 'backup', 'expected_after', 'after', 'step'),
                ('path', 'owner', 'before', 'action', 'after_sha256', 'status'), 'recovery file operation')
         require(isinstance(row['path'], str) and Path(row['path']).is_absolute() and isinstance(row['owner'], str), 'Invalid recovery target identity')
         target = Path(row['path'])

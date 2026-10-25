@@ -7,6 +7,9 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import signal
+import socket
+import time
 
 from .merge import fingerprint, same
 from .native import parse_json, parse_native, render_native, snapshot_read
@@ -14,6 +17,8 @@ from .registrations import claude_user_config
 from .resource_options import merge_options
 from .schema import NAME, SchemaError, closed, mapping, require
 from .transaction import atomic_write, directory_fingerprint, file_fingerprint, private_dir
+from .execution_context import progress
+from .journal import process_identity, owner_status
 
 VERSION = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?\Z')
 STARTUP_KEYS = ('firstStartTime', 'firstStartVersion', 'machineID', 'opusProMigrationComplete', 'sonnet1m45MigrationComplete',
@@ -80,7 +85,7 @@ def cache_version(agent, version):
 
 def validate_native_row(row, operation):
     from .recovery import snapshot
-    closed(row, ('kind', 'path', 'owner', 'action', 'operation_id', 'definition', 'before', 'after', 'status', 'backups', 'safe_recovery', 'recovery_error', 'cleanup_safe'),
+    closed(row, ('kind', 'path', 'owner', 'action', 'operation_id', 'definition', 'before', 'after', 'status', 'backups', 'safe_recovery', 'recovery_error', 'cleanup_safe', 'step', 'plugin_actions', 'child'),
            ('kind', 'path', 'owner', 'action', 'operation_id', 'definition', 'before', 'status', 'backups', 'safe_recovery'), 'native operation journal')
     if 'cleanup_safe' in row:
         require(type(row['cleanup_safe']) is bool, 'Invalid native cleanup classification')
@@ -324,7 +329,35 @@ class PluginOperation:
             return
         home = private_dir(work / 'native-home')
         env = self.install_environment(home)
-        result = subprocess.run([self.definition['executable'], *args], cwd=home, env=env, capture_output=True, timeout=40)
+        if getattr(self, 'checkpoint', None) and getattr(self, '_active_row', None) is not None:
+            row = self._active_row
+            row['child'] = {'command': args[:3], 'status': 'launching'}
+            self.checkpoint(row)
+            process = subprocess.Popen([self.definition['executable'], *args], cwd=home, env=env,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            try:
+                row['child'].update(owner={**(process_identity(process.pid) or {'pid': process.pid, 'start': None}), 'host': socket.gethostname()}, status='running')
+                self.checkpoint(row)
+                started = time.monotonic()
+                while True:
+                    try:
+                        process.communicate(timeout=5)
+                        break
+                    except subprocess.TimeoutExpired:
+                        progress('等待原生插件命令：' + ' '.join(args[:3]))
+                        if time.monotonic() - started >= 40:
+                            raise subprocess.TimeoutExpired(args[:3], 40)
+            except BaseException:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+                raise
+            finally:
+                row['child'].update(status='exited', returncode=process.returncode)
+                self.checkpoint(row)
+            result = process
+        else:
+            result = subprocess.run([self.definition['executable'], *args], cwd=home, env=env, capture_output=True, timeout=40)
         if result.returncode:
             raise RuntimeError('Native plugin CLI operation failed')
 
@@ -361,10 +394,18 @@ class PluginOperation:
         return row
 
     def perform(self, row, work):
+        self._active_row = row
+        row['plugin_actions'] = []
         for item in self.plugins:
             desired = item['desired']
             adoption = item.get('adoption', item.get('replacement', {}))
             actual = self.native(desired, adoption.get('registration_root'))
+            action = {'selector': desired['selector'], 'action': 'fresh_install' if not actual['installed'] else
+                      'upgrade' if actual['version'] != desired['version'] else
+                      'enable_change' if actual['enabled'] != desired['enabled'] else 'unchanged', 'status': 'started'}
+            row['plugin_actions'].append(action)
+            if getattr(self, 'checkpoint', None):
+                self.checkpoint(row)
             if not actual['marketplace'] or self.registered_root(desired['marketplace']) != desired['market_root']:
                 if actual['marketplace'] and self.agent == 'codex':
                     # Codex refuses add-with-same-name from a different source.
@@ -376,6 +417,38 @@ class PluginOperation:
                 self.install(desired, work, update=actual['installed'])
             if self.native(desired)['enabled'] != desired['enabled']:
                 self.enable(desired, work)
+            action['status'] = 'completed'
+            if getattr(self, 'checkpoint', None):
+                self.checkpoint(row)
+
+    def unchanged(self):
+        for item in self.plugins:
+            desired = item['desired']
+            actual = self.native(desired, item.get('adoption', item.get('replacement', {})).get('registration_root'))
+            if not actual['installed'] or not actual['marketplace'] or any(actual[k] != desired[k] for k in ('version', 'image', 'enabled')):
+                return False
+            if self.registered_root(desired['marketplace']) != desired['market_root']:
+                return False
+        return True
+
+    def inspect_interrupted(self, row):
+        """Accept only complete known native states, never unknown partial images."""
+        child = row.get('child', {})
+        require(child.get('status') != 'launching', 'Native child launch outcome is unknown; inspect the process before recovery')
+        if child.get('status') == 'running':
+            require(owner_status(child.get('owner')) == 'exited', 'Native child is still active or cannot be verified')
+        for item in self.plugins:
+            desired = item['desired']
+            prior = self.prior_receipt(row, desired)
+            actual = self.native(desired, item.get('adoption', item.get('replacement', {})).get('registration_root'))
+            if actual['installed']:
+                choices = [desired] + ([prior] if prior else [])
+                require(any(all(actual[key] == candidate[key] for key in ('version', 'image', 'enabled')) for candidate in choices),
+                        'Interrupted installer left an unknown plugin state')
+            else:
+                require(prior is None, 'Interrupted upgrade has not restored its previous image')
+        self.observe(row)
+        require(row['safe_recovery'], 'Interrupted installer side effects cannot be safely attributed')
 
     def observe(self, row):
         row['after'] = self.world()
@@ -424,18 +497,23 @@ class PluginOperation:
             require(all(new.get(name) == value or name not in new and
                         (name in removed_backups or str(Path(directory) / name) in row['backups']) for name, value in old.items())
                     and all(re.fullmatch(r'\.claude\.json\.backup\.[0-9]+', name) for name in new.keys() - old.keys()), 'Native installer changed unrelated backup files')
+        unexpected_image = False
         for item in self.plugins:
             receipt = item['desired']
             entries = row['after']['directories'][str(self.cache_parent(receipt))]['entries']
             allowed_versions = {cache_version(self.agent, version) for version in receipt['history']}
             retained = set(receipt.get('retained_versions', []))
-            require_image(all(name.split('/')[0] in retained or name.split('/')[0] in allowed_versions and 'sha256' in value
-                              for name, value in entries.items()), 'Native installer wrote outside declared plugin images')
+            unexpected_image |= not all(name.split('/')[0] in retained or name.split('/')[0] in allowed_versions and 'sha256' in value
+                                        for name, value in entries.items())
             before = row['before']['directories'][str(self.cache_parent(receipt))]['entries']
+            unchanged_action = any(action.get('selector') == receipt['selector'] and action.get('action') == 'unchanged'
+                                   for action in row.get('plugin_actions', []))
+            require(not unchanged_action or before == entries, 'Native installer changed an unmodified plugin image')
             keep = lambda values: {name: value for name, value in values.items() if name.split('/')[0] in retained}
             # Retained images were never ours: their content cannot be rebuilt,
             # so a change there stays a conflict rather than a cleanup.
             require(keep(before) == keep(entries), 'Native installer changed retained unowned historical images')
+        require_image(not unexpected_image, 'Native installer wrote outside declared plugin images')
 
     def verify(self, row):
         require(row['safe_recovery'], 'Native plugin side effects exceed the planned ownership')
@@ -452,13 +530,21 @@ class PluginOperation:
             # inside an image this run created, so it unwinds like a clean one.
             cleanup = bool(row.get('cleanup_safe')) and not row.get('safe_recovery')
             require((row.get('safe_recovery') or cleanup) and self.world() == row.get('after'), 'Native state changed after this operation')
+            preserve_images = set()
             if cleanup:
-                # Only a fresh install can be unwound this way: nothing existed
-                # before, so backed-up metadata plus deleting this run's image
-                # is a complete reversal. The installer is not asked to remove
-                # anything, which keeps retained images out of reach.
-                require(all(self.prior_receipt(row, item['desired']) is None for item in self.plugins),
-                        'Cleanup recovery cannot replace an earlier installed version')
+                # Shared metadata is restored once, but image recovery is per
+                # plugin. Existing unchanged images must not block fresh installs.
+                for item in self.plugins:
+                    desired = item['desired']
+                    key = str(self.cache_parent(desired))
+                    old = row['before']['directories'][key]['entries']
+                    new = row['after']['directories'][key]['entries']
+                    previous = self.prior_receipt(row, desired)
+                    if all(new.get(name) == value for name, value in old.items()):
+                        preserve_images.add(desired['selector'])
+                    else:
+                        require(previous is not None and any(action.get('selector') == desired['selector'] and action.get('action') == 'upgrade'
+                                for action in row.get('plugin_actions', [])), 'Cleanup cannot reconstruct an unrecorded change to an existing image')
             for item in self.plugins:
                 parent = self.cache_parent(item['desired'])
                 before_versions = {name.split('/')[0] for name in row['before']['directories'][str(parent)]['entries']}
@@ -476,15 +562,19 @@ class PluginOperation:
             try:
                 for item in reversed(self.plugins):
                     desired = item['desired']
-                    if cleanup:
+                    if cleanup and desired['selector'] in preserve_images:
                         continue
                     previous = self.prior_receipt(row, desired)
-                    actual = self.native(desired, item.get('adoption', item.get('replacement', {})).get('registration_root'))
-                    if ('adoption' in item or 'replacement' in item) and previous and actual['installed'] and all(actual[key] == previous[key] for key in ('version', 'image')):
+                    try:
+                        actual = self.native(desired, item.get('adoption', item.get('replacement', {})).get('registration_root'))
+                    except ImageContentMismatch:
+                        require(cleanup, 'Unclassified image mismatch during recovery')
+                        actual = {'installed': True}
+                    if previous and actual['installed'] and all(actual.get(key) == previous[key] for key in ('version', 'image')):
                         # Adoption only changed registration/usage metadata. Restore
                         # those backed-up bytes without reinstalling an existing image.
                         continue
-                    if self.native(desired)['installed']:
+                    if actual['installed']:
                         self.remove(desired, work)
                     if previous:
                         manifest_path = Path(desired['manifest'])
@@ -518,8 +608,9 @@ class PluginOperation:
                         version = version_root.name
                         if version not in versions_before:
                             matching = [pin for pin in receipt['history'] if cache_version(self.agent, pin) == version]
+                            require(len(matching) == 1, 'Recovery cannot remove an unknown plugin version directory')
                             if not cleanup:
-                                require(len(matching) == 1 and image_fingerprint(version_root) == receipt['history'][matching[0]]['image'], 'Run-created retired image changed')
+                                require(image_fingerprint(version_root) == receipt['history'][matching[0]]['image'], 'Run-created retired image changed')
                             require(not image_in_use(version_root), 'Retired native image is still in use')
                             # Uninstall first; then remove only the unchanged,
                             # unused image this run created and native GC retained.
@@ -601,6 +692,8 @@ class PluginRestoreOperation(PluginOperation):
         # Restoration invokes the same native installers as forward execution.
         operation = PluginOperation(self.definition)
         operation._restore_work = work
+        operation.checkpoint = getattr(self, 'checkpoint', None)
+        operation._active_row = row
         original = deepcopy(self.original)
         operation.restore(original)
         require(original['status'] == 'rolled_back', original.get('recovery_error', {}).get('reason', 'Native plugin recovery could not restore the recorded state'))
@@ -623,6 +716,8 @@ class PluginRestoreOperation(PluginOperation):
     def restore(self, row):
         operation = PluginOperation(self.definition)
         operation._restore_work = self._restore_work
+        operation.checkpoint = getattr(self, 'checkpoint', None)
+        operation._active_row = row
         operation.restore(row)
 
 
@@ -634,7 +729,8 @@ class PluginPlanner:
 
     def add(self, ref, item):
         package, agent = item['package'], self.manager.agent
-        require(not item['slots'], 'Plugin dependency rendering requires an explicit packaging adapter')
+        runtime = package.item['requires'].get('runtime', {})
+        require(not set(item['slots']) - {runtime.get('binding')}, 'Plugin dependency rendering requires an explicit packaging adapter')
         entry = '.claude-plugin/plugin.json' if agent == 'claude-code' else '.codex-plugin/plugin.json'
         require(package.root.is_dir() and package.entry == entry, 'Plugin requires a complete native package and root manifest')
         manifest = parse_json(item['files'][entry])

@@ -6,7 +6,7 @@
 
 ## 配置与运行入口
 
-Machine 必须使用新 schema，明确 agent 的 profile、executable、config_root。管理基线、报告和恢复记录默认保存在 `<config_dir>/.state/`；`runtime.state_dir` 可省略，显式指定时才覆盖默认值。`.state/` 为本机资料，配置仓库必须忽略它，不参与 Git 同步。Profile 的实际配置仍全部可选。
+Machine 必须明确 agent 的 Profile 选择和本机 executable、config_root。仓库选择文件通过 `profile_selection` 引用，`switch` 更新该文件；本机路径仍留在 Machine。参见 [机器绑定规范](machine-profile-bindings.md)。管理基线、报告和恢复记录默认保存在 `<config_dir>/.state/`；`runtime.state_dir` 可省略，显式指定时才覆盖默认值。`.state/` 为本机资料，配置仓库必须忽略它，不参与 Git 同步。Profile 的实际配置仍全部可选。
 
 ```yaml
 # 结构示例：绝对路径须按实际机器填写，不是本机已启用配置

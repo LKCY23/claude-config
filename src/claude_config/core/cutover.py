@@ -12,7 +12,8 @@ from .fields import validate_settings
 from .manager import ProfileManager
 from .merge import fingerprint
 from .native import parse_native, parse_yaml, render_native, snapshot_read
-from .schema import closed, require, state_directory, validate_catalogs, validate_machine, validate_profile
+from .schema import closed, require, state_directory, validate_catalogs, validate_machine, validate_machine_profiles, validate_profile
+from .machine_profiles import MachineProfiles
 from .transaction import FileChange, FilePlan, file_fingerprint
 from .execution_context import progress
 
@@ -29,9 +30,9 @@ class Cutover:
         for key in keys[1:]:
             require(isinstance(spec[key], str) and Path(spec[key]).is_absolute(), 'Cutover paths must be absolute')
         self.machine_path = Path(spec['machine'])
-        data, pin = snapshot_read(self.machine_path)
-        self.machine = validate_machine(parse_yaml(data))
-        self.sources = {self.spec_path: expected, self.machine_path: pin}
+        self.machine_profiles = MachineProfiles(self.machine_path)
+        self.machine = self.machine_profiles.effective
+        self.sources = {self.spec_path: expected, **self.machine_profiles.sources}
         self.root = Path(self.machine['config_dir'])
         self.state_root = state_directory(self.machine, config_dir=spec['data_target'])
         self.native_path, self.entry = Path(spec['machine_target']), {}
@@ -72,8 +73,9 @@ class Cutover:
     def data_changes(self):
         target = Path(self.spec['data_target'])
         require(not target.is_symlink(), 'Configuration data target cannot be a symlink')
-        files = [self.root / 'catalogs.yaml', *sorted((self.root / 'profiles').rglob('*.yaml'))]
-        require(bool(files[1:]), 'Cutover data has no independent Profiles')
+        profiles = sorted((self.root / 'profiles').rglob('*.yaml'))
+        require(bool(profiles), 'Cutover data has no independent Profiles')
+        files = [self.root / 'catalogs.yaml', *profiles, *sorted((self.root / 'machines').glob('*.yaml'))]
         changes = []
         self.data_decisions = []
         ignore_path = target / '.gitignore'
@@ -98,6 +100,8 @@ class Cutover:
             self.sources[source] = pin
             if relative == Path('catalogs.yaml'):
                 validator = lambda data: validate_catalogs(parse_yaml(data))
+            elif relative.parts[0] == 'machines':
+                validator = lambda data, identity=relative.stem: validate_machine_profiles(parse_yaml(data), identity)
             else:
                 parts = relative.parts
                 require(len(parts) == 4 and parts[:1] == ('profiles',) and parts[1] in ('agents', 'apps'), 'Invalid data Profile layout')
@@ -154,7 +158,7 @@ class Cutover:
 
     def plan(self):
         progress('检查配置目标与 Machine 绑定')
-        machine = deepcopy(self.machine)
+        machine = deepcopy(self.machine_profiles.local)
         machine['config_dir'] = self.spec['data_target']
         current, pin = snapshot_read(self.native_path)
         require(not pin['exists'] or self.native_path == self.machine_path or parse_yaml(current) == machine,
@@ -239,7 +243,7 @@ class Cutover:
         for change in files.values():
             require(not any(change.path.resolve().is_relative_to(root) for root in source_roots), 'Cutover write overlaps a fixed source repository')
         def inventory_guard():
-            members = [str(self.root / 'catalogs.yaml'), *(str(path) for path in sorted((self.root / 'profiles').rglob('*.yaml')))]
+            members = [str(self.root / 'catalogs.yaml'), *(str(path) for path in sorted((self.root / 'profiles').rglob('*.yaml'))), *(str(path) for path in sorted((self.root / 'machines').glob('*.yaml')))]
             require(members == self.data_members, 'Profile data inventory changed')
         def lifecycle_guard():
             if report['ready']:

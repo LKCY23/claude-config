@@ -10,9 +10,10 @@ import yaml
 from .fields import leaves, lookup, selected_paths, validate_native_result, validate_settings, version_tuple
 from .merge import MergePlan, MISSING, fingerprint, get, same
 from .native import NativeProbe, parse_json, parse_native, parse_yaml, projection, put, render_native, snapshot_read
-from .schema import (SchemaError, as_pointer, closed, mapping, pointer, require, state_directory, validate_machine,
+from .schema import (SchemaError, as_pointer, closed, mapping, pointer, require, state_directory,
                      validate_profile, version, within)
 from .transaction import FileChange, FilePlan, PlanStale, file_fingerprint
+from .machine_profiles import MachineProfiles
 from .resources import ResourcePlan, validate_resource_state
 from .resource_options import validate_resource_policy
 from .permissions import permission_dependencies
@@ -22,11 +23,12 @@ class ProfileManager:
     def __init__(self, machine_file, agent, probe=None, *, state_root=None):
         require(agent in ('claude-code', 'codex'), 'Explicit agent_type is required')
         self.machine_path = Path(machine_file).absolute()
-        data, expected = snapshot_read(self.machine_path)
-        self.machine = validate_machine(parse_yaml(data))
+        self.machine_profiles = MachineProfiles(self.machine_path)
+        self.local_machine = self.machine_profiles.local
+        self.machine = self.machine_profiles.effective
         require(agent in self.machine['agents'], 'Machine has no binding for ' + agent)
         self.agent, self.probe = agent, probe or NativeProbe()
-        self.sources = {self.machine_path: expected}
+        self.sources = dict(self.machine_profiles.sources)
         self.references = {}
         self.root = Path(self.machine['config_dir'])
         self.entry = self.machine['agents'][agent]
@@ -277,10 +279,7 @@ class ProfileManager:
             content = (json.dumps(new_state, indent=2, ensure_ascii=False) + '\n').encode()
             changes.append(FileChange(self.state_path, content, 'managed-baseline', lambda data: self._validate_state(parse_json(data)), state_expected))
         if profile and profile != self.entry['profile'] and result_valid:
-            machine = deepcopy(self.machine)
-            machine['agents'][self.agent]['profile'] = name
-            changes.append(FileChange(self.machine_path, yaml.safe_dump(machine, allow_unicode=True, sort_keys=False).encode(),
-                                      'machine-binding', lambda data: validate_machine(parse_yaml(data)), self.sources[self.machine_path]))
+            changes.append(self.machine_profiles.switch('agents', self.agent, name))
         if not resource_failed:
             changes = resources.changes + changes
         for change in changes:

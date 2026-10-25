@@ -32,6 +32,10 @@ class ResourceFixture(unittest.TestCase):
         self.repo = self.root / 'repo'
         self.repo.mkdir()
         run_git(self.repo, 'init', '-q')
+        # Disposable fixtures must not leave detached Git maintenance writing
+        # into .git while TemporaryDirectory removes it.
+        run_git(self.repo, 'config', 'maintenance.auto', 'false')
+        run_git(self.repo, 'config', 'gc.auto', '0')
         run_git(self.repo, 'config', 'user.name', 'isolated-test')
         run_git(self.repo, 'config', 'user.email', 'isolated@example.invalid')
         run_git(self.repo, 'remote', 'add', 'origin', 'https://github.com/owner/catalog.git')

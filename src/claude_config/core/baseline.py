@@ -116,7 +116,7 @@ def adopt_baseline(manager, alias, commit, checkout, release_record, source_map=
         manager.sources.update(preview.sources)
         manager.references.update(preview.references)
         checks.append({'name': 'affected_sources', 'status': 'passed', 'profile': impact['profile'], 'reason': 'Exact selected bodies and explicit dependencies are prepared'})
-    machine = deepcopy(manager.machine)
+    machine = deepcopy(manager.local_machine)
     machine['catalog_roots'][alias] = str(root)
     merge = MergePlan({'catalogs': {alias: target}, 'catalog_roots': {alias: str(root)}},
                       {'catalogs': catalogs['catalogs'], 'catalog_roots': manager.machine['catalog_roots']},
@@ -135,6 +135,6 @@ def adopt_baseline(manager, alias, commit, checkout, release_record, source_map=
             require(path.resolve() == actual, 'Prepared baseline source binding changed')
     changes = [FileChange(catalogs_path, original if catalogs == candidate else yaml.safe_dump(candidate, sort_keys=False, allow_unicode=True).encode(),
                           'catalog-baseline-selection', lambda data: (guard(data), validate_catalogs(parse_yaml(data))), expected),
-               FileChange(manager.machine_path, snapshot_read(manager.machine_path)[0] if machine == manager.machine else yaml.safe_dump(machine, sort_keys=False, allow_unicode=True).encode(),
+               FileChange(manager.machine_path, snapshot_read(manager.machine_path)[0] if machine == manager.local_machine else yaml.safe_dump(machine, sort_keys=False, allow_unicode=True).encode(),
                           'catalog-prepared-root', lambda data: (guard(data), validate_machine(parse_yaml(data))), manager.sources[manager.machine_path])]
     return FilePlan(changes, sources=manager.sources, scopes=[str(manager.native_path.resolve())], report=report, directories=directories)

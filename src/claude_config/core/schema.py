@@ -236,9 +236,14 @@ def state_directory(machine, *, config_dir=None):
 
 def validate_machine(value):
     required = ('schema_version', 'machine_id', 'config_dir', 'catalog_roots', 'agents', 'apps', 'bindings')
-    closed(value, (*required, 'runtime', 'merge_policy'), required, 'Machine')
+    closed(value, (*required, 'runtime', 'merge_policy', 'profile_selection'), required, 'Machine')
     version(value)
     string(value['machine_id'], 'machine_id')
+    external = 'profile_selection' in value
+    if external:
+        require(NAME.fullmatch(value['machine_id']), 'Invalid machine_id for repository selection')
+        require(value['profile_selection'] == 'machines/' + value['machine_id'] + '.yaml',
+                'profile_selection must be machines/<machine_id>.yaml')
     absolute(value['config_dir'], 'config_dir')
     for name, root in mapping(value['catalog_roots'], 'catalog_roots').items():
         require(NAME.fullmatch(name), 'catalog_roots keys must be catalog aliases')
@@ -246,10 +251,10 @@ def validate_machine(value):
     for group, kinds in (('agents', AGENTS), ('apps', APPS)):
         for name, entry in mapping(value[group], group).items():
             require(name in kinds, 'Unknown Machine entry: ' + name)
-            closed(entry, ('profile', 'binding'), ('profile', 'binding'), 'Machine entry')
-            path = relative(entry['profile'], 'Profile path')
-            require(len(path.parts) == 4 and path.parts[:3] == ('profiles', group, name) and path.suffix == '.yaml',
-                    'Profile path must agree with its type and directory')
+            keys = ('binding',) if external else ('profile', 'binding')
+            closed(entry, keys, keys, 'Machine entry')
+            if not external:
+                profile_path(entry['profile'], group, name)
             allowed = ('executable', 'config_root') if group == 'agents' else ('application', 'data_root', 'backend')
             if group == 'agents' and name == 'claude-code':
                 allowed += ('user_config',)
@@ -285,4 +290,22 @@ def validate_machine(value):
             absolute(entry, 'runtime.' + key)
     if 'merge_policy' in value:
         policy(value['merge_policy'])
+    return value
+
+
+def profile_path(value, group, name):
+    path = relative(value, 'Profile path')
+    require(len(path.parts) == 4 and path.parts[:3] == ('profiles', group, name) and path.suffix == '.yaml',
+            'Profile path must agree with its type and directory')
+
+
+def validate_machine_profiles(value, machine_id):
+    keys = ('schema_version', 'machine_id', 'agents', 'apps')
+    closed(value, keys, keys, 'Machine Profile selection')
+    version(value)
+    require(value['machine_id'] == machine_id and NAME.fullmatch(machine_id), 'Machine selection identity mismatch')
+    for group, kinds in (('agents', AGENTS), ('apps', APPS)):
+        for name, profile in mapping(value[group], group).items():
+            require(name in kinds, 'Unknown Machine selection: ' + name)
+            profile_path(profile, group, name)
     return value

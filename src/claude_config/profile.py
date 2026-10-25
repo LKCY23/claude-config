@@ -65,7 +65,7 @@ def main(argv=None):
 
 def _entry(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    operations = ('plan', 'validate', 'apply', 'export', 'switch', 'rollback', 'adopt-baseline', 'review-conflicts')
+    operations = ('plan', 'validate', 'apply', 'export', 'switch', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run')
     operation = next((item for item in argv if item in operations), 'unknown')
     mode = report_format(argv)
     try:
@@ -80,7 +80,7 @@ def _entry(argv=None):
 
 def _main(argv):
     parser = ReportParser(description=__doc__, prog="claude-config")
-    parser.add_argument('operation', choices=('plan', 'validate', 'apply', 'export', 'switch', 'rollback', 'adopt-baseline', 'review-conflicts'))
+    parser.add_argument('operation', choices=('plan', 'validate', 'apply', 'export', 'switch', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run'))
     parser.add_argument('--machine', type=Path, default=Path.home() / '.claude-config-tool/machine.yaml')
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument('--agent', choices=('claude-code', 'codex'))
@@ -106,11 +106,11 @@ def _main(argv):
     args = parser.parse_args(argv)
     if (args.adopt_plugin or args.replace_plugin) and (args.app or args.operation not in ('plan', 'validate', 'apply', 'switch')):
         parser.error('Plugin adoption/replacement inputs are only for Agent plan/validate/apply/switch')
-    if args.app and (args.resource or args.operation in ('adopt-baseline', 'review-conflicts')):
+    if args.app and (args.resource or args.operation in ('adopt-baseline', 'review-conflicts', 'reconcile-run')):
         parser.error('App Profiles do not manage Agent resources or catalog baselines')
     if args.operation == 'switch' and not args.profile:
         parser.error('switch requires --profile')
-    if args.write and args.operation not in ('export', 'rollback', 'adopt-baseline', 'review-conflicts'):
+    if args.write and args.operation not in ('export', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run'):
         parser.error('--write is only for export/rollback/adopt-baseline/review-conflicts')
     baseline_args = (args.catalog, args.commit, args.checkout, args.release_record)
     if args.operation == 'adopt-baseline' and not all(baseline_args):
@@ -121,9 +121,9 @@ def _main(argv):
         parser.error('--source-map is only for adopt-baseline')
     if args.operation == 'adopt-baseline' and (args.policy or args.field_policy or args.resolutions):
         parser.error('Baseline adoption selects an exact release, not a native usage merge policy')
-    if (args.operation == 'rollback') != bool(args.run):
-        parser.error('rollback requires --run; --run is only for rollback')
-    if args.operation == 'rollback' and (args.policy or args.field_policy or args.resolutions):
+    if (args.operation in ('rollback', 'reconcile-run')) != bool(args.run):
+        parser.error('rollback/reconcile-run require --run')
+    if args.operation in ('rollback', 'reconcile-run') and (args.policy or args.field_policy or args.resolutions):
         parser.error('rollback uses recorded snapshots, not settings merge policies')
     if args.field and args.operation != 'export':
         parser.error('--field is only for export')
@@ -132,7 +132,7 @@ def _main(argv):
     if args.profile and args.operation not in ('switch', 'export'):
         parser.error('--profile is only for switch/export; other operations use the Machine binding')
     plan, manager, error = None, None, None
-    write = args.operation in ('apply', 'switch') or args.operation in ('export', 'rollback', 'adopt-baseline', 'review-conflicts') and args.write
+    write = args.operation in ('apply', 'switch') or args.operation in ('export', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run') and args.write
     started, preview_only = False, args.dry_run or not write
     phase = 'planning'
     try:
@@ -161,6 +161,9 @@ def _main(argv):
             manager.sources[args.resolutions.absolute()] = resolution_source[1]
         if args.operation == 'adopt-baseline':
             plan = adopt_baseline(manager, args.catalog, args.commit, args.checkout, args.release_record, args.source_map)
+        elif args.operation == 'reconcile-run':
+            from .core.run_reconciliation import reconcile_plan
+            plan = reconcile_plan(manager, args.run)
         elif args.operation == 'rollback':
             plan = rollback_plan(manager, args.run)
         elif args.operation == 'export':
@@ -203,7 +206,7 @@ def _main(argv):
         code = ('unfinished_run' if isinstance(exc, UnfinishedRun) else 'interrupted' if isinstance(exc, KeyboardInterrupt) else 'plan_stale' if isinstance(exc, PlanStale)
                 else 'invalid_configuration' if isinstance(exc, SchemaError) else 'invalid_configuration_syntax' if syntax_error
                 else 'file_access_failed' if isinstance(exc, OSError) else 'operation_failed')
-        reason = {'unfinished_run': '目标存在未完成事务；先使用 runs 检查，再预览 rollback。',
+        reason = {'unfinished_run': '目标存在未完成事务；先使用 runs 检查，再预览 rollback 或 reconcile-run。',
                   'interrupted': '操作被中断；请核对本次修改与恢复记录。',
                   'plan_stale': '来源、目标或处理决策已变化；请重新预览后再执行。',
                   'invalid_configuration': '配置声明或原生接口检查不通过；请核对选定 Profile、字段范围及本机绑定。',

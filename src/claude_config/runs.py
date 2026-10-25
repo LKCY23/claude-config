@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import re
 
-from .core.journal import read_journal, owner_status
+from .core.journal import read_journal, owner_status, reconciliation
 from .core.schema import load_yaml, state_directory, validate_machine
 from .core.transaction import file_fingerprint
 
@@ -29,6 +29,9 @@ def main(argv=None):
                'updated_at': journal.get('updated_at'), 'scopes': journal['scopes'],
                'operations': dict(Counter(op['status'] for op in journal['operations']))}
         row['interrupted'] = row['status'] == 'running' and row['process'] == 'exited'
+        receipt = reconciliation(path)
+        if receipt:
+            row['reconciliation'] = {'outcome': receipt['outcome'], 'superseding_run': receipt['superseding_run']}
         if journal.get('unchanged_count'):
             row['operations']['unchanged'] = journal['unchanged_count']
         if args.run:

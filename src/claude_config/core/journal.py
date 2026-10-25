@@ -153,6 +153,8 @@ def unfinished(state_root, scopes=None):
             continue
         if journal.get('status') not in ('running', 'interrupted', 'failed'):
             continue
+        if reconciliation(path):
+            continue
         remaining = [row for row in journal.get('operations', []) if row.get('status') in ('started', 'applied', 'recovery_conflict')]
         if journal.get('status') == 'failed' and not remaining:
             continue
@@ -164,16 +166,40 @@ def unfinished(state_root, scopes=None):
     return result
 
 
+def reconciliation(journal_path):
+    journal_path = Path(journal_path)
+    path = journal_path.parents[2] / 'run-reconciliations' / (journal_path.parent.name + '.json')
+    if not path.exists():
+        return None
+    if path.is_symlink() or path.parent.is_symlink():
+        raise ValueError('Run reconciliation cannot be a symlink')
+    value = json.loads(path.read_bytes())
+    if value.get('schema_version') != 1 or value.get('kind') != 'superseded-run' or value.get('run_id') != journal_path.parent.name or not value.get('proofs'):
+        raise ValueError('Invalid run reconciliation')
+    if value.get('journal_sha256') != hashlib.sha256(journal_path.read_bytes()).hexdigest():
+        return None
+    if value.get('events_sha256') is not None:
+        if value['events_sha256'] != hashlib.sha256(journal_path.with_name('events.jsonl').read_bytes()).hexdigest():
+            return None
+    return value
+
+
 def registered_pending(directory, scopes):
     path = Path(directory) / 'pending.json'
     if path.is_symlink():
         raise ValueError('Execution registry cannot be a symlink')
     registry = json.loads(path.read_bytes()) if path.exists() else {}
     rows = []
-    for location in sorted({registry[scope] for scope in scopes if scope in registry}):
+    locations = set()
+    for scope in scopes:
+        value = registry.get(scope, [])
+        locations.update([value] if isinstance(value, str) else value)
+    for location in sorted(locations):
         journal_path = Path(location)
         try:
             value = read_journal(journal_path)
+            if reconciliation(journal_path):
+                continue
             pending = value['status'] in ('running', 'interrupted') or value['status'] == 'failed' and any(
                 row['status'] in ('started', 'applied', 'recovery_conflict') for row in value['operations'])
             if not pending:
@@ -193,9 +219,19 @@ def register_run(directory, scopes, journal_path, writer, *, remove=False):
         raise ValueError('Execution registry cannot be a symlink')
     registry = json.loads(path.read_bytes()) if path.exists() else {}
     for scope in scopes:
+        previous = registry.get(scope, [])
+        locations = [previous] if isinstance(previous, str) else list(previous)
+        # Keep other outstanding executions. A recovery in a different state
+        # directory must not overwrite their registry entries.
+        active = {row['journal'] for row in registered_pending(directory, [scope])}
+        locations = [location for location in locations if location in active]
         if remove:
-            if registry.get(scope) == str(journal_path):
-                del registry[scope]
+            locations = [location for location in locations if location != str(journal_path)]
         else:
-            registry[scope] = str(journal_path)
+            if str(journal_path) not in locations:
+                locations.append(str(journal_path))
+        if locations:
+            registry[scope] = locations
+        else:
+            registry.pop(scope, None)
     writer(path, encoded(registry) + b'\n')

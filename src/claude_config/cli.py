@@ -6,7 +6,7 @@ HELP = """usage: claude-config COMMAND [OPTIONS]
 
 配置操作（明确选择 --agent 或 --app）：
   plan  validate  apply  export  switch  rollback
-  adopt-baseline  review-conflicts
+  adopt-baseline  review-conflicts  reconcile-run
 本机设置：
   init       初始化/迁移 Machine 和明确指定的 Skill 入口，默认预览
   doctor     检查安装、本机绑定及本地依赖，不运行资源业务

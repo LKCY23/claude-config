@@ -94,7 +94,7 @@ bash scripts/setup-cloud.sh
 ## Claude Desktop Bootstrap 接口
 
 0.1.4 为外部启动器提供明确的 App 路径、数据目录和只读部署模式信息，详见[返回协议](references/report-contract.md#app-启动器使用的目标信息014)。
-[Bootstrap 2.0 的代码与目标机器 App 构建](https://github.com/LKCY23/claudespace/tree/main/claude-desktop-bootstrap)由 claudespace 维护，使用独立源码 Release；它调用本工具的 plan → apply，并在成功后启动 Desktop。
+[Bootstrap 的代码与目标机器 App 构建](https://github.com/LKCY23/claude-desktop-bootstrap)由独立仓库维护，claudespace 在 `apps/claude-desktop-bootstrap/` 以 submodule 固定采用版本；它调用本工具的 plan → apply，并在成功后启动 Desktop。
 设置合并、检查、冲突、备份与恢复继续由本工具负责，不新增第二套配置引擎。
 升级本工具本身不会替换 Bootstrap、切换供应商或把本机改为第三方部署。
 

@@ -91,6 +91,8 @@ bash scripts/setup-cloud.sh
 
 七类资源的运行参数、已验证版本、Hook 事件及未验证的运行行为见[参数证据清单](references/resource-parameter-evidence.md)。框架接受、官方字段存在、原生解析和业务生效分别记录；原生新增字段不会自动纳入同步。
 
+0.5.2 支持在 Claude Code Profile 的 `settings.env` 中声明 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'`。该值必须是字符串；按[原生环境变量文档](https://code.claude.com/docs/en/env-vars)，任何非空值（包括 `'0'`）都会启用此覆盖，空字符串才清除该覆盖。此选项会影响多项非必要流量和功能，不仅是遥测；本机未选中的认证及供应商字段仍保留。
+
 ## Claude Desktop Bootstrap 接口
 
 0.1.4 为外部启动器提供明确的 App 路径、数据目录和只读部署模式信息，详见[返回协议](references/report-contract.md#app-启动器使用的目标信息014)。

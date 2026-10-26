@@ -90,6 +90,27 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), after)
         self.assertTrue(all(row['status'] == 'unchanged' for row in repeated['results']))
 
+    def test_nonessential_traffic_setting_preserves_unselected_environment(self):
+        key = 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'
+        path = self.native(value={'env': {'ANTHROPIC_AUTH_TOKEN': 'LOCAL_ONLY'}})
+        for value in ('1', ''):
+            with self.subTest(value=value):
+                self.profile(settings={'env': {key: value}})
+                plan = self.manager().plan()
+                self.assertTrue(plan.report['ready'])
+                self.assertNotIn('LOCAL_ONLY', json.dumps(plan.report))
+                plan.apply(self.state)
+                self.assertEqual(json.loads(path.read_text())['env'],
+                                 {'ANTHROPIC_AUTH_TOKEN': 'LOCAL_ONLY', key: value})
+
+    def test_nonessential_traffic_setting_requires_native_string_values(self):
+        key = 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'
+        for value in (True, False, 1, 0, None):
+            with self.subTest(value=value), self.assertRaises(SchemaError):
+                validate_settings('claude-code', {'env': {key: value}})
+        # Native Claude treats '0' as present, not as an off switch.
+        validate_settings('claude-code', {'env': {key: '0'}})
+
     def test_codex_toml_comments_credentials_and_unmanaged_tables_preserved(self):
         self.profile('codex', settings={'model_reasoning_effort': 'high', 'memories': {'use_memories': False}})
         path = self.native('codex', text='# keep comment\nmodel = "unselected" # keep inline\n[model_providers.local]\napi_key = "LOCAL_ONLY"\n[memories]\ngenerate_memories = true\n')

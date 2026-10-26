@@ -67,6 +67,8 @@ CLAUDE = [
 ]
 for variable in ('CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS', 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE', 'CLAUDE_CODE_FORK_SUBAGENT'):
     CLAUDE.append(Field(('env', variable), 'string', choices=('1', '0')))
+# Native semantics use non-empty presence, including '0'; an empty string disables the override.
+CLAUDE.append(Field(('env', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'), 'string'))
 CLAUDE.append(Field(('env', 'CLAUDE_CODE_SUBAGENT_MODEL'), 'string'))
 for variable in ('CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS', 'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH'):
     CLAUDE.append(Field(('env', variable), 'string'))

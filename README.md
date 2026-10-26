@@ -3,7 +3,7 @@
 管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。
 Claudespace 托管资源正文；Profile 选择配置和资源运行参数；Machine 提供本机绑定。
 
-本分支实现 0.6.0 的[部署一致性诊断、技能交接与显式退役](references/deployment-consistency.md)。以下正式发行安装示例仍使用 v0.5.1；本分支须完成发布流程后才成为正式发行，不把本地构建误称为已发布版本。
+本分支包含 0.6.0 的[部署一致性诊断、技能交接与显式退役](references/deployment-consistency.md)。以下正式发行安装示例仍使用 v0.5.1；本分支须完成发布流程后才成为正式发行，不把本地构建误称为已发布版本。
 
 ## 安装
 
@@ -105,3 +105,5 @@ bash scripts/setup-cloud.sh
 升级本工具本身不会替换 Bootstrap、切换供应商或把本机改为第三方部署。
 
 新版 Desktop 的自动检查和订阅 Codex 修复入口见[兼容性自动化](references/desktop-compatibility-automation.md)：Actions 生成待核验草稿 PR，用户在 PR 下委派给 `@codex`，独立 macOS CI 验证修复。无需在仓库保存 OpenAI API Key 或订阅登录凭据；不自动升级用户机器。
+
+Codex App 26.1021.31345 的偏好接口在 0.6.1 完成复验；继续按安装源码签名检查，保留旧接口支持。范围、原生隔离测试及限制见[接口审查](references/codex-app-26.1021.31345-audit.md)。工具升级不自动应用模型或桌面偏好。

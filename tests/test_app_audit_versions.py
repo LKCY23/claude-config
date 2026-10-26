@@ -37,8 +37,13 @@ class AppAuditTests(unittest.TestCase):
         self.assertEqual(result[0]['reviewed_version'],'2')
 
     def test_other_bundle_and_unknown_interface_are_not_accepted(self):
-        self.assertEqual(self.check('2',bundle='other.app')[0]['status'],'blocked')
-        self.assertEqual(self.check('3',payload=b'new unreviewed interface')[0]['status'],'blocked')
+        identity = self.check('2',bundle='other.app')[0]
+        interface = self.check('3',payload=b'new unreviewed interface')[0]
+        self.assertEqual(identity['status'],'blocked')
+        self.assertEqual(identity['stage'],'application_identity')
+        self.assertEqual(interface['status'],'blocked')
+        self.assertEqual(interface['stage'],'preference_interface')
+        self.assertEqual(interface['version'],'3')
 
     def test_known_version_does_not_bypass_source_tampering(self):
         self.assertEqual(self.check('1',payload=b'tampered')[0]['status'],'blocked')

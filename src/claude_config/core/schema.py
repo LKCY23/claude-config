@@ -149,11 +149,19 @@ def validate_profile(value, kind='agent', expected=None):
     require(kind in ('agent', 'app'), 'Unknown Profile kind')
     json_value(value)
     field, choices = ('agent_type', AGENTS) if kind == 'agent' else ('app', APPS)
-    allowed = ['schema_version', field, 'description', 'settings', 'bindings', 'merge_policy']
+    allowed = ['schema_version', field, 'description', 'settings', 'bindings', 'merge_policy', 'minimum_tool_version']
     if kind == 'agent':
         allowed.append('resources')
     closed(value, allowed, ('schema_version', field), kind + ' Profile')
     version(value)
+    if 'minimum_tool_version' in value:
+        from .. import __version__
+        required = value['minimum_tool_version']
+        require(isinstance(required, str) and re.fullmatch(r'\d+\.\d+\.\d+', required),
+                'minimum_tool_version must be a three-part version')
+        current = re.match(r'(\d+)\.(\d+)\.(\d+)', __version__)
+        require(current is not None and tuple(map(int, current.groups())) >= tuple(map(int, required.split('.'))),
+                'Profile requires claude-config >= ' + required + '; installed: ' + __version__)
     require(value[field] in choices, 'Unknown ' + field)
     require(expected is None or value[field] == expected, 'Profile type disagrees with its binding or directory')
     if 'description' in value:

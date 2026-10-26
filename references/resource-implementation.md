@@ -41,6 +41,8 @@ Agents 部署到 config_root/agents/<原生 name>.md／.toml；原生字段、�
 
 ## 缓存、所有权与更新
 
+0.6.0 补充已选技能的外部管理者冲突预检、安装盘点和显式退役；见[部署一致性](deployment-consistency.md)。这些功能复用本节的指纹、所有权与公共事务，不自动接管同名外部文件。
+
 完整渲染包保存到 config_root/.claude-config-resources/<catalog>/<id>/<rendered_fingerprint>，供脚本和依赖使用。缓存按内容固定，旧缓存保留供当前引用或恢复，不隐式垃圾回收。
 
 新资源遇到已有未管理文件或未知附加文件会阻断，即使同名也不自动采用。已有受管资源先比较内容和模式的基线；已知源基线更新可以替换，外部修改仍是 drift。完整 Skill 更新删除已知、未修改的旧文件，并返回 remove_obsolete_resource_file；原生 identity 改名仅退役该资源旧身份的受管文件，不清理用户未知内容。

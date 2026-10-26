@@ -140,7 +140,7 @@ class Setup:
         return FilePlan(changes, sources=self.sources, scopes=self.recovery_scopes, report=report)
 
 
-def doctor(machine_path):
+def doctor(machine_path, *, resources=False, processes=False, storage=False):
     machine_path = machine_path.expanduser().absolute()
     checks = [{'name': 'python_runtime', 'status': 'passed', 'reason': sys.executable}]
     raw, pin = snapshot_read(machine_path)
@@ -156,6 +156,20 @@ def doctor(machine_path):
         for name, entry in machine[group].items():
             profile = Path(machine['config_dir']) / entry['profile']
             checks.append({'name': 'profile_file', 'status': 'passed' if profile.is_file() else 'failed', 'subject': name, 'reason': str(profile)})
+            if profile.is_file():
+                from .core.schema import validate_profile, pointer
+                from .core.fields import validate_settings
+                try:
+                    value = parse_yaml(profile.read_bytes())
+                    validate_profile(value, kind='agent' if group == 'agents' else 'app', expected=name)
+                    if group == 'agents':
+                        validate_settings(name, value.get('settings', {}),
+                                          generated={pointer(p)[1:] for p in value.get('bindings', {})})
+                    checks.append({'name': 'profile_compatibility', 'status': 'passed', 'subject': name,
+                                   'minimum_tool_version': value.get('minimum_tool_version')})
+                except (ValueError, OSError) as exc:
+                    checks.append({'name': 'profile_compatibility', 'status': 'failed', 'subject': name,
+                                   'reason': str(exc) if isinstance(exc, SchemaError) else 'Profile cannot be parsed'})
             key = 'executable' if group == 'agents' else 'application'
             target = Path(entry['binding'][key])
             valid = target.is_dir() if group == 'apps' else target.is_file() and os.access(target, os.X_OK)
@@ -169,15 +183,48 @@ def doctor(machine_path):
         checks.append({'name': 'catalog_directory', 'subject': name, 'status': 'passed' if Path(value).is_dir() else 'failed', 'reason': value})
     if not machine['agents'] and not machine['apps']:
         checks.append({'name': 'client_bindings', 'status': 'warning', 'reason': '尚未绑定 Agent 或 App；init 不推测客户端和 Profile。'})
-    failed = any(row['status'] == 'failed' for row in checks)
-    return {'machine_id': machine['machine_id'], 'ready': not failed, 'checks': checks, 'decisions': [],
-            'blockers': [{'code':'local_dependency_missing','reason':'本机绑定所需文件或程序不存在；见检查明细。'}] if failed else []}, state_directory(machine)
+    from .core.diagnostics import tool_identity, app_instances, storage_summary
+    result = {'machine_id': machine['machine_id'], 'checks': checks, 'decisions': [],
+              'installation': tool_identity(),
+              'profile_selection': {'kind': 'repository' if selected.selection_path else 'embedded',
+                                    'path': str(selected.selection_path or machine_path)},
+              'client_profiles': {group: {name: entry['profile'] for name, entry in machine[group].items()}
+                                  for group in ('agents', 'apps')}}
+    if resources:
+        from .core.manager import ProfileManager
+        result['resource_inventories'] = []
+        for agent in machine['agents']:
+            plan = ProfileManager(machine_path, agent).plan(prepare=False)
+            inventory = plan.report.get('resource_inventory', {'agent_type': agent, 'skills': []})
+            result['resource_inventories'].append(inventory)
+            checks.extend(inventory.get('checks', []))
+            for row in inventory.get('skills', []):
+                if row['selected'] and row['file_changes']:
+                    checks.append({'name': 'skill_inventory_drift', 'status': 'blocked',
+                                   'path': ['resources', 'skills', row['ref']], 'code': 'resource_drift',
+                                   'reason': 'Managed skill files differ: ' + str(row['change_counts'])})
+            # A missing inventory cannot turn failed source/native validation green.
+            checks.extend(row for row in plan.report.get('checks', [])
+                          if row['status'] in ('blocked', 'failed') and row not in checks)
+    if processes:
+        result['app_processes'] = app_instances(machine)
+    if storage:
+        result['storage'] = storage_summary(state_directory(machine))
+    failed = any(row['status'] in ('failed', 'blocked') for row in checks)
+    result.update(ready=not failed, blockers=[{'code': 'doctor_checks_failed',
+                                             'reason': '本机绑定或资源检查未通过；见检查明细。'}] if failed else [])
+    return result, state_directory(machine)
 
 
 def main(argv):
     parser = ReportParser(description=__doc__, prog='claude-config ' + argv[0])
     parser.add_argument('--machine', type=Path, default=default_machine())
     parser.add_argument('--format', choices=('auto','text','json'), default='auto')
+    if argv[0] == 'doctor':
+        parser.add_argument('--resources', action='store_true', help='Inspect selected skills, drift and external managers; no skill execution')
+        parser.add_argument('--processes', action='store_true', help='Observe bound macOS App processes without collecting environment values')
+        parser.add_argument('--storage', action='store_true', help='Summarize private state retention categories; never delete')
+        parser.add_argument('--no-save', action='store_true', help='Return diagnostics without persisting a report')
     if argv[0] == 'init':
         parser.add_argument('--from-machine', type=Path)
         parser.add_argument('--config-dir', type=Path)
@@ -196,7 +243,7 @@ def main(argv):
         args = parser.parse_args(argv[1:])
         operation = 'init-rollback' if getattr(args, 'run', None) else argv[0]
         if argv[0] == 'doctor':
-            raw, state = doctor(args.machine)
+            raw, state = doctor(args.machine, resources=args.resources, processes=args.processes, storage=args.storage)
         else:
             manager = Setup(args)
             state = manager.state_root
@@ -216,5 +263,6 @@ def main(argv):
     report = build_report(raw, operation=operation, preview_only=not requested_write, manager=manager,
                           context={'target_label':'工具与本机绑定', 'machine_file': str(args.machine) if 'args' in locals() else None, 'machine_id': raw.get('machine_id')},
                           error=error, execution_started=started)
-    save_report(report,state)
+    if not (argv[0] == 'doctor' and 'args' in locals() and args.no_save):
+        save_report(report,state)
     return output_report(report, report_format(argv))

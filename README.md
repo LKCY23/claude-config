@@ -3,6 +3,8 @@
 管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。
 Claudespace 托管资源正文；Profile 选择配置和资源运行参数；Machine 提供本机绑定。
 
+本分支实现 0.6.0 的[部署一致性诊断、技能交接与显式退役](references/deployment-consistency.md)。以下正式发行安装示例仍使用 v0.5.1；本分支须完成发布流程后才成为正式发行，不把本地构建误称为已发布版本。
+
 ## 安装
 
 支持 macOS 和 Linux；原生 Windows 执行器尚不支持。macOS App 适配不自动适用于 Linux。
@@ -29,13 +31,15 @@ claude-config plan --app codex-app
 claude-config apply --agent codex --expect-plan-id "<reviewed-plan-id>"
 claude-config plan --agent codex --format text
 claude-config plan --agent codex --format json
+claude-config doctor --resources --processes --format text
+claude-config doctor --resources --no-save --format json
 ```
 
 默认读取 `~/.claude-config-tool/machine.yaml`；`--machine` 可以显式覆盖，不搜索当前工作目录。
 
 跨设备的 Profile 选择保存在配置仓库 `machines/<machine_id>.yaml`；本机 Machine 通过 `profile_selection` 显式引用，只保留路径与依赖。`init --profile-selection machines/<machine_id>.yaml` 预览接管当前选择，`--write --expect-plan-id <ID>` 执行；Git 拉取不会自动 apply。格式、切换与恢复见 [机器绑定规范](references/machine-profile-bindings.md)。
 数据默认 `~/claude-config-data`，报告和私有恢复日志默认 `<config_dir>/.state/`。
-TTY/tmux 默认可展开；管道/重定向输出静态文字。所有配置操作保存完整 JSON。见 [返回协议](references/report-contract.md)。
+TTY/tmux 默认可展开；管道/重定向输出静态文字。配置操作保存完整 JSON；`doctor --no-save` 可仅输出诊断。见 [返回协议](references/report-contract.md)。
 
 ## 获取并采用资源基线
 

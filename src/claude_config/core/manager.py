@@ -139,12 +139,18 @@ class ProfileManager:
         report['checks'] += checks
         if resources is not None:
             report['decisions'] += resources.decisions
+            if hasattr(resources, 'inventory'):
+                report['resource_inventory'] = resources.inventory
             if hasattr(resources, 'conflicts'):
                 report['resource_conflicts'] = resources.conflicts.reviews
                 report['kept_resources'] = sorted(resources.conflicts.kept)
                 report['synchronization'] = 'local_changes_retained' if resources.conflicts.kept else 'selected_plan'
                 report['plan_id'] = fingerprint({'merge': report['plan_id'], 'resource_conflicts': report['resource_conflicts'],
                                                  'kept_resources': report['kept_resources']})
+            if hasattr(resources, 'inventory'):
+                report['plan_id'] = fingerprint({'plan': report['plan_id'],
+                                                'skill_ownership': resources.inventory['ownership_fingerprint'],
+                                                'legacy_entries': [row['legacy_entry'] for row in resources.inventory['skills']]})
         report['checks'].append({'name': 'effective_session', 'status': 'not_verified',
                                  'reason': 'Plan validates explicit user configuration; account, policy, CLI and session overrides are not session-tested'})
         for check in checks:
@@ -202,6 +208,10 @@ class ProfileManager:
         resource_failed = False
         try:
             resources.prepare()
+            from .resource_inventory import inspect_skills
+            resources.inventory, ownership_guard = inspect_skills(self, resources.previous, resources.rendered, native)
+            resources.checks.extend(resources.inventory['checks'])
+            resources.resolver.guards.append(ownership_guard)
         except (ValueError, OSError, subprocess.SubprocessError) as exc:
             resource_failed = True
             resources.checks.append({'name': 'resource_resolution', 'status': 'blocked', 'code': 'resource_preflight_failed',

@@ -12,7 +12,7 @@
 
 ## 1 适用操作与基本要求
 
-覆盖 plan、validate、apply、export、switch、rollback、fetch-baseline、adopt-baseline 和 review-conflicts。将来增加操作时沿用报告结构，补充操作专属内容。
+覆盖 plan、validate、apply、export、switch、rollback、fetch-baseline、adopt-baseline、review-conflicts、reconcile-run、retire-skills 和 doctor。将来增加操作时沿用报告结构，补充操作专属内容。
 
 - 检查通过、发现差异、存在冲突和执行失败均形成完整报告。
 - 预览与执行明确区分；保存报告属于报告输出，不算部署配置。
@@ -206,3 +206,9 @@ Codex         所选插件 3/3 通过     1 项待更新
 ## 2026-10-17 正式 CLI
 
 入口统一为 `claude-config`；默认 Machine 路径、init/doctor 和安装职责见 [打包规范](cli-packaging-and-distribution.md)。报告增加 `tool.name/version`；原有交互/静态/JSON 与退出码不变。帮助和版本查询不生成报告。
+
+## 0.6.0 部署一致性扩展
+
+Agent plan 增加 `resource_inventory`，doctor 的 `--resources` 增加 `resource_inventories`；包含来源、归属、原生启停和分类差异，不包含正文或凭据。文件存在不等于原生发现，`native_discovery.status` 保留 `not_verified`。doctor 的 `installation`、`profile_selection`、可选 `app_processes` 与 `storage` 是观察证据，不能推断会话有效。
+
+`doctor --no-save` 明确不写报告；不能显示已保存地址。`retire-skills` 的 `retired_resources` 列出显式退役对象，预览与事务执行仍按公共协议返回。范围与限制见[部署一致性](deployment-consistency.md)。

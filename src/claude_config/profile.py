@@ -80,7 +80,7 @@ def _entry(argv=None):
 
 def _main(argv):
     parser = ReportParser(description=__doc__, prog="claude-config")
-    parser.add_argument('operation', choices=('plan', 'validate', 'apply', 'export', 'switch', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run'))
+    parser.add_argument('operation', choices=('plan', 'validate', 'apply', 'export', 'switch', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run', 'retire-skills'))
     parser.add_argument('--machine', type=Path, default=Path.home() / '.claude-config-tool/machine.yaml')
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument('--agent', choices=('claude-code', 'codex'))
@@ -88,7 +88,7 @@ def _main(argv):
     parser.add_argument('--profile', help='Config-dir-relative Profile of the selected type')
     parser.add_argument('--run', help='New-format run ID to restore; rollback previews by default')
     parser.add_argument('--field', action='append', default=[], help='Export atomic field as /settings/...')
-    parser.add_argument('--resource', action='append', default=[], help='Export portable usage of an explicitly declared ref@catalog')
+    parser.add_argument('--resource', action='append', default=[], help='Explicit ref@catalog for export or standalone skill retirement')
     parser.add_argument('--adopt-plugin', action='append', default=[], metavar='REF=SELECTOR', help='Explicitly adopt an exact existing native plugin; no implicit upgrade')
     parser.add_argument('--replace-plugin', action='append', default=[], metavar='REF=FILE', help='Explicit existing plugin version update with pinned local recovery declaration')
     parser.add_argument('--catalog', help='Existing catalog alias for baseline adoption')
@@ -101,17 +101,17 @@ def _main(argv):
     parser.add_argument('--resolutions', type=Path, help='Fingerprint-scoped drift resolutions JSON')
     parser.add_argument('--expect-plan-id', help='Block if fresh plan differs from reviewed preview')
     parser.add_argument('--dry-run', action='store_true')
-    parser.add_argument('--write', action='store_true', help='Write an export, rollback, baseline selection or private conflict review; all preview by default')
+    parser.add_argument('--write', action='store_true', help='Execute export, rollback, baseline selection, private review, run reconciliation or skill retirement; all preview by default')
     parser.add_argument('--format', choices=('auto', 'json', 'text'), default='auto', help='auto: interactive TTY or static text; json: machine output')
     args = parser.parse_args(argv)
     if (args.adopt_plugin or args.replace_plugin) and (args.app or args.operation not in ('plan', 'validate', 'apply', 'switch')):
         parser.error('Plugin adoption/replacement inputs are only for Agent plan/validate/apply/switch')
-    if args.app and (args.resource or args.operation in ('adopt-baseline', 'review-conflicts', 'reconcile-run')):
+    if args.app and (args.resource or args.operation in ('adopt-baseline', 'review-conflicts', 'reconcile-run', 'retire-skills')):
         parser.error('App Profiles do not manage Agent resources or catalog baselines')
     if args.operation == 'switch' and not args.profile:
         parser.error('switch requires --profile')
-    if args.write and args.operation not in ('export', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run'):
-        parser.error('--write is only for export/rollback/adopt-baseline/review-conflicts')
+    if args.write and args.operation not in ('export', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run', 'retire-skills'):
+        parser.error('--write is only for export/rollback/adopt-baseline/review-conflicts/reconcile-run/retire-skills')
     baseline_args = (args.catalog, args.commit, args.checkout, args.release_record)
     if args.operation == 'adopt-baseline' and not all(baseline_args):
         parser.error('adopt-baseline requires --catalog, --commit, --checkout and --release-record')
@@ -127,12 +127,16 @@ def _main(argv):
         parser.error('rollback uses recorded snapshots, not settings merge policies')
     if args.field and args.operation != 'export':
         parser.error('--field is only for export')
-    if args.resource and args.operation != 'export':
-        parser.error('--resource is only for export')
+    if args.resource and args.operation not in ('export', 'retire-skills'):
+        parser.error('--resource is only for export/retire-skills')
+    if args.operation == 'retire-skills' and (not args.resource or args.policy or args.field_policy or args.resolutions):
+        parser.error('retire-skills requires explicit resources and does not override drift')
+    if args.operation == 'retire-skills' and args.write and not args.expect_plan_id:
+        parser.error('retire-skills --write requires the reviewed --expect-plan-id')
     if args.profile and args.operation not in ('switch', 'export'):
         parser.error('--profile is only for switch/export; other operations use the Machine binding')
     plan, manager, error = None, None, None
-    write = args.operation in ('apply', 'switch') or args.operation in ('export', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run') and args.write
+    write = args.operation in ('apply', 'switch') or args.operation in ('export', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run', 'retire-skills') and args.write
     started, preview_only = False, args.dry_run or not write
     phase = 'planning'
     try:
@@ -166,6 +170,9 @@ def _main(argv):
             plan = reconcile_plan(manager, args.run)
         elif args.operation == 'rollback':
             plan = rollback_plan(manager, args.run)
+        elif args.operation == 'retire-skills':
+            from .core.skill_retirement import retirement_plan
+            plan = retirement_plan(manager, args.resource)
         elif args.operation == 'export':
             if resolutions:
                 raise SchemaError('Drift resolutions belong to native apply/switch')

@@ -100,6 +100,31 @@ class NativeResourceSmokeTests(unittest.TestCase):
             self.assertIn('native-smoke', json.dumps(result))
             self.assertIn(str(root / 'home/.agents/skills/native-smoke/SKILL.md'), json.dumps(result))
 
+    def test_claude_skill_activation_uses_initialize_without_a_model_turn(self):
+        from native_claude_discovery import initialize
+        binary = self.binary('CLAUDE_CONFIG_NATIVE_CLAUDE')
+        with tempfile.TemporaryDirectory(prefix='claude-skill-discovery-') as directory:
+            root = Path(directory)
+            manager = self.fixture(directory, 'claude-code', binary, 'skill',
+                                   {'SKILL.md': '---\nname: native-smoke\ndescription: Discovery only\n---\nDo not execute.\n'}, 'SKILL.md')
+            profile_path = manager.root / manager.entry['profile']
+            profile = yaml.safe_load(profile_path.read_text())
+            home = root / 'home'; home.mkdir()
+            env = {'PATH': os.environ.get('PATH', ''), 'HOME': str(home),
+                   'CLAUDE_CONFIG_DIR': str(root / 'native'), 'TMPDIR': directory,
+                   'ANTHROPIC_API_KEY': 'not-a-real-key-discovery-only',
+                   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1',
+                   'HTTP_PROXY': 'http://127.0.0.1:9', 'HTTPS_PROXY': 'http://127.0.0.1:9'}
+            for enabled in (True, False):
+                profile['resources']['skills']['native-smoke@smoke']['options'] = {'control': {'enabled': enabled}}
+                profile_path.write_text(yaml.safe_dump(profile))
+                plan = ProfileManager(manager.machine_path, 'claude-code').plan()
+                self.assertTrue(plan.report['ready'], plan.report['blockers'])
+                plan.apply(manager.state_root)
+                response = initialize(binary, root, env)
+                self.assertIn('commands', response)
+                self.assertEqual('native-smoke' in [row['name'] for row in response['commands']], enabled)
+
     def test_codex_skill_activation_and_invocation_controls(self):
         self.assert_skill_controls(self.binary('CLAUDE_CONFIG_NATIVE_CODEX'))
 

@@ -10,6 +10,7 @@ from .merge import fingerprint
 from .native import parse_json, snapshot_read
 from .schema import as_pointer, closed, mapping, pointer, require
 from .transaction import FileChange, PlanStale, directory_fingerprint, file_fingerprint
+from .resource_inventory import change_kind
 
 
 def encoded(value):
@@ -215,6 +216,7 @@ class ResourceConflicts:
                     except UnicodeError:
                         pass
                 differences.append({'path': location, 'baseline': expected, 'local': actual,
+                                    'kind': change_kind(expected, actual),
                                     'baseline_body_available': base_data is not None, 'line_changes': spans})
         roots = [Path(old['cache'])]
         if old['native'].get('root'):

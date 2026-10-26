@@ -1,5 +1,7 @@
 # App Profile 原生偏好实现
 
+2026-10-27 复验（工具 0.6.1）：Codex App 26.1021.31345 的 41 项既有偏好、29 个主题、原生 `[desktop]` 读写与新增持久化失败恢复已核对。当前接口及 schema 依赖按固定摘要登记，保留此前三份记录；不扩展字段或同步 Agent 模型。复验方法与限制见[本次接口审查](codex-app-26.1021.31345-audit.md)。
+
 2026-10-17 Claude Desktop 复验（框架 0.1.5）：已核验 `2.42304.0` 的 `.vite/build/index.chunk-muI2IV6k.js`。主题仍从用户数据目录 `config.json` 的 `userThemeMode` 读写，支持 system / light / dark；语言仍读写 `locale`，要求安装包中存在相应语言文件。主题 setter、启动读取、语言 setter、无效语言拒绝与缺失语言回退已用提取的原生函数在内存环境验证。三个第三方开关仍为布尔值、限现有第三方部署，来自 `configLibrary/_meta.json.appliedId` 选中的配置文件。只登记新接口签名，保留先前已核验的 2.26454.2；不增加同步字段、校验步骤或本机写入。审查记录（本机）：`deployment/model-and-claude-interface-20261017/`。
 
 2026-10-17 复验：Codex App 已更新到 `26.1013.31256`，相关打包脚本名称及签名变化。逐项核对后，41 个已登记偏好定义、29 个内置代码主题及其适用模式与此前一致；完整 settings-store 除压缩变量名外一致，仍读取 `config.toml` 的 `[desktop]` 并逐字段写入 `desktop.<key>`。只更新已审查接口签名，保留两个先前审查基线，不增加同步字段或校验步骤。5 项兼容性、32 项 App 配置／恢复及 3 项已安装源码／临时原生文件测试通过，包含新版后端回读、导出和恢复；未修改本机原生配置，未验证 GUI 实际效果。审查记录（本机历史记录：`deployment/codex-app-interface-audit-20261017/audit.json`）
@@ -39,7 +41,7 @@ claude-config switch --dry-run --machine /absolute/path/to/machine.yaml --app cl
 
 | App | 本批审查版本 | 原生接口 | 核实范围 |
 | --- | --- | --- | --- |
-| Codex App | 26.1013.31256；保留已审查 26.1007.21159、26.1002.52244 | 共享 `config.toml` 的 `[desktop]`，按叶字段更新 | 设置 schema、读取、原生持久化代码；真实后端隔离 config/read 回读 |
+| Codex App | 26.1021.31345；保留已审查 26.1013.31256、26.1007.21159、26.1002.52244 | 共享 `config.toml` 的 `[desktop]`，按叶字段更新 | 设置 schema、读取、原生持久化代码；真实后端隔离 config/read 回读 |
 | Claude Desktop | 2.42304.0（保留已核验的 2.26454.2） | `data_root/config.json` 的 `userThemeMode`、`locale` | 本地主题／界面语言 setter 与启动读取；语言要求有已安装 catalog |
 | Claude Desktop 第三方功能 | 同上 | 现有 `configLibrary/_meta.json.appliedId` 指向的 UUID JSON | chatTabEnabled、autoModeEnabled、builtinBrowserEnabled 的类型、第三方作用域和读取来源 |
 

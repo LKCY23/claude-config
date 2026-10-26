@@ -6,10 +6,10 @@ HELP = """usage: claude-config COMMAND [OPTIONS]
 
 配置操作（明确选择 --agent 或 --app）：
   plan  validate  apply  export  switch  rollback
-  adopt-baseline  review-conflicts  reconcile-run
+  adopt-baseline  review-conflicts  reconcile-run  retire-skills
 本机设置：
   init       初始化/迁移 Machine 和明确指定的 Skill 入口，默认预览
-  doctor     检查安装、本机绑定及本地依赖，不运行资源业务
+  doctor     检查安装、本机绑定；--resources 盘点技能，--processes 观察 App 实例
 专项操作：
   runs       只读查看执行状态；--run ID 核对当前文件与恢复证据
   fetch-baseline  获取明确发布的固定来源，不采用或部署配置

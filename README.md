@@ -3,6 +3,8 @@
 管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。
 Claudespace 托管资源正文；Profile 选择配置和资源运行参数；Machine 提供本机绑定。
 
+本分支包含 0.6.0 的[部署一致性诊断、技能交接与显式退役](references/deployment-consistency.md)。以下正式发行安装示例仍使用 v0.5.1；本分支须完成发布流程后才成为正式发行，不把本地构建误称为已发布版本。
+
 ## 安装
 
 支持 macOS 和 Linux；原生 Windows 执行器尚不支持。macOS App 适配不自动适用于 Linux。
@@ -29,13 +31,15 @@ claude-config plan --app codex-app
 claude-config apply --agent codex --expect-plan-id "<reviewed-plan-id>"
 claude-config plan --agent codex --format text
 claude-config plan --agent codex --format json
+claude-config doctor --resources --processes --format text
+claude-config doctor --resources --no-save --format json
 ```
 
 默认读取 `~/.claude-config-tool/machine.yaml`；`--machine` 可以显式覆盖，不搜索当前工作目录。
 
 跨设备的 Profile 选择保存在配置仓库 `machines/<machine_id>.yaml`；本机 Machine 通过 `profile_selection` 显式引用，只保留路径与依赖。`init --profile-selection machines/<machine_id>.yaml` 预览接管当前选择，`--write --expect-plan-id <ID>` 执行；Git 拉取不会自动 apply。格式、切换与恢复见 [机器绑定规范](references/machine-profile-bindings.md)。
 数据默认 `~/claude-config-data`，报告和私有恢复日志默认 `<config_dir>/.state/`。
-TTY/tmux 默认可展开；管道/重定向输出静态文字。所有配置操作保存完整 JSON。见 [返回协议](references/report-contract.md)。
+TTY/tmux 默认可展开；管道/重定向输出静态文字。配置操作保存完整 JSON；`doctor --no-save` 可仅输出诊断。见 [返回协议](references/report-contract.md)。
 
 ## 获取并采用资源基线
 
@@ -91,6 +95,8 @@ bash scripts/setup-cloud.sh
 
 七类资源的运行参数、已验证版本、Hook 事件及未验证的运行行为见[参数证据清单](references/resource-parameter-evidence.md)。框架接受、官方字段存在、原生解析和业务生效分别记录；原生新增字段不会自动纳入同步。
 
+0.5.2 支持在 Claude Code Profile 的 `settings.env` 中声明 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'`。该值必须是字符串；按[原生环境变量文档](https://code.claude.com/docs/en/env-vars)，任何非空值（包括 `'0'`）都会启用此覆盖，空字符串才清除该覆盖。此选项会影响多项非必要流量和功能，不仅是遥测；本机未选中的认证及供应商字段仍保留。
+
 ## Claude Desktop Bootstrap 接口
 
 0.1.4 为外部启动器提供明确的 App 路径、数据目录和只读部署模式信息，详见[返回协议](references/report-contract.md#app-启动器使用的目标信息014)。
@@ -99,3 +105,5 @@ bash scripts/setup-cloud.sh
 升级本工具本身不会替换 Bootstrap、切换供应商或把本机改为第三方部署。
 
 新版 Desktop 的自动检查和订阅 Codex 修复入口见[兼容性自动化](references/desktop-compatibility-automation.md)：Actions 生成待核验草稿 PR，用户在 PR 下委派给 `@codex`，独立 macOS CI 验证修复。无需在仓库保存 OpenAI API Key 或订阅登录凭据；不自动升级用户机器。
+
+Codex App 26.1021.31345 的偏好接口在 0.6.1 完成复验；继续按安装源码签名检查，保留旧接口支持。范围、原生隔离测试及限制见[接口审查](references/codex-app-26.1021.31345-audit.md)。工具升级不自动应用模型或桌面偏好。

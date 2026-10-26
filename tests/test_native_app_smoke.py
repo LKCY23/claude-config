@@ -46,6 +46,7 @@ class NativeAppSmoke(unittest.TestCase):
             if app == 'codex-app':
                 home = root / 'codex-home'
                 home.mkdir()
+                (home / 'config.toml').write_text('model = "local-only-model"\n[desktop]\nunmanagedPreference = "preserve"\n')
                 machine['agents']['codex'] = {'profile': 'profiles/agents/codex/work.yaml', 'binding': {
                     'executable': backend or '/fixture/unused', 'config_root': str(home)}}
             elif features:
@@ -88,6 +89,8 @@ class NativeAppSmoke(unittest.TestCase):
                 readback = NativeProbe._codex_read(backend, home, env)
                 self.assertIsInstance(readback, dict)
                 self.assertEqual({key: readback['desktop'].get(key) for key in settings}, settings)
+                self.assertEqual(readback['model'], 'local-only-model')
+                self.assertEqual(readback['desktop']['unmanagedPreference'], 'preserve')
             selectors = ['/settings/' + '/'.join(path) for path, _ in leaves(settings)]
             export_name = f'profiles/apps/{app}/exported.yaml'
             exported = AppProfileManager(path, app, probe=probe).export(selectors, profile=export_name)
@@ -106,8 +109,52 @@ class NativeAppSmoke(unittest.TestCase):
                       {'followUpQueueMode': 'queue', 'git-branch-prefix': '', 'preventSleepWhileRunning': False,
                        'reviewDelivery': 'inline', 'appearanceLightCodeThemeId': 'vscode-plus',
                        'appearanceDarkCodeThemeId': 'nord',
+                       'localeOverride': 'en-US', 'open-in-target-preferences': {'global': 'vscode'},
                        'appearanceLightChromeTheme': {'accent': '#123456', 'opaqueWindows': False,
                                                      'semanticColors': {'skill': '#abcdef'}}}, backend=backend)
+
+    def test_codex_261021_native_schemas_store_and_failed_write_recovery(self):
+        from claude_config.core.app_native import AUDITS
+        from claude_config.core.app_fields import CODEX
+        from claude_config.core.app_themes import CODE_THEMES
+        application = Path(os.environ.get('CLAUDE_CONFIG_CODEX_APPLICATION', '/Applications/ChatGPT.app'))
+        checks = AppProbe().check('codex-app', application, {'reviewDelivery': 'inline'}, {})
+        self.assertEqual(checks[0]['status'], 'passed')
+        if checks[0]['reviewed_version'] != '26.1021.31345':
+            self.skipTest('This source probe requires the reviewed 26.1021.31345 interface')
+        cases = []
+        for key, (kind, domain) in CODEX.items():
+            if kind == 'bool':
+                valid, invalid = [False, True], ['false', 1]
+            elif kind == 'enum':
+                valid, invalid = list(domain), ['unregistered-test-value', False]
+            elif kind in ('number', 'integer'):
+                valid, invalid = [domain[0], domain[1] or domain[0] + 1], [domain[0] - 1, '12']
+                if domain[1] is not None:
+                    invalid.append(domain[1] + 1)
+            elif kind in ('string', 'locale'):
+                valid, invalid = (['', 'codex/'] if kind == 'string' else ['en-US', 'zh-CN']), [False, 1]
+            elif kind == 'open-target':
+                valid, invalid = [{}, {'global': 'vscode'}], [{'global': False}]
+            else:
+                self.assertEqual(kind, 'chrome-theme')
+                theme = {'accent': '#123456', 'ink': '#000000', 'surface': '#ffffff',
+                         'contrast': 45, 'opaqueWindows': False, 'fonts': {'code': None, 'content': None, 'ui': None},
+                         'semanticColors': {'diffAdded': '#008000', 'diffRemoved': '#ff0000', 'skill': '#0000ff'}}
+                valid, invalid = [theme], [{**theme, 'accent': 'invalid'}]
+            cases.append({'key': key, 'valid': valid, 'invalid': invalid})
+        with tempfile.TemporaryDirectory(prefix='codex-store-source-') as directory:
+            root = Path(directory)
+            entries = asar_entries((application / 'Contents/Resources/app.asar').read_bytes(), AUDITS['codex-app'][2])
+            for name, content in entries.items():
+                (root / Path(name).name).write_bytes(content)
+            result = subprocess.run(['node', str(Path(__file__).with_name('codex_app_261021_probe.cjs')), str(root)],
+                                    input=json.dumps({'cases': cases, 'themes': CODE_THEMES}),
+                                    text=True, capture_output=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            evidence = json.loads(result.stdout)
+            self.assertEqual(evidence['registered_fields'], len(CODEX))
+            self.assertEqual(evidence['failed_write_recovery'], 'passed')
 
     def test_claude_official_appearance_and_language(self):
         self.exercise('claude-desktop', os.environ.get('CLAUDE_CONFIG_CLAUDE_APPLICATION', '/Applications/Claude.app'),

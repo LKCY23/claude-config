@@ -138,3 +138,7 @@ claude-config rollback --machine /absolute/path/to/machine.yaml --agent codex --
 普通 tests 使用临时目录与模拟能力检查。`tests/test_native_profile_smoke.py` 为主动启用的真实二进制验收：设置 CLAUDE_CONFIG_RUN_NATIVE_SMOKE=1，并分别通过 CLAUDE_CONFIG_NATIVE_CLAUDE、CLAUDE_CONFIG_NATIVE_CODEX、CLAUDE_CONFIG_NATIVE_CODEX_APP 提供绝对程序路径。所有目标仍是新建临时目录；不将真实 config_root 写入测试。
 
 2026-10-09 已在隔离目录使用本机 Claude 2.1.278、Codex CLI 0.160.0 和 App 后端 0.162.0-alpha.2 完成规划、写入和重复无变化验证。未登录模型服务、未验证真实会话效果、未切换本机运行配置。
+
+## 0.6.0 部署与兼容性
+
+Profile 可声明 `minimum_tool_version: '0.6.0'`，执行前核对工具版本；旧工具不识别该字段，先升级再采用。`doctor --resources` 盘点来源、技能安装归属和 drift。选中但停用的技能也须完成外部管理者交接；移除选择不等于删除文件。仅明确退役未修改的独立技能使用 `retire-skills`，其他资源继续各自的生命周期。详见[部署一致性与退役](deployment-consistency.md)。

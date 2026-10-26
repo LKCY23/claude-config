@@ -505,6 +505,25 @@ def report_sections(report, *, compact=False):
     """Shared expanded content for static and interactive renderers."""
     by_id = {row['id']: row for row in report['decisions']}
     sections = []
+    inventories = report.get('resource_inventories', [])
+    if report.get('resource_inventory'):
+        inventories = [*inventories, report['resource_inventory']]
+    for inventory in inventories:
+        sections.append(('技能安装盘点：' + inventory['agent_type'], [
+            row['ref'] + '；' + ('已选择' if row['selected'] else '保留残留') +
+            '；原生入口：' + ('存在' if row['entry']['exists'] else '缺失') +
+            '；期望启用：' + str(row['desired_enabled']) + '；原生启用：' + str(row['native_enabled']) +
+            '；外部管理者：' + (', '.join(row['external_managers']) or '未发现声明') +
+            '；差异：' + str(row['change_counts']) +
+            ('；存在旧入口' if row['legacy_entry'] else '') + '；原生发现：未验证'
+            for row in inventory.get('skills', [])], False))
+    if report.get('installation'):
+        sections.append(('工具与机器选择', [json.dumps(report['installation'], ensure_ascii=False),
+                                          json.dumps(report['profile_selection'], ensure_ascii=False)], False))
+    if report.get('app_processes'):
+        sections.append(('App 运行实例（不等同配置验收）', [json.dumps(report['app_processes'], ensure_ascii=False)], False))
+    if report.get('storage'):
+        sections.append(('本机状态保留分类（不会自动删除）', [json.dumps(report['storage'], ensure_ascii=False)], False))
     inventory = report.get('migration_inventory')
     if inventory:
         sections.append(('迁移输入分类', [row['section'] + ' → ' + ROUTE_LABELS.get(row['route'], row['route']) for row in inventory['manifest_sections']], False))

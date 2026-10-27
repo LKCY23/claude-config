@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "release": {
+    "version": "4.29.0",
+    "url": "https://downloads.claude.ai/releases/darwin/universal/4.29.0/Claude-2609742292f7dbce2e259e76f53620cac4da9002.zip",
+    "sha256": "f80607aa32ba5594bcd0e32c434067401f505531f4be5079d997d684b5b49a28",
+    "size": 377849654
+  },
+  "status": "needs-review",
+  "checks": [
+    {
+      "name": "app_preference_interface",
+      "status": "blocked",
+      "code": "capability_unknown",
+      "stage": "preference_interface",
+      "version": "4.29.0",
+      "reason": "\u5df2\u5b89\u88c5\u5e94\u7528\u7684\u504f\u597d\u63a5\u53e3\u6e90\u7801\u672a\u5339\u914d\u5ba1\u67e5\u8bb0\u5f55\uff1b\u9700\u6838\u5bf9\u63a5\u53e3\u540e\u767b\u8bb0\u7b7e\u540d"
+    }
+  ],
+  "candidate_modules": [
+    {
+      "path": ".vite/build/index.chunk-C7NkbHFq.js",
+      "sha256": "92e8f69fb04f151845edc56f4246a0d3a2d2f91b311cfdb26e4f64edc43819e0",
+      "fields": [
+        "userThemeMode",
+        "locale",
+        "chatTabEnabled",
+        "autoModeEnabled",
+        "builtinBrowserEnabled"
+      ]
+    }
+  ],
+  "native_smoke": "not-run",
+  "scope": "Source interface and temporary preference files; no GUI, account, provider or business validation"
+}

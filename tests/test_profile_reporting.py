@@ -78,6 +78,14 @@ class ReportTests(unittest.TestCase):
             self.assertFalse(report['artifacts']['saved'])
         self.assertEqual(list((self.root / 'elsewhere').iterdir()), [])
 
+    def test_structured_error_detail_renders_as_text(self):
+        report = sample()
+        report['errors'].append({'code': 'plan_stale', 'phase': 'recheck', 'reason': '请重新预览',
+                                 'detail': {'phase': 'recheck', 'path': 'a/b', 'expected': 'x', 'actual': 'y'}})
+        text = render_text(report)
+        self.assertIn('检查详情', text)
+        self.assertIn('"path": "a/b"', text)
+
     def test_diff_is_success_and_policy_origin_is_visible(self):
         report = sample()
         self.assertEqual(report['summary']['changes'], 1)

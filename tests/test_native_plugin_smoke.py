@@ -48,7 +48,8 @@ class NativePluginSmokeTests(ResourceFixture):
         self.assertFalse(operation.native(desired)['enabled'])
         # No-op source apply does not cause native registration/install calls.
         repeated = self.real_manager().plan()
-        with patch.object(repeated.native_operations[0], '_call', side_effect=AssertionError('No-op must not call native installer')):
+        self.assertFalse(repeated.native_operations)
+        with patch.object(PluginOperation, '_call', side_effect=AssertionError('No-op must not call native installer')):
             repeated.apply(self.state)
         before_update = operation.world()
         document = json.loads((root / entry).read_text())
@@ -102,6 +103,43 @@ class NativePluginSmokeTests(ResourceFixture):
         native = next(row for row in journal['operations'] if row.get('kind') == 'native-plugin')
         self.assertEqual(native['status'], 'rolled_back', native)
         self.assertEqual(operation.world(), before)
+
+    def test_claude_skill_update_while_user_config_is_busy(self):
+        import subprocess
+        from claude_config.core.deployment_scope import DeploymentScope
+        self.setup_plugin('claude-code', 'CLAUDE_CONFIG_NATIVE_CLAUDE')
+        skill = self.add('guide', 'skill', {'SKILL.md': '---\nname: guide\ndescription: test\n---\nold'}, 'SKILL.md')
+        self.save()
+        self.real_manager().plan().apply(self.state)
+        (skill / 'SKILL.md').write_text('---\nname: guide\ndescription: test\n---\nnew')
+        self.save()
+        script = (
+            'import json,sys,time\nfrom pathlib import Path\n'
+            'root=Path(sys.argv[1]);(root/"backups").mkdir(exist_ok=True)\n'
+            'for i in range(2000):\n'
+            ' (root/".claude.json").write_text(json.dumps({"runtime_counter":i}))\n'
+            ' (root/"backups/.claude.json.backup.synthetic").write_text(str(i))\n'
+            ' (root/"ready").touch()\n'
+            ' time.sleep(0.02)\n')
+        child = subprocess.Popen([sys.executable, '-c', script, str(self.native)])
+        try:
+            import time
+            deadline = time.monotonic() + 5
+            while not (self.native / 'ready').exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue((self.native / 'ready').exists())
+            plan = self.real_manager().plan()
+            self.assertTrue(plan.report['ready'], plan.report['blockers'])
+            self.assertFalse(plan.native_operations)
+            with patch.object(PluginOperation, '_call', side_effect=AssertionError('No installer for skill update')):
+                plan.apply(self.state)
+            self.assertTrue((self.native / 'skills/guide/SKILL.md').read_text().endswith('new'))
+        finally:
+            child.terminate(); child.wait(timeout=5)
+        self.assertGreater(json.loads((self.native / '.claude.json').read_text())['runtime_counter'], 0)
+        repeated = self.real_manager().plan(selection=DeploymentScope(resources=('guide@test',)))
+        self.assertTrue(repeated.report['ready'], repeated.report['blockers'])
+        self.assertTrue(all(row['status'] == 'unchanged' for row in repeated.report['results']))
 
     def test_claude_install_update_and_enabled(self):
         self.assert_install_update('claude-code', 'CLAUDE_CONFIG_NATIVE_CLAUDE')

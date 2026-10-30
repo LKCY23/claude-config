@@ -17,6 +17,7 @@ from .schema import (as_pointer, closed, mapping, pointer, require, state_direct
                      validate_profile, version, within)
 from .transaction import FileChange, FilePlan, PlanStale
 from .machine_profiles import MachineProfiles
+from .deployment_scope import DeploymentScope, update_leaves
 
 
 class AppProfileManager:
@@ -135,6 +136,8 @@ class AppProfileManager:
     def _file_plan(self, merge, changes, checks, operation, native_write=False, *, prepare=True):
         report = merge.report()
         report.update(operation=operation, app=self.app)
+        if hasattr(self, 'deployment_scope'):
+            report['deployment_scope'] = self.deployment_scope
         report['checks'] += checks
         report['checks'].append({'name': 'gui_effect', 'status': 'not_verified',
                                  'reason': 'Native files are validated; GUI reload, account and policy overrides are not exercised'})
@@ -162,12 +165,18 @@ class AppProfileManager:
                         guards=[binding_guard], step_guard=step_guard, prepare=prepare,
                         recovery_guard=(lambda: self.probe.assert_stopped(self.application)) if native_write else None)
 
-    def plan(self, *, profile=None, run_policy=None, resolutions=None, prepare=True):
+    def plan(self, *, profile=None, run_policy=None, resolutions=None, prepare=True, selection=None):
         _, chosen, _, _, name = self._profile(profile)
-        declared = chosen.get('settings', {})
+        selection = selection or DeploymentScope()
+        require(profile is None or selection.full, 'Profile switching requires a full deployment')
+        refs, fields = selection.select(chosen, app=True)
+        require(selection.full or set((run_policy or {}).get('fields', {})) <= fields, 'Run policy is outside the deployment scope')
+        declared = chosen.get('settings', {}) if selection.full else selection.settings(chosen, fields)
         settings = deepcopy(declared)
         state, state_expected = self._state()
-        native, stores, checks = self._native(set(settings) | set(state.get('declared', {})))
+        require(selection.full or not state or state['profile'] == name, 'Complete the Profile switch before partial deployment')
+        self.deployment_scope = selection.report(refs, fields, (), fields)
+        native, stores, checks = self._native(set(settings) | (set(state.get('declared', {})) if selection.full else set()))
         validate_policies(self.app, run_policy)
         checks += self.probe.check(self.app, self.application, declared, self.sources)
         selected = {path for path, _ in leaves(settings)}
@@ -182,8 +191,8 @@ class AppProfileManager:
                           source={'kind': 'app-profile', 'file': name}, destination={'kind': 'app-preferences'},
                           scope=scope, profile_policy=chosen.get('merge_policy'), run_policy=run_policy,
                           machine_policy=self.machine.get('merge_policy'), resolutions=resolutions,
-                          baseline={'settings': state['managed']} if state else None,
-                          previous={'settings': state['declared']} if state else None,
+                          baseline={'settings': state['managed'] if selection.full else projection(state['managed'], selected)} if state else None,
+                          previous={'settings': state['declared'] if selection.full else projection(state['declared'], selected)} if state else None,
                           number_fields=[as_pointer(('settings', key)) for key in settings
                                          if registry(self.app).get(key, ('',))[0] == 'number'])
         changes, native_write = [], False
@@ -208,7 +217,9 @@ class AppProfileManager:
                                               lambda data, codec=codec: parse_native(codec, data), expected))
             if settings or state:
                 new_state = {'schema_version': 1, 'kind': 'app-profile-managed-state', 'app': self.app,
-                             'scopes': self.recovery_scopes, 'profile': name, 'managed': managed, 'declared': settings}
+                             'scopes': self.recovery_scopes, 'profile': name,
+                             'managed': managed if selection.full else update_leaves(state.get('managed', {}), managed),
+                             'declared': settings if selection.full else update_leaves(state.get('declared', {}), settings)}
                 changes.append(FileChange(self.state_path, (json.dumps(new_state, indent=2, ensure_ascii=False) + '\n').encode(),
                                           'app-managed-baseline', lambda data: self._validate_state(parse_json(data)), state_expected))
             if profile and profile != self.entry['profile']:

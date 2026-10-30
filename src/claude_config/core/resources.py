@@ -184,15 +184,17 @@ def validate_resource_state(records):
 
 
 class ResourcePlan:
-    def __init__(self, manager, state, profile, native=None, original=b'', run_policy=None, resolutions=None):
+    def __init__(self, manager, state, profile, native=None, original=b'', run_policy=None, resolutions=None, *, partial=False):
         self.manager, self.profile = manager, profile
         self.run_policy = run_policy or {}
         self.resolver = CatalogResolver(manager)
         self.binder = Bindings(manager)
         self.previous = state.get('resources', {})
         self.records = deepcopy(self.previous)
-        for record in self.records.values():
-            record['active'] = False
+        self.partial = partial
+        if not partial:
+            for record in self.records.values():
+                record['active'] = False
         self.rendered, self.changes, self.decisions, self.checks = {}, [], [], []
         self.generated = {}
         self.directories = set()
@@ -262,6 +264,7 @@ class ResourcePlan:
                 if path.is_file():
                     existing.add(path.resolve())
         wanted = {self._target(root, relative): (content, modes[relative]) for relative, content in files.items()}
+        obsolete = []
         for path in existing - set(wanted):
             expected = previous.get(str(path))
             if expected is None:
@@ -272,10 +275,11 @@ class ResourcePlan:
                 self._block(ref, 'resource_drift', 'Obsolete resource file was externally changed')
                 continue
             self._decision(ref, [str(path)], actual, None, 'remove_obsolete_resource_file', 'Explicit fixed package update removes a previously owned file')
-            self.changes.append(FileChange(path, b'', 'resource:' + ref, lambda data: None, actual, delete=True))
+            obsolete.append(FileChange(path, b'', 'resource:' + ref, lambda data: None, actual, delete=True))
             self.records[ref]['files'].pop(str(path), None)
-        for path, (content, mode) in wanted.items():
+        for path, (content, mode) in sorted(wanted.items(), key=lambda row: (row[0].name == 'SKILL.md', row[0] in existing, str(row[0]))):
             self._write(ref, path, content, mode)
+        self.changes.extend(obsolete)
 
     def _instructions(self, ref, item):
         path = self._target(self.manager.native_path.parent, 'CLAUDE.md' if self.manager.agent == 'claude-code' else 'AGENTS.md')
@@ -337,10 +341,110 @@ class ResourcePlan:
             self.changes.append(FileChange(path, b'', 'resource:' + ref, lambda data: None, current, delete=True))
             self.records[ref]['files'].pop(str(path), None)
 
-    def prepare(self, deploy=True, binding_scope=None):
+    def _scoped_siblings(self, packages):
+        from .resource_references import LINK, prose
+        from urllib.parse import unquote, urlsplit
+        import posixpath
+        for ref, package in packages.items():
+            if package.item['kind'] != 'skill':
+                continue
+            identity = frontmatter(package.files[package.entry])[0]['name']
+            root = (Path(self.binder.resolve(package.selection['bindings']['install_root'], 'path', allow_missing=True))
+                    if self.manager.agent == 'codex' else self.manager.native_path.parent / 'skills').resolve()
+            siblings = set(package.sibling_files)
+            for other, record in self.previous.items():
+                if other in packages or record['kind'] != 'skill' or Path(record['native']['root']).parent != root:
+                    continue
+                require(record['native']['identity'] != identity, 'Selected skill identity collides with another managed resource')
+                prefix = '../' + record['native']['identity'] + '/'
+                referenced = set()
+                for name, data in package.files.items():
+                    if not name.endswith('.md'):
+                        continue
+                    for match in LINK.finditer(prose(data.decode())):
+                        target = match[1].strip('<>')
+                        parsed = urlsplit(target)
+                        if parsed.scheme or parsed.netloc:
+                            continue
+                        target = posixpath.normpath(str(Path(name).parent / unquote(parsed.path)))
+                        if target == prefix[:-1] or target.startswith(prefix):
+                            referenced.add(target)
+                for location, expected in record['files'].items():
+                    path = Path(location)
+                    if not path.is_relative_to(Path(record['native']['root'])):
+                        continue
+                    relative = prefix + path.relative_to(record['native']['root']).as_posix()
+                    if any(relative == target or relative.startswith(target + '/') for target in referenced):
+                        _, actual = snapshot_read(path)
+                        require(actual == expected, 'Referenced retained skill file differs from its managed version')
+                        self.manager.sources[path] = actual
+                        siblings.add(relative)
+            package.sibling_files = frozenset(siblings)
+
+    def _check_retained_consumers(self):
+        """A scoped rename/removal must not break a retained skill's links."""
+        from .resource_references import LINK, prose
+        from urllib.parse import unquote, urlsplit
+        import os
+        removed = set()
+        for ref, item in self.rendered.items():
+            old = self.previous.get(ref)
+            if not old or old['kind'] != 'skill' or ref in self.conflicts.kept:
+                continue
+            old_root = Path(old['native']['root'])
+            new_root = Path(self.records[ref]['native'].get('root', old_root))
+            desired = {str(new_root / name) for name in item['files']}
+            removed.update(path for path in old['files'] if Path(path).is_relative_to(old_root) and path not in desired)
+        if not removed:
+            return
+        for ref, record in self.previous.items():
+            if ref in self.selected_refs or record['kind'] != 'skill':
+                continue
+            root = Path(record['native']['root'])
+            snapshots = record['native'].get('review', {}).get('files', {})
+            for location, expected in record['files'].items():
+                path = Path(location)
+                if not path.is_relative_to(root) or path.suffix.lower() != '.md':
+                    continue
+                if location in snapshots:
+                    data = self.conflicts.load(snapshots[location], expected['sha256'])
+                else:
+                    data, actual = snapshot_read(path)
+                    require(actual == expected, 'Retained consumer cannot be checked; include it in the deployment')
+                    self.manager.sources[path] = actual
+                for match in LINK.finditer(prose(data.decode())):
+                    parsed = urlsplit(match[1].strip('<>'))
+                    if parsed.scheme or parsed.netloc or not parsed.path:
+                        continue
+                    target = os.path.normpath(str(path.parent / unquote(parsed.path)))
+                    if any(target == name or name.startswith(target + '/') for name in removed):
+                        self.checks.append({'name': 'retained_consumer', 'status': 'blocked',
+                            'code': 'scope_expansion_required', 'ref': ref,
+                            'reason': 'A retained skill references a removed path; include the consumer with an updated reference'})
+                        break
+
+    def prepare(self, deploy=True, binding_scope=None, resource_refs=None):
         bindings = {key: value for key, value in self.profile.get('bindings', {}).items() if binding_scope is None or key in binding_scope}
-        selected = None if deploy else {arg['resource'] for entry in bindings.values() for arg in entry['args'] if isinstance(arg, dict)}
-        packages = self.resolver.resolve(self.profile, selected=selected)
+        selected = resource_refs if deploy else {arg['resource'] for entry in bindings.values() for arg in entry['args'] if isinstance(arg, dict)}
+        if selected is not None:
+            selected = set(selected) | {arg['resource'] for entry in bindings.values() for arg in entry['args'] if isinstance(arg, dict)}
+        while True:
+            packages = self.resolver.resolve(self.profile, selected=selected)
+            if not deploy or selected is None:
+                break
+            # A resource's content-addressed cache is used by generated commands.
+            # Include all arguments of affected bindings so they remain coherent.
+            affected = {key: entry for key, entry in self.profile.get('bindings', {}).items()
+                        if any(isinstance(arg, dict) and arg['resource'] in packages for arg in entry['args'])}
+            bindings.update(affected)
+            expanded = set(packages) | {arg['resource'] for entry in bindings.values() for arg in entry['args'] if isinstance(arg, dict)}
+            if expanded == set(packages):
+                break
+            selected = expanded
+        self.selected_refs = set(packages)
+        self.binding_fields = set(bindings)
+        if self.partial:
+            self._scoped_siblings(packages)
         deferred = set()
         for ref, package in packages.items():
             item = render_package(package, self.manager.agent)
@@ -433,12 +537,14 @@ class ResourcePlan:
             put(self.generated, path, command)
         self.checks += self.binder.checks
         if deploy:
+            if self.partial:
+                self._check_retained_consumers()
             self.plugins.finish()
             if self.registrations is not None:
                 self.changes += self.registrations.changes()
             self.conflicts.freeze()
             for ref, previous in self.previous.items():
-                if ref not in packages and previous['active']:
+                if not self.partial and ref not in packages and previous['active']:
                     self.decisions.append({'path': ['resources', previous['group'], ref], 'source': {'kind': 'profile'},
                                            'target': {'kind': 'installed-resource'}, 'before_exists': True, 'before': {'active': True},
                                            'incoming_exists': False, 'after_exists': True, 'after': {'active': False, 'native_content': 'retained'},

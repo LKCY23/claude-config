@@ -634,6 +634,27 @@ def overview_lines(report):
     else:
         lines.append('检查范围：' + ('、'.join(scope) or '尚未生成选定配置的检查计划'))
     lines.append(report['scope']['note'])
+    deployment = report.get('deployment_scope')
+    if deployment:
+        requested = deployment['requested']
+        label = ', '.join(requested['resources'] or requested['resource_groups'] or requested['fields']) or requested['scope']
+        lines.append('部署选择：' + label)
+        expanded = deployment['expanded']
+        additions = expanded['resources'] + expanded['fields']
+        if additions:
+            lines.append('依赖与绑定扩展：' + ', '.join(additions))
+        for item in deployment.get('expansion_reasons', []):
+            if item.get('required_by'):
+                lines.append('  ' + item['resource'] + ' ← ' + item['required_by'])
+    activation = report.get('activation', [])
+    if activation:
+        labels = {'reinvoke_skill': '下次调用或重新读取 skill；当前会话未验证',
+                  'reload_plugins': '按客户端支持重载插件或在新会话采用',
+                  'reconnect_or_new_session': '按客户端支持重新连接或在新会话采用',
+                  'next_hook_or_reload': '下次触发或客户端重载后采用',
+                  'next_read_or_new_session': '下次读取或新会话采用',
+                  'next_invocation_or_new_session': '下次调用或新会话采用'}
+        lines += ['会话生效（独立于文件同步结果）：', *('  ' + row['resource'] + '：' + labels[row['mode']] for row in activation)]
     return lines
 
 

@@ -196,7 +196,7 @@ with patch.object(PluginOperation,'_call',lambda op,args,work: installer(op,args
         self.profile['resources']['plugins']['tiny@test'].pop('options')
         self.save_profile()
         plan = self.deploy()
-        self.assertFalse(plan.native_operations[0].plugins[0]['desired']['enabled'])
+        self.assertFalse(json.loads(self.manager().state_path.read_text())['resources']['tiny@test']['native']['plugin']['enabled'])
         self.profile['resources']['plugins']['tiny@test']['options'] = {'enabled': True}
         self.save_profile()
         plan = self.deploy()
@@ -245,7 +245,8 @@ with patch.object(PluginOperation,'_call',lambda op,args,work: installer(op,args
         self.profile['resources']['plugins'].pop('one@test')
         self.save_profile()
         plan = self.deploy()
-        manifest = json.loads(Path(plan.native_operations[0].plugins[0]['desired']['manifest']).read_text())
+        receipt = json.loads(self.manager().state_path.read_text())['resources']['two@test']['native']['plugin']
+        manifest = json.loads(Path(receipt['manifest']).read_text())
         self.assertEqual({entry['name'] for entry in manifest['plugins']}, {'one', 'two'})
         self.assertTrue(any(row['action'] == 'residual' for row in plan.report['decisions']))
         self.assertTrue(original.native_operations[0].native(original.native_operations[0].plugins[0]['desired'])['installed'])
@@ -321,6 +322,60 @@ with patch.object(PluginOperation,'_call',lambda op,args,work: installer(op,args
     def test_alias_normalization_remains_collision_free(self):
         self.assertNotEqual(marketplace_name('A.b'), marketplace_name('a-b'))
         self.assertNotEqual(marketplace_name('A'), marketplace_name('a'))
+
+    def test_skill_update_ignores_busy_user_config_and_backup_rotation(self):
+        self.plugin()
+        skill = self.add('guide', 'skill', {'SKILL.md': '---\nname: guide\ndescription: test\n---\nold'}, 'SKILL.md')
+        self.save()
+        self.deploy()
+        (skill / 'SKILL.md').write_text('---\nname: guide\ndescription: test\n---\nnew')
+        self.save()
+        self.installer.calls.clear()
+        plan = self.manager().plan()
+        self.assertFalse(plan.native_operations)
+        user_config = self.native / '.claude.json'
+        backups = self.native / 'backups'
+        backups.mkdir(exist_ok=True)
+        user_config.write_text('{"runtime": 1}')
+        (backups / '.claude.json.backup.1').write_text('runtime backup')
+        def writer(path, content, mode):
+            atomic_write(path, content, mode)
+            user_config.write_text('{"runtime": 2}')
+            (backups / '.claude.json.backup.2').write_text('new backup')
+        plan.apply(self.state, writer=writer)
+        self.assertEqual(json.loads(user_config.read_text()), {'runtime': 2})
+        self.assertEqual((backups / '.claude.json.backup.2').read_text(), 'new backup')
+        self.assertTrue((self.native / 'skills/guide/SKILL.md').read_text().endswith('new'))
+        self.assertFalse(self.installer.calls)
+
+    def test_actual_plugin_update_still_guards_busy_user_config(self):
+        root, entry = self.plugin()
+        self.save(); self.deploy()
+        document = json.loads((root / entry).read_text()); document['version'] = '1.1.0'
+        (root / entry).write_text(json.dumps(document)); self.save()
+        plan = self.manager().plan()
+        self.assertTrue(plan.native_operations)
+        operation = plan.native_operations[0]
+        self.assertIn(operation.user_config, plan.paths)
+        self.assertIn(operation.root / 'backups', plan.directories)
+        operation.user_config.write_text('{"external": true}')
+        self.installer.calls.clear()
+        with self.assertRaises(PlanStale):
+            plan.apply(self.state)
+        self.assertFalse(self.installer.calls)
+
+    def test_unchanged_plugin_still_guards_installed_image(self):
+        self.plugin()
+        self.save()
+        installed = self.deploy()
+        operation = installed.native_operations[0]
+        desired = operation.plugins[0]['desired']
+        plan = self.manager().plan()
+        cache = operation.cache_parent(desired) / cache_version(operation.agent, desired['version'])
+        (cache / 'body.txt').write_text('external change')
+        with self.assertRaises(PlanStale):
+            plan.apply(self.state)
+
 
     def test_changed_native_inventory_after_preview_is_stale(self):
         self.plugin()

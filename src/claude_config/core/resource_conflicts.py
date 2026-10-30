@@ -184,9 +184,11 @@ class ResourceConflicts:
                 'executable': str(executable), 'executable_snapshot': file_fingerprint(executable),
                 'plugins': [{'ref': ref, 'desired': receipt, 'previous': receipt}]})
             for path in operation.paths:
+                if path == operation.user_config:
+                    continue
                 _, expected = snapshot_read(path)
                 self.manager.sources[path] = expected
-            self.r.directories.update(operation.directories)
+            self.r.directories.add(operation.cache_parent(receipt))
             result['plugin'] = operation.native(receipt)
             incoming['plugin'] = {'image': item['rendered_fingerprint'], 'options': item['package'].selection.get('options', {})}
             if not result['plugin']['installed'] or not result['plugin']['marketplace'] or any(result['plugin'][key] != receipt[key] for key in ('version', 'image')):

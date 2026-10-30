@@ -35,6 +35,8 @@ claude-config doctor --resources --processes --format text
 claude-config doctor --resources --no-save --format json
 ```
 
+按设置字段、资源组或单项资源同步，见[按范围同步](references/scoped-deployment.md)。局部 `apply` 使用与预览相同的选择器及 `--expect-plan-id`。
+
 默认读取 `~/.claude-config-tool/machine.yaml`；`--machine` 可以显式覆盖，不搜索当前工作目录。
 
 跨设备的 Profile 选择保存在配置仓库 `machines/<machine_id>.yaml`；本机 Machine 通过 `profile_selection` 显式引用，只保留路径与依赖。`init --profile-selection machines/<machine_id>.yaml` 预览接管当前选择，`--write --expect-plan-id <ID>` 执行；Git 拉取不会自动 apply。格式、切换与恢复见 [机器绑定规范](references/machine-profile-bindings.md)。

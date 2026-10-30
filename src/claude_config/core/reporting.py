@@ -560,8 +560,11 @@ def report_sections(report, *, compact=False):
             sections.append((blocker['id'] + '  检查未通过：' + path_label(blocker.get('path', [])),
                              ['原因：' + reason_label(blocker.get('reason') or LABELS.get(blocker.get('code'), blocker.get('code', '必要检查未通过')))], True))
     for error in report['errors']:
+        detail = error.get('detail')
+        if detail and not isinstance(detail, str):
+            detail = json.dumps(detail, ensure_ascii=False, sort_keys=True)
         sections.append(('错误：' + error['code'], ['阶段：' + error.get('phase', '未知'), '原因：' + error['reason'] +
-                         ('\n检查详情：' + error['detail'] if error.get('detail') else '')], True))
+                         ('\n检查详情：' + detail if detail else '')], True))
     selected = {identifier for row in report['changes'] for identifier in row['decision_ids']}
     selected |= {identifier for row in report['conflicts'] for identifier in row.get('decision_ids', [])}
     other = [row for row in report['decisions'] if row['id'] not in selected]

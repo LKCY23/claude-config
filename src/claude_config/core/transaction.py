@@ -246,6 +246,8 @@ class FilePlan:
                                             'directories': {str(path): value for path, value in self.directories.items()},
                                             'outputs': [hashlib.sha256(c.content).hexdigest() for c in self.changes],
                                             'modes': [c.mode for c in self.changes], 'deletes': [c.delete for c in self.changes]}
+        if 'deployment_scope' in self.report:
+            identity['deployment_scope'] = self.report['deployment_scope']
         if self.native_operations:
             identity['native_operations'] = [op.definition for op in self.native_operations]
             identity['order'] = [str(step.path) if isinstance(step, FileChange) else step.identifier for step in self.steps]

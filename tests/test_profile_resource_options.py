@@ -272,9 +272,10 @@ class ResourceOptionTests(ResourceFixture):
             self.profile['merge_policy'] = {'fields': {'/resources/plugins/tiny@test/options/enabled': 'keep_target'}}
             self.save_profile()
             plan = self.deploy()
-            desired = plan.native_operations[0].plugins[0]['desired']
+            desired = json.loads(self.manager().state_path.read_text())['resources']['tiny@test']['native']['plugin']
             self.assertFalse(desired['enabled'])
-            self.assertFalse(plan.native_operations[0].native(desired)['enabled'])
+            self.assertFalse(json.loads(self.manager().native_path.read_text())['enabledPlugins'][desired['selector']])
+            self.assertFalse(plan.native_operations)
             self.assertTrue(any(row['path'][-1] == 'enabled' and row['policy_origin'] == 'profile_field' for row in plan.report['decisions']))
 
     def test_hook_timeout_policy_and_conflict_report_target_each_handler(self):

@@ -97,6 +97,25 @@ class AppTests(unittest.TestCase):
                                     'mcpServers': {'existing': {'secret': 'KEEP'}}}))
         return path
 
+    def test_partial_app_preference_preserves_other_declared_baselines(self):
+        from claude_config.core.deployment_scope import DeploymentScope
+        self.profile('claude-desktop', {'userThemeMode': 'light', 'locale': 'en-US'})
+        self.native('claude-desktop', {'userThemeMode': 'dark', 'locale': 'en-US'})
+        self.manager('claude-desktop').plan().apply(self.state)
+        before = json.loads(self.manager('claude-desktop').state_path.read_text())
+        self.profile('claude-desktop', {'userThemeMode': 'dark', 'locale': 'zh-CN'})
+        selector = DeploymentScope(fields=('/settings/userThemeMode',))
+        plan = self.manager('claude-desktop').plan(selection=selector)
+        self.assertTrue(plan.report['ready'], plan.report['blockers'])
+        plan.apply(self.state)
+        after = json.loads(self.manager('claude-desktop').state_path.read_text())
+        self.assertEqual(after['declared']['locale'], before['declared']['locale'])
+        self.assertEqual(after['managed']['locale'], before['managed']['locale'])
+        self.assertEqual(json.loads(self.native('claude-desktop').read_text()), {'userThemeMode':'dark','locale':'en-US'})
+        self.profile('claude-desktop', {'userThemeMode': 'light', 'locale': 'zh-CN'})
+        self.probe.running = True
+        self.assertFalse(self.manager('claude-desktop').plan(selection=selector).report['ready'])
+
     def test_codex_selected_fields_preserve_agent_credentials_comments_and_state(self):
         self.profile(settings={'followUpQueueMode': 'queue', 'git-branch-prefix': '', 'preventSleepWhileRunning': False})
         path = self.native(text='# retain\nmodel = "agent-model" # unchanged\n[model_providers.local]\napi_key = "PRIVATE_KEY"\n[desktop]\nfollowUpQueueMode = "steer"\nvoiceSetting = "KEEP"\n')

@@ -17,6 +17,7 @@ from .machine_profiles import MachineProfiles
 from .resources import ResourcePlan, validate_resource_state
 from .resource_options import validate_resource_policy
 from .permissions import permission_dependencies
+from .deployment_scope import DeploymentScope, update_leaves
 
 
 class ProfileManager:
@@ -151,6 +152,19 @@ class ProfileManager:
                 report['plan_id'] = fingerprint({'plan': report['plan_id'],
                                                 'skill_ownership': resources.inventory['ownership_fingerprint'],
                                                 'legacy_entries': [row['legacy_entry'] for row in resources.inventory['skills']]})
+        if resources is not None and hasattr(resources, 'deployment_scope'):
+            report['deployment_scope'] = resources.deployment_scope
+            modes = {'skill': 'reinvoke_skill', 'plugin': 'reload_plugins', 'mcp': 'reconnect_or_new_session',
+                     'hook': 'next_hook_or_reload', 'instruction': 'next_read_or_new_session',
+                     'agent': 'next_invocation_or_new_session', 'rule': 'next_read_or_new_session'}
+            changed = {change.owner.removeprefix('resource:') for change in changes
+                       if change.owner.startswith('resource:') and not FilePlan._unchanged(change, file_fingerprint(change.path))}
+            changed.update(ref for ref in resources.processed
+                           if resources.records[ref]['native'].get('skill_control') != resources.previous.get(ref, {}).get('native', {}).get('skill_control'))
+            if resources.plugins.operation is not None:
+                changed.update(item['ref'] for item in resources.plugins.operation.plugins)
+            report['activation'] = [{'resource': ref, 'mode': modes[resources.rendered[ref]['package'].item['kind']],
+                                     'verified': False} for ref in sorted(changed) if ref in resources.rendered]
         report['checks'].append({'name': 'effective_session', 'status': 'not_verified',
                                  'reason': 'Plan validates explicit user configuration; account, policy, CLI and session overrides are not session-tested'})
         for check in checks:
@@ -175,8 +189,11 @@ class ProfileManager:
                         directories=resources.directories if resources is not None else (), native_operations=native, native_index=index,
                         guards=guards, prepare=prepare)
 
-    def plan(self, *, profile=None, run_policy=None, resolutions=None, adopt_plugins=None, replace_plugins=None, prepare=True):
+    def plan(self, *, profile=None, run_policy=None, resolutions=None, adopt_plugins=None, replace_plugins=None, prepare=True, selection=None):
         _, chosen, _, _, name = self._profile(profile)
+        selection = selection or DeploymentScope()
+        require(profile is None or selection.full, 'Profile switching requires a full deployment')
+        requested_refs, requested_fields = selection.select(chosen)
         self.adopt_plugins = mapping(adopt_plugins or {}, 'plugin adoption selections')
         require(set(self.adopt_plugins) <= set(chosen.get('resources', {}).get('plugins', {})), 'Adoption must name an explicitly selected plugin resource')
         require(all(isinstance(value, str) for value in self.adopt_plugins.values()), 'Adoption selectors must be text')
@@ -190,6 +207,7 @@ class ProfileManager:
         require(len(set(selectors)) == len(selectors), 'Duplicate native adoption/replacement selector')
         native, original, expected = self._read(self.native_path, lambda data: parse_native(self.agent, data))
         state, state_expected = self._state()
+        require(selection.full or not state or state['profile'] == name, 'Complete the Profile switch before partial deployment')
         self._validate_policies(chosen, run_policy)
         resource_resolutions, settings_resolutions = {}, {}
         for path, resolution in mapping(resolutions or {}, 'drift resolutions').items():
@@ -203,13 +221,22 @@ class ProfileManager:
                 resource_resolutions[path] = resolution
             else:
                 settings_resolutions[path] = resolution
-        resources = ResourcePlan(self, state, chosen, native, original, run_policy, resource_resolutions)
+        resources = ResourcePlan(self, state, chosen, native, original, run_policy, resource_resolutions, partial=not selection.full)
         self.last_resources = resources
         resource_failed = False
         try:
-            resources.prepare()
+            resources.prepare(resource_refs=None if selection.full else requested_refs,
+                              binding_scope=None if selection.full else requested_fields)
+            require(set(self.adopt_plugins) | set(self.replace_plugins) <= resources.selected_refs,
+                    'Plugin adoption/replacement is outside the deployment scope')
+            for path in (() if selection.full else (run_policy or {}).get('fields', {})):
+                parts = pointer(path)
+                require(parts[0] == 'resources' and parts[2] in resources.selected_refs or
+                        parts[0] == 'settings' and path in requested_fields | resources.binding_fields,
+                        'Run policy is outside the deployment scope')
             from .resource_inventory import inspect_skills
-            resources.inventory, ownership_guard = inspect_skills(self, resources.previous, resources.rendered, native)
+            resources.inventory, ownership_guard = inspect_skills(self, resources.previous, resources.rendered, native,
+                selected_refs=None if selection.full else resources.selected_refs)
             resources.checks.extend(resources.inventory['checks'])
             resources.resolver.guards.append(ownership_guard)
         except (ValueError, OSError, subprocess.SubprocessError) as exc:
@@ -217,7 +244,7 @@ class ProfileManager:
             resources.checks.append({'name': 'resource_resolution', 'status': 'blocked', 'code': 'resource_preflight_failed',
                                      'reason': str(exc) if isinstance(exc, SchemaError) else 'Resource schema, source or definition failed validation',
                                      'error_type': type(exc).__name__})
-        settings = deepcopy(chosen.get('settings', {}))
+        settings = deepcopy(chosen.get('settings', {})) if selection.full else selection.settings(chosen, requested_fields)
         for path, value in leaves(resources.generated):
             put(settings, path, value)
             # This is a required native command-handler structure, not an optional
@@ -235,14 +262,16 @@ class ProfileManager:
                     and len(resolution['target_fingerprint']) == 64 and all(char in '0123456789abcdef' for char in resolution['target_fingerprint']),
                     'Invalid fingerprint-scoped drift resolution')
         scope = [as_pointer(('settings', *path)) for path, _ in leaves(settings)]
-        baseline = {'settings': state['managed']} if state else None
-        previous = {'settings': state['declared']} if state else None
-        merge = MergePlan({'settings': settings}, {'settings': native},
+        selected_paths_ = [path for path, _ in leaves(settings)]
+        baseline = {'settings': state['managed'] if selection.full else projection(state['managed'], selected_paths_)} if state else None
+        previous = {'settings': state['declared'] if selection.full else projection(state['declared'], selected_paths_)} if state else None
+        merge = MergePlan({'settings': settings}, {'settings': native if selection.full else projection(native, selected_paths_)},
                           source={'kind': 'profile', 'file': name}, destination={'kind': 'native-config', 'file': str(self.native_path)},
                           scope=scope, profile_policy=chosen.get('merge_policy'), run_policy=run_policy,
                           machine_policy=self.machine.get('merge_policy'), baseline=baseline, resolutions=settings_resolutions, previous=previous,
                           number_fields=[as_pointer(('settings', *path)) for path, _ in leaves(settings) if lookup(self.agent, path).kind == 'number'])
-        result = resources.registrations.native_result(merge.result['settings'])
+        merged_settings = merge.result['settings'] if selection.full else update_leaves(native, merge.result['settings'])
+        result = resources.registrations.native_result(merged_settings)
         managed_paths = [path for path, _ in leaves(settings)]
         managed = projection(result, managed_paths)
         probe_settings = deepcopy(settings)
@@ -261,7 +290,7 @@ class ProfileManager:
         if isinstance(settings.get('approval_policy'), dict) and not merge.blockers:
             probe_settings['approval_policy'] = projection(result, [('approval_policy', 'granular', key) for key in
                                                                     ('mcp_elicitations', 'rules', 'sandbox_approval', 'request_permissions', 'skill_approval')]).get('approval_policy', {})
-        checks = self._preflight(chosen, probe_settings, result, run_policy=run_policy)
+        checks = self._preflight(chosen, probe_settings, result, run_policy=run_policy, resources_selected=bool(resources.rendered))
         checks += resources.checks
         changes = []
         result_valid = not merge.blockers and not resource_failed
@@ -279,13 +308,18 @@ class ProfileManager:
                 validate_settings(self.agent, projection(value, managed_paths), generated=generated)
                 validate_native_result(self.agent, value, settings)
             changes.append(FileChange(self.native_path, render_native(self.agent, original, result), 'agent-settings', valid_native, expected))
-        if (settings or state or resources.records or chosen.get('bindings')) and result_valid:
+        if (settings or state or resources.records or getattr(resources, 'binding_fields', set())) and result_valid:
             new_state = {'schema_version': 1, 'kind': 'profile-managed-state', 'agent_type': self.agent,
-                         'native_path': str(self.native_path.resolve()), 'profile': name, 'managed': managed, 'declared': settings}
+                         'native_path': str(self.native_path.resolve()), 'profile': name,
+                         'managed': managed if selection.full else update_leaves(state.get('managed', {}), managed),
+                         'declared': settings if selection.full else update_leaves(state.get('declared', {}), settings)}
             if resources.records:
                 new_state['resources'] = resources.records
-            if chosen.get('bindings'):
-                new_state['bindings'] = chosen['bindings']
+            bindings = chosen.get('bindings', {}) if selection.full else {
+                **state.get('bindings', {}), **{key: value for key, value in chosen.get('bindings', {}).items()
+                                               if key in getattr(resources, 'binding_fields', set())}}
+            if bindings:
+                new_state['bindings'] = bindings
             content = (json.dumps(new_state, indent=2, ensure_ascii=False) + '\n').encode()
             changes.append(FileChange(self.state_path, content, 'managed-baseline', lambda data: self._validate_state(parse_json(data)), state_expected))
         if profile and profile != self.entry['profile'] and result_valid:
@@ -294,6 +328,29 @@ class ProfileManager:
             changes = resources.changes + changes
         for change in changes:
             require(not any(change.path.resolve().is_relative_to(root) for root in resources.resolver.repositories), 'Write target overlaps a fixed source repository')
+        effective_fields = set(scope)
+        effective_fields.update(as_pointer(('settings', *path)) for path in resources.registrations.main_fields)
+        effective_fields.update(as_pointer(('settings', key)) for key in resources.registrations.main_roots)
+        resources.deployment_scope = selection.report(requested_refs, requested_fields,
+            getattr(resources, 'selected_refs', set()), effective_fields)
+        reasons = []
+        for ref, item in resources.rendered.items():
+            for dependency in item['package'].item['requires'].get('resources', []):
+                if dependency not in requested_refs:
+                    reasons.append({'resource': dependency, 'reason': 'resource_dependency', 'required_by': ref})
+        for field in getattr(resources, 'binding_fields', set()):
+            if field not in requested_fields:
+                reasons.append({'field': field, 'reason': 'resource_command_binding'})
+            for arg in chosen.get('bindings', {}).get(field, {}).get('args', []):
+                if isinstance(arg, dict) and arg['resource'] not in requested_refs:
+                    reasons.append({'resource': arg['resource'], 'reason': 'command_argument', 'required_by': field})
+        for field in effective_fields - requested_fields - getattr(resources, 'binding_fields', set()):
+            reasons.append({'field': field, 'reason': 'generated_setting_or_registration'})
+        resources.deployment_scope['expansion_reasons'] = sorted(reasons, key=lambda row: json.dumps(row, sort_keys=True))
+        if not selection.full and not settings and not resources.registrations.main_fields and not resources.registrations.main_roots and resources.plugins.operation is None:
+            # Reading the native config for an inventory display does not make
+            # it a dependency of a body-only resource update.
+            self.sources.pop(self.native_path, None)
         switching = profile is not None or state and state['profile'] != name
         plan = self._file_plan(merge, changes, checks, 'switch' if switching else 'apply', resources, prepare=prepare)
         plan.report['binding'] = {'previous_profile': state.get('profile', self.entry['profile']), 'profile': name}

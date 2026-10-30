@@ -3,24 +3,24 @@
 管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。
 Claudespace 托管资源正文；Profile 选择配置和资源运行参数；Machine 提供本机绑定。
 
-本分支包含 0.6.0 的[部署一致性诊断、技能交接与显式退役](references/deployment-consistency.md)。以下正式发行安装示例仍使用 v0.5.1；本分支须完成发布流程后才成为正式发行，不把本地构建误称为已发布版本。
+0.7.0 增加[按范围同步](references/scoped-deployment.md)：可单独部署设置、资源组、指定资源或字段；无变化插件不再将用户配置与备份轮换纳入无关资源更新。同步结果与会话生效分开报告。部署一致性诊断、技能交接与显式退役沿用[现有规则](references/deployment-consistency.md)。
 
 ## 安装
 
 支持 macOS 和 Linux；原生 Windows 执行器尚不支持。macOS App 适配不自动适用于 Linux。
-先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后从明确版本的 [GitHub Release](https://github.com/LKCY23/claude-config/releases) 取得 wheel、`constraints.txt` 和 `install.sh`。使用已登录的 GitHub CLI 下载 0.5.1：
+先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后从明确版本的 [GitHub Release](https://github.com/LKCY23/claude-config/releases) 取得 wheel、`constraints.txt` 和 `install.sh`。使用已登录的 GitHub CLI 下载 0.7.0：
 
 ```sh
-gh release download v0.5.1 --repo LKCY23/claude-config --dir ./claude-config-v0.5.1 \
+gh release download v0.7.0 --repo LKCY23/claude-config --dir ./claude-config-v0.7.0 \
   --pattern '*.whl' --pattern constraints.txt --pattern install.sh
-bash ./claude-config-v0.5.1/install.sh ./claude-config-v0.5.1/claude_config-0.5.1-py3-none-any.whl
+bash ./claude-config-v0.7.0/install.sh ./claude-config-v0.7.0/claude_config-0.7.0-py3-none-any.whl
 claude-config --version
 ```
 
 安装器使用 uv 管理的 Python 3.11 和独立工具环境。命令目录未进入 PATH 时，运行 `uv tool update-shell`，然后在已有 tmux 窗格重新加载 shell。
-本文对应 0.5.1。版本 tag 的 macOS/Linux、Python 3.11/3.12 检查全部通过后，CI 才发布固定安装附件；不发布到 PyPI。已安装版本以 `claude-config --version` 为准。
+本文对应 0.7.0。版本 tag 的 macOS/Linux、Python 3.11/3.12 检查全部通过后，CI 才发布固定安装附件；不发布到 PyPI。已安装版本以 `claude-config --version` 为准。
 
-0.5.1 的事务日志、混合插件恢复、进度和运行依赖说明见[执行与恢复](references/execution-recovery.md)。
+事务日志、混合插件恢复、进度和运行依赖说明见[执行与恢复](references/execution-recovery.md)。
 
 ## 日常使用
 
@@ -34,6 +34,8 @@ claude-config plan --agent codex --format json
 claude-config doctor --resources --processes --format text
 claude-config doctor --resources --no-save --format json
 ```
+
+按设置字段、资源组或单项资源同步，见[按范围同步](references/scoped-deployment.md)。局部 `apply` 使用与预览相同的选择器及 `--expect-plan-id`。
 
 默认读取 `~/.claude-config-tool/machine.yaml`；`--machine` 可以显式覆盖，不搜索当前工作目录。
 

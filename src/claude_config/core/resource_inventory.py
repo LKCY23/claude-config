@@ -77,8 +77,10 @@ def native_enabled(agent, native, identity, entry):
     return matches[0] if len(matches) == 1 else None
 
 
-def inspect_skills(manager, previous, rendered, native):
+def inspect_skills(manager, previous, rendered, native, *, selected_refs=None):
     """Return metadata/checks and a semantic guard, independent of busy DB logs."""
+    if selected_refs is not None:
+        previous = {ref: row for ref, row in previous.items() if ref in selected_refs}
     selected = {ref: item for ref, item in rendered.items() if item['package'].item['kind'] == 'skill'}
     identities = {item['identity'] for item in selected.values()}
     cc_root = cc_switch_root(manager)

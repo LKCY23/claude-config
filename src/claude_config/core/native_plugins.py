@@ -16,7 +16,7 @@ from .native import parse_json, parse_native, render_native, snapshot_read
 from .registrations import claude_user_config
 from .resource_options import merge_options
 from .schema import NAME, SchemaError, closed, mapping, require
-from .transaction import atomic_write, directory_fingerprint, file_fingerprint, private_dir
+from .transaction import PlanStale, atomic_write, directory_fingerprint, file_fingerprint, private_dir
 from .execution_context import progress
 from .journal import process_identity, owner_status
 
@@ -809,6 +809,10 @@ class PluginPlanner:
         self.manager.sources[executable] = definition['executable_snapshot']
         documents = {}
         for path in operation.paths:
+            # The user config is an installer side-effect boundary, not an input
+            # to observing an unchanged plugin installation.
+            if path == operation.user_config:
+                continue
             content, expected = snapshot_read(path)
             require(path not in self.manager.sources or self.manager.sources[path] == expected, 'Native metadata changed during planning')
             self.manager.sources[path] = expected
@@ -896,4 +900,18 @@ class PluginPlanner:
                                      'Omitted enabled preserves known state; a new installation has a native default')
         # Adoption inputs become part of the operation identity and saved journal.
         operation = PluginOperation({**definition, 'plugins': self.items})
-        self.operation = operation
+        if operation.unchanged():
+            # Keep ownership/image checks, without scheduling an installer or
+            # watching its unrelated user-config and backup side effects.
+            self.resources.directories.update(operation.cache_parent(item['desired']) for item in self.items)
+            def installation_guard():
+                if not operation.unchanged():
+                    raise PlanStale('Observed plugin installation changed')
+            self.resources.resolver.guards.append(installation_guard)
+        else:
+            if operation.user_config is not None:
+                _, expected = snapshot_read(operation.user_config)
+                require(operation.user_config not in self.manager.sources or self.manager.sources[operation.user_config] == expected,
+                        'Native metadata changed during planning')
+                self.manager.sources[operation.user_config] = expected
+            self.operation = operation

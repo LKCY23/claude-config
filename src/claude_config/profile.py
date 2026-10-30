@@ -87,8 +87,10 @@ def _main(argv):
     target.add_argument('--app', choices=('codex-app', 'claude-desktop'))
     parser.add_argument('--profile', help='Config-dir-relative Profile of the selected type')
     parser.add_argument('--run', help='New-format run ID to restore; rollback previews by default')
-    parser.add_argument('--field', action='append', default=[], help='Export atomic field as /settings/...')
-    parser.add_argument('--resource', action='append', default=[], help='Explicit ref@catalog for export or standalone skill retirement')
+    parser.add_argument('--field', action='append', default=[], help='Declared settings leaf for deployment or export, as /settings/...')
+    parser.add_argument('--resource', action='append', default=[], help='Selected ref@catalog for deployment, export or retirement')
+    parser.add_argument('--scope', choices=('all', 'settings', 'resources'), help='Deployment scope; defaults to the complete bound Profile')
+    parser.add_argument('--resource-group', action='append', default=[], help='Selected Profile resource group to deploy')
     parser.add_argument('--adopt-plugin', action='append', default=[], metavar='REF=SELECTOR', help='Explicitly adopt an exact existing native plugin; no implicit upgrade')
     parser.add_argument('--replace-plugin', action='append', default=[], metavar='REF=FILE', help='Explicit existing plugin version update with pinned local recovery declaration')
     parser.add_argument('--catalog', help='Existing catalog alias for baseline adoption')
@@ -106,7 +108,7 @@ def _main(argv):
     args = parser.parse_args(argv)
     if (args.adopt_plugin or args.replace_plugin) and (args.app or args.operation not in ('plan', 'validate', 'apply', 'switch')):
         parser.error('Plugin adoption/replacement inputs are only for Agent plan/validate/apply/switch')
-    if args.app and (args.resource or args.operation in ('adopt-baseline', 'review-conflicts', 'reconcile-run', 'retire-skills')):
+    if args.app and (args.resource or args.resource_group or args.scope == 'resources' or args.operation in ('adopt-baseline', 'review-conflicts', 'reconcile-run', 'retire-skills')):
         parser.error('App Profiles do not manage Agent resources or catalog baselines')
     if args.operation == 'switch' and not args.profile:
         parser.error('switch requires --profile')
@@ -125,10 +127,17 @@ def _main(argv):
         parser.error('rollback/reconcile-run require --run')
     if args.operation in ('rollback', 'reconcile-run') and (args.policy or args.field_policy or args.resolutions):
         parser.error('rollback uses recorded snapshots, not settings merge policies')
-    if args.field and args.operation != 'export':
-        parser.error('--field is only for export')
-    if args.resource and args.operation not in ('export', 'retire-skills'):
-        parser.error('--resource is only for export/retire-skills')
+    deployment = args.operation in ('plan', 'validate', 'apply')
+    if args.field and not deployment and args.operation != 'export':
+        parser.error('--field is only for plan/validate/apply/export')
+    if args.resource and not deployment and args.operation not in ('export', 'retire-skills'):
+        parser.error('--resource is only for plan/validate/apply/export/retire-skills')
+    if (args.scope or args.resource_group) and not deployment:
+        parser.error('--scope/--resource-group are only for plan/validate/apply')
+    if deployment and sum(bool(x) for x in (args.scope, args.resource_group, args.resource, args.field)) > 1:
+        parser.error('Choose one deployment selector family')
+    if args.operation == 'apply' and not args.dry_run and (args.scope not in (None, 'all') or args.resource_group or args.resource or args.field) and not args.expect_plan_id:
+        parser.error('Partial apply requires --expect-plan-id from the same scoped preview')
     if args.operation == 'retire-skills' and (not args.resource or args.policy or args.field_policy or args.resolutions):
         parser.error('retire-skills requires explicit resources and does not override drift')
     if args.operation == 'retire-skills' and args.write and not args.expect_plan_id:
@@ -194,7 +203,9 @@ def _main(argv):
                     raise SchemaError('replace-plugin requires a unique REF=FILE mapping')
                 replacements[ref] = file
             extra = {**({'adopt_plugins': adoption} if adoption else {}), **({'replace_plugins': replacements} if replacements else {})}
-            plan = manager.plan(profile=args.profile, run_policy=policy, resolutions=resolutions, **extra)
+            from .core.deployment_scope import DeploymentScope
+            selection = DeploymentScope(args.scope or 'all', tuple(args.resource), tuple(args.resource_group), tuple(args.field)) if deployment else DeploymentScope()
+            plan = manager.plan(profile=args.profile, run_policy=policy, resolutions=resolutions, selection=selection, **extra)
         report = plan.report
         report['mode'] = args.operation
         if args.expect_plan_id and report['plan_id'] != args.expect_plan_id:

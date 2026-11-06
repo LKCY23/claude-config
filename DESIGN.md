@@ -89,3 +89,8 @@ Agent/App Profile 的数据模型保持不变。`plan/validate/apply` 可选择�
 - [Agent 操作](references/new-agent-profile.md)、[App 偏好](references/app-profile-implementation.md)
 - [资源冲突处理](references/resource-conflict-resolution.md)、[多客户端切换](references/framework-cutover.md)
 - [当前实现及验证边界](references/profile-implementation.md)
+
+
+## 0.8.0 插件操作计划
+
+新增插件操作编排层；不另建安装器。Profile 保存选项，旁置的 `.plugins.lock.yaml` 保存该 Profile 的精确插件版本选择；catalog 仍定义资源身份、允许来源和兼容约束。新旧部署入口共同使用锁定文件。声明变更、锁定记录、受管基线和原生安装组合为一个 FilePlan，失败与独立 rollback 复用原有日志和补偿机制。命令合同与兼容边界见 [统一插件管理](references/plugin-management.md)。

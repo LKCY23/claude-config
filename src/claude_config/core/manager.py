@@ -56,6 +56,8 @@ class ProfileManager:
         value, content, expected = self._read(path, parse_yaml)
         validate_profile(value, expected=self.agent)
         validate_settings(self.agent, value.get('settings', {}))
+        from .plugin_locks import read_locks
+        self.plugin_locks = read_locks(self, name)[1]
         return path, value, content, expected, name
 
     def _state(self):
@@ -189,8 +191,15 @@ class ProfileManager:
                         directories=resources.directories if resources is not None else (), native_operations=native, native_index=index,
                         guards=guards, prepare=prepare)
 
-    def plan(self, *, profile=None, run_policy=None, resolutions=None, adopt_plugins=None, replace_plugins=None, prepare=True, selection=None):
+    def plan(self, *, profile=None, run_policy=None, resolutions=None, adopt_plugins=None, replace_plugins=None, prepare=True, selection=None, profile_value=None, plugin_lock_value=None):
         _, chosen, _, _, name = self._profile(profile)
+        if profile_value is not None:
+            validate_profile(profile_value, expected=self.agent)
+            validate_settings(self.agent, profile_value.get('settings', {}))
+            chosen = deepcopy(profile_value)
+        if plugin_lock_value is not None:
+            from .plugin_locks import validate_locks
+            self.plugin_locks = deepcopy(validate_locks(plugin_lock_value, self.agent, name))
         selection = selection or DeploymentScope()
         require(profile is None or selection.full, 'Profile switching requires a full deployment')
         requested_refs, requested_fields = selection.select(chosen)

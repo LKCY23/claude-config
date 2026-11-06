@@ -234,11 +234,72 @@ class PluginManagementTests(ResourceFixture):
             self.assertEqual(code, 0, out.getvalue())
             self.assertTrue(self.lock.exists())
 
-    def test_cli_write_without_plan_id_and_unknown_action_never_load_machine(self):
+    def cli(self, *args):
+        out = io.StringIO()
+        with patch('claude_config.plugin.ProfileManager', side_effect=lambda *a: self.manager()), \
+                patch('claude_config.fetch_baseline.prepare_git', side_effect=self.fetch), contextlib.redirect_stdout(out):
+            code = main([*args, '--agent', 'claude-code', '--format', 'json'])
+        return code, json.loads(out.getvalue())
+
+    def test_cli_direct_write_installs_upgrades_disables_and_enables(self):
+        code, report = self.cli('install', 'tiny', '--write')
+        self.assertEqual(code, 0, report)
+        self.assertFalse(report['preview_only'])
+        self.assertTrue(self.receipt()['enabled'])
+        commit = self.update_source()
+        code, report = self.cli('upgrade', 'tiny', '--commit', commit, '--write')
+        self.assertEqual(code, 0, report)
+        self.assertEqual(report['plugin_management']['after']['version'], '2.0.0')
+        for action, enabled in [('disable', False), ('enable', True)]:
+            code, report = self.cli(action, 'tiny', '--write')
+            self.assertEqual(code, 0, report)
+            self.assertEqual(self.receipt()['enabled'], enabled)
+
+    def test_cli_explicit_wrong_plan_id_rejects_without_installation(self):
+        code, report = self.cli('install', 'tiny', '--write', '--expect-plan-id', 'wrong')
+        self.assertNotEqual(code, 0)
+        self.assertEqual(report['errors'][0]['code'], 'plan_stale')
+        self.assertFalse(self.lock.exists())
+        self.assertFalse(self.native.exists())
+
+    def test_cli_direct_write_rechecks_changes_between_plan_and_execution(self):
+        original = PluginManager.plan
+        def changed(service, *args, **kwargs):
+            plan = original(service, *args, **kwargs)
+            self.profile_path.write_text(self.profile_path.read_text() + '\n# concurrent edit\n')
+            return plan
+        with patch.object(PluginManager, 'plan', changed):
+            code, report = self.cli('install', 'tiny', '--write')
+        self.assertNotEqual(code, 0)
+        self.assertEqual(report['errors'][0]['code'], 'plan_stale')
+        self.assertFalse(self.lock.exists())
+        self.assertFalse(self.native.exists())
+        self.assertIn('# concurrent edit', self.profile_path.read_text())
+
+    def test_cli_direct_write_does_not_apply_blocked_plan(self):
+        plan = self.service().plan('install', 'tiny')
+        plan.report['ready'] = False
+        plan.report['blockers'].append({'code': 'fixture_blocker', 'reason': 'Blocked fixture'})
+        with patch.object(PluginManager, 'plan', return_value=plan), patch.object(plan, 'apply') as apply:
+            code, report = self.cli('install', 'tiny', '--write')
+        self.assertNotEqual(code, 0)
+        apply.assert_not_called()
+        self.assertFalse(self.lock.exists())
+
+    def test_cli_text_preview_displays_plan_id_without_installation(self):
+        out = io.StringIO()
+        with patch('claude_config.plugin.ProfileManager', side_effect=lambda *a: self.manager()), \
+                patch('claude_config.fetch_baseline.prepare_git', side_effect=self.fetch), contextlib.redirect_stdout(out):
+            code = main(['install', 'tiny', '--agent', 'claude-code', '--dry-run', '--format', 'text'])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertRegex(out.getvalue(), r'计划 ID：[a-f0-9]{64}')
+        self.assertFalse(self.lock.exists())
+        self.assertFalse(self.native.exists())
+
+    def test_cli_unknown_action_never_loads_machine(self):
         with patch('claude_config.plugin.ProfileManager', side_effect=AssertionError('must not load')):
-            for args in [['install', 'tiny', '--agent', 'claude-code', '--write'], ['remove', 'tiny', '--agent', 'claude-code']]:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    self.assertNotEqual(main([*args, '--format', 'json']), 0)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertNotEqual(main(['remove', 'tiny', '--agent', 'claude-code', '--format', 'json']), 0)
 
     def test_query_does_not_create_state(self):
         report = self.service().inventory()

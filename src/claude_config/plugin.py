@@ -19,6 +19,8 @@ def summary(report):
                  f"版本：{before.get('version') or '未安装'} → {after['version']}",
                  f"状态：{flag(before.get('enabled'))} → {flag(after['enabled'])}",
                  '范围：当前 Agent 用户级插件；共用配置目录的 CLI / Desktop 会受影响']
+        if report.get('plan_id'):
+            lines.append('计划 ID：' + report['plan_id'])
         if intent.get('source'):
             lines.append('固定提交：' + intent['source']['commit'])
         if intent.get('resolution', {}).get('kind') == 'commit':
@@ -63,8 +65,8 @@ def main(argv=None):
         parser.add_argument('--binding', action='append', default=[], metavar='NAME=MACHINE_REFERENCE')
         execution = parser.add_mutually_exclusive_group()
         execution.add_argument('--dry-run', action='store_true')
-        execution.add_argument('--write', action='store_true')
-        parser.add_argument('--expect-plan-id')
+        execution.add_argument('--write', action='store_true', help='Generate, validate and execute a fresh plan; no manual plan ID needed')
+        parser.add_argument('--expect-plan-id', help='Optional: require an exact previously reviewed plan ID')
         parser.add_argument('--format', choices=('auto', 'text', 'json'), default='auto')
         args = parser.parse_args(argv)
         mode = args.format
@@ -78,8 +80,6 @@ def main(argv=None):
             raise UsageError('enable/disable change usage only, not version or bindings')
         if args.enable and args.action != 'upgrade' or args.disabled and args.action != 'install' or args.binding and args.action != 'install':
             raise UsageError('Invalid flag for this plugin action')
-        if args.write and not args.expect_plan_id:
-            raise UsageError('--write requires --expect-plan-id from a reviewed preview')
         bindings = {}
         for item in args.binding:
             key, sep, value = item.partition('=')

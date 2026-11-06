@@ -33,22 +33,23 @@ claude-config plugin install sanctuary-translate@claudespace-personal --agent cl
 
 既有插件的绑定不由此入口改写。依赖必须已经明确选择在 Profile 中；工具准备它们的固定来源，沿用已有依赖扩展报告，不偷偷添加未知依赖。
 
-## 一个交互命令，或两个脚本步骤
+## 直接执行、预览或分开审核
 
-在交互终端，操作命令展示完整预览并询问 `[y/N]`，确认后执行同一份已审阅计划。确认后重新检查配置、来源、原生状态及指纹。`--format json` 或非交互调用默认只预览，不读取标准输入批准。
+从 0.8.0.dev2 开始，`--write` 自动生成计划，检查冲突和阻断，再执行同一份计划。无需手动获取计划 ID；写入锁内仍会重新检查来源、配置和原生状态，变化或未完成的恢复记录会阻止执行。
 
 ```sh
 claude-config plugin upgrade sanctuary-translate@claudespace-personal --agent claude-code \
-  --commit 5cf9bf124e8d10dbd525d0938151ca1e549e7ef9 --enable --dry-run --format json
-
-claude-config plugin upgrade sanctuary-translate@claudespace-personal --agent claude-code \
-  --commit 5cf9bf124e8d10dbd525d0938151ca1e549e7ef9 --enable \
-  --write --expect-plan-id '<刚审阅的 plan_id>' --format json
+  --commit c1d848e60e80527844224c99152a97079b7652d7 --enable --write
 ```
 
-`--write` 必须携带计划 ID，`--dry-run` 与 `--write` 互斥。预览可以下载到私有来源缓存并保存报告，但不会写 Profile、插件锁定文件、原生安装或启用状态。查询 `list/status` 连报告都不落盘。
+仅查看使用 `--dry-run`。文本输出会显示“计划 ID”，JSON 对应 `plan_id`。需要将审核和执行分开时，可额外提供 `--expect-plan-id <ID>`；不匹配仍拒绝执行，工具不会自动接纳变化。
 
-`--version` 必须是精确 SemVer，解析该登记仓库中唯一已发布的对应 GitHub Release（版本号或 `v` 前缀 tag），解析 annotated tag 后锁定完整提交，并核对实际包内版本。不存在唯一发布记录时停止。`--commit` 必须是完整 40 位提交，只允许同一登记仓库及包路径，报告明确它不代表正式 Release。来源不完整、身份改变或脏 checkout 都不会被自动接纳。
+```sh
+claude-config plugin disable sanctuary-translate --agent claude-code --dry-run
+claude-config plugin disable sanctuary-translate --agent claude-code --write --expect-plan-id '<ID>'
+```
+
+未指定 `--write` 或 `--dry-run` 时，交互终端展示预览并询问 `[y/N]`，确认后执行；`--format json` 或非交互调用默认只预览。`list/status` 始终只读。该简化仅适用于 `plugin` 子命令，不改变普通局部 `apply` 的计划 ID 要求。
 
 ## Profile 插件锁定文件
 

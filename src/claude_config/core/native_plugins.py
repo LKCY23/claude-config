@@ -466,7 +466,7 @@ class PluginOperation:
     def _before(self, row, path):
         return Path(row['backups'][str(path)]).read_bytes() if str(path) in row['backups'] else b''
 
-    def accept_effects(self, row, removed_backups=()):
+    def accept_effects(self, row, removed_backups=(), *, user_document=None):
         selectors = [item['desired']['selector'] for item in self.plugins]
         markets = sorted({item['desired']['marketplace'] for item in self.plugins})
         before = parse_native(self.agent, self._before(row, self.config))
@@ -474,9 +474,23 @@ class PluginOperation:
         claims = [('enabledPlugins', selector) for selector in selectors] + [('extraKnownMarketplaces', name) for name in markets] if self.agent == 'claude-code' else [('plugins', selector) for selector in selectors] + [('marketplaces', name) for name in markets]
         require(same(masked(before, claims), masked(after, claims)), 'Native installer changed unrelated configuration')
         if self.agent == 'claude-code':
-            for path, claims in ((self.user_config, [(key,) for key in STARTUP_KEYS]),
+            # Claude records activation of the selected plugin even for plugin
+            # install/enable commands. Claim only its two observed startup
+            # counters, never the entire pluginUsage map or usageCount.
+            usage_keys = ('lastUsedAt', 'lastUsedNumStartups')
+            for document in (parse_json(self._before(row, self.user_config)), self._json(self.user_config) if user_document is None else user_document):
+                usage = mapping(document.get('pluginUsage', {}), 'native plugin usage')
+                for selector in selectors:
+                    item = mapping(usage.get(selector, {}), 'native plugin startup usage')
+                    for key in usage_keys:
+                        require(key not in item or type(item[key]) is int and item[key] >= 0,
+                                'Invalid native plugin startup counter')
+            startup_claims = [(key,) for key in STARTUP_KEYS] + [
+                ('pluginUsage', selector, key) for selector in selectors for key in usage_keys]
+            for path, claims in ((self.user_config, startup_claims),
                                  (self.root / 'plugins/known_marketplaces.json', [(name,) for name in markets])):
-                require(same(masked(parse_json(self._before(row, path)), claims), masked(self._json(path), claims)), 'Native installer changed unrelated metadata')
+                observed = user_document if path == self.user_config and user_document is not None else self._json(path)
+                require(same(masked(parse_json(self._before(row, path)), claims), masked(observed, claims)), 'Native installer changed unrelated metadata')
             path = self.root / 'plugins/installed_plugins.json'
             def remaining(value):
                 value = deepcopy(value)
@@ -671,7 +685,8 @@ class PluginOperation:
 
 
 class PluginRestoreOperation(PluginOperation):
-    def __init__(self, original, run_dir):
+    def __init__(self, original, run_dir, *, preserve_metadata=False):
+        self.preserve_metadata = preserve_metadata
         super().__init__(original['definition'])
         self.original = deepcopy(original)
         self._restore_work = run_dir
@@ -695,6 +710,13 @@ class PluginRestoreOperation(PluginOperation):
         operation.checkpoint = getattr(self, 'checkpoint', None)
         operation._active_row = row
         original = deepcopy(self.original)
+        if self.preserve_metadata:
+            # Capture fresh shared metadata in this recovery run rather than
+            # pointing the old journal at newly invented backup files.
+            backup_root = self.root / 'backups'
+            for path, backup in row['backups'].items():
+                if Path(path) == self.user_config or Path(path).parent == backup_root:
+                    original['backups'][path] = backup
         operation.restore(original)
         require(original['status'] == 'rolled_back', original.get('recovery_error', {}).get('reason', 'Native plugin recovery could not restore the recorded state'))
 

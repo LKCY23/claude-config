@@ -86,6 +86,7 @@ def _main(argv):
     target.add_argument('--agent', choices=('claude-code', 'codex'))
     target.add_argument('--app', choices=('codex-app', 'claude-desktop'))
     parser.add_argument('--profile', help='Config-dir-relative Profile of the selected type')
+    parser.add_argument('--preserve-native-metadata-after', type=Path, help='Rollback only: exact recorded Claude user-config after-image; retain later shared metadata')
     parser.add_argument('--run', help='New-format run ID to restore; rollback previews by default')
     parser.add_argument('--field', action='append', default=[], help='Declared settings leaf for deployment or export, as /settings/...')
     parser.add_argument('--resource', action='append', default=[], help='Selected ref@catalog for deployment, export or retirement')
@@ -108,6 +109,8 @@ def _main(argv):
     args = parser.parse_args(argv)
     if (args.adopt_plugin or args.replace_plugin) and (args.app or args.operation not in ('plan', 'validate', 'apply', 'switch')):
         parser.error('Plugin adoption/replacement inputs are only for Agent plan/validate/apply/switch')
+    if args.preserve_native_metadata_after and (args.operation != 'rollback' or args.agent != 'claude-code'):
+        parser.error('--preserve-native-metadata-after requires Claude Code rollback')
     if args.app and (args.resource or args.resource_group or args.scope == 'resources' or args.operation in ('adopt-baseline', 'review-conflicts', 'reconcile-run', 'retire-skills')):
         parser.error('App Profiles do not manage Agent resources or catalog baselines')
     if args.operation == 'switch' and not args.profile:
@@ -178,7 +181,7 @@ def _main(argv):
             from .core.run_reconciliation import reconcile_plan
             plan = reconcile_plan(manager, args.run)
         elif args.operation == 'rollback':
-            plan = rollback_plan(manager, args.run)
+            plan = rollback_plan(manager, args.run, preserve_native_metadata_after=args.preserve_native_metadata_after)
         elif args.operation == 'retire-skills':
             from .core.skill_retirement import retirement_plan
             plan = retirement_plan(manager, args.resource)

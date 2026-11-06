@@ -596,6 +596,137 @@ with patch.object(PluginOperation,'_call',lambda op,args,work: installer(op,args
         self.assertFalse(config['mcp_servers']['other']['enabled'])
         self.assertIn(plan.native_operations[0].plugins[0]['desired']['selector'], config['plugins'])
 
+    def test_selected_plugin_startup_usage_is_guarded_and_recoverable(self):
+        self.plugin(); self.save()
+        plan = self.manager().plan()
+        before = plan.native_operations[0].world()
+        def record_usage(operation, args):
+            value = operation._json(operation.user_config)
+            selected = operation.plugins[0]['desired']['selector']
+            value.setdefault('pluginUsage', {}).setdefault(selected, {}).update(lastUsedAt=100, lastUsedNumStartups=3)
+            atomic_write(operation.user_config, json.dumps(value).encode())
+        self.installer.after = record_usage
+        plan.apply(self.state)
+        self.installer.after = None
+        rollback_plan(self.manager(), Path(plan.report['recovery']).parent.name).apply(self.state)
+        self.assertEqual(plan.native_operations[0].world(), before)
+
+    def test_other_plugin_usage_is_not_claimed(self):
+        self.plugin(); self.save()
+        plan = self.manager().plan()
+        def record_usage(operation, args):
+            value = operation._json(operation.user_config)
+            value['pluginUsage'] = {'unrelated@elsewhere': {'lastUsedAt': 100}}
+            atomic_write(operation.user_config, json.dumps(value).encode())
+        self.installer.after = record_usage
+        with self.assertRaisesRegex(ValueError, 'side effects'):
+            plan.apply(self.state)
+        row = next(r for r in json.loads(Path(plan.report['recovery']).read_text())['operations'] if r.get('kind') == 'native-plugin')
+        self.assertFalse(row['safe_recovery'])
+        self.assertFalse(rollback_plan(self.manager(), Path(plan.report['recovery']).parent.name).report['ready'])
+
+    def test_reassess_only_exact_recorded_state_after_adapter_fix(self):
+        self.plugin(); self.save()
+        plan = self.manager().plan()
+        before = plan.native_operations[0].world()
+        original = PluginOperation.accept_effects
+        def reject(operation, row, removed_backups=()):
+            original(operation, row, removed_backups)
+            raise ValueError('simulate old adapter rejecting an understood effect')
+        with patch.object(PluginOperation, 'accept_effects', reject), self.assertRaisesRegex(ValueError, 'side effects'):
+            plan.apply(self.state)
+        run = Path(plan.report['recovery']).parent.name
+        journal = Path(plan.report['recovery']).read_bytes()
+        recovery = rollback_plan(self.manager(), run)
+        self.assertTrue(recovery.report['ready'], recovery.report['blockers'])
+        self.assertEqual(Path(plan.report['recovery']).read_bytes(), journal)
+        self.assertTrue(any(r['action']=='revalidate' for r in recovery.report['decisions']))
+        recovery.apply(self.state)
+        self.assertEqual(plan.native_operations[0].world(), before)
+
+    def test_reassessment_does_not_accept_later_metadata_edits(self):
+        self.plugin(); self.save()
+        plan = self.manager().plan()
+        with patch.object(PluginOperation, 'accept_effects', side_effect=ValueError('old adapter')), self.assertRaises(ValueError):
+            plan.apply(self.state)
+        operation = plan.native_operations[0]
+        doc = operation._json(operation.user_config);doc['later'] = 'preserve'
+        atomic_write(operation.user_config, json.dumps(doc).encode())
+        recovery = rollback_plan(self.manager(), Path(plan.report['recovery']).parent.name)
+        self.assertFalse(recovery.report['ready'])
+        self.assertEqual(operation._json(operation.user_config)['later'], 'preserve')
+
+    def failed_upgrade_with_later_metadata(self):
+        root, entry = self.plugin(); self.save(); self.deploy()
+        (root / entry).write_text(json.dumps({'name': 'tiny', 'version': '2.0.0'}))
+        self.save()
+        plan = self.manager().plan(); operation = plan.native_operations[0]
+        original = PluginOperation.accept_effects
+        def reject(op, row, removed_backups=(), **kwargs):
+            original(op, row, removed_backups, **kwargs)
+            raise ValueError('old adapter')
+        with patch.object(PluginOperation, 'accept_effects', reject), self.assertRaises(ValueError):
+            plan.apply(self.state)
+        # Ensure an actual JSON after-image exists, as it does in native Claude.
+        # The fake installer did not touch user config, so use {} for absence.
+        evidence = self.root / 'recorded-after.json'
+        evidence.write_bytes(operation.user_config.read_bytes() if operation.user_config.exists() else b'')
+        later = {'cachedUsageUtilization': {'fixture': 42}, 'projects': {'fixture': {'lastSessionId': 'keep'}},
+                 'pluginUsage': {'unrelated@elsewhere': {'usageCount': 7}}}
+        atomic_write(operation.user_config, json.dumps(later).encode())
+        backup = operation.root / 'backups/.claude.json.backup.99'
+        backup.parent.mkdir(parents=True,exist_ok=True);atomic_write(backup,b'{"keep":"later backup"}')
+        return plan, operation, evidence, later, backup
+
+    def test_scoped_metadata_recovery_preserves_later_shared_values(self):
+        # Establish a user-config document before the simulated failed upgrade,
+        # so the journal contains an exact after-image hash to verify.
+        from claude_config.core.registrations import claude_user_config
+        path = claude_user_config(self.machine['agents']['claude-code']['binding'])
+        path.parent.mkdir(parents=True,exist_ok=True);atomic_write(path,b'{}')
+        plan, op, evidence, later, backup = self.failed_upgrade_with_later_metadata()
+        run = Path(plan.report['recovery']).parent.name
+        old_journal = Path(plan.report['recovery']).read_bytes()
+        recovery = rollback_plan(self.manager(), run, preserve_native_metadata_after=evidence)
+        self.assertTrue(recovery.report['ready'], recovery.report['blockers'])
+        self.assertEqual(Path(plan.report['recovery']).read_bytes(), old_journal)
+        recovery.apply(self.state)
+        self.assertEqual(op._json(op.user_config), later)
+        self.assertEqual(backup.read_bytes(), b'{"keep":"later backup"}')
+        prior = op.plugins[0]['previous']
+        self.assertEqual(op.native(prior)['version'], '1.0.0')
+
+    def test_metadata_recovery_rejects_wrong_evidence(self):
+        from claude_config.core.registrations import claude_user_config
+        path=claude_user_config(self.machine['agents']['claude-code']['binding'])
+        path.parent.mkdir(parents=True,exist_ok=True);atomic_write(path,b'{}')
+        plan, op, evidence, later, backup = self.failed_upgrade_with_later_metadata()
+        evidence.write_text('{"not":"the captured image"}')
+        with self.assertRaisesRegex(ValueError, 'exactly match'):
+            rollback_plan(self.manager(),Path(plan.report['recovery']).parent.name,preserve_native_metadata_after=evidence)
+        self.assertEqual(op._json(op.user_config),later)
+
+    def test_metadata_recovery_rejects_later_native_settings_change(self):
+        from claude_config.core.registrations import claude_user_config
+        path=claude_user_config(self.machine['agents']['claude-code']['binding'])
+        path.parent.mkdir(parents=True,exist_ok=True);atomic_write(path,b'{}')
+        plan, op, evidence, later, backup = self.failed_upgrade_with_later_metadata()
+        settings=json.loads(op.config.read_text());settings['model']='later-model'
+        atomic_write(op.config,json.dumps(settings).encode())
+        with self.assertRaisesRegex(ValueError, 'Non-metadata'):
+            rollback_plan(self.manager(),Path(plan.report['recovery']).parent.name,preserve_native_metadata_after=evidence)
+        self.assertEqual(json.loads(op.config.read_text())['model'],'later-model')
+
+    def test_retained_metadata_change_after_preview_is_stale(self):
+        from claude_config.core.registrations import claude_user_config
+        path=claude_user_config(self.machine['agents']['claude-code']['binding'])
+        path.parent.mkdir(parents=True,exist_ok=True);atomic_write(path,b'{}')
+        plan, op, evidence, later, backup = self.failed_upgrade_with_later_metadata()
+        recovery=rollback_plan(self.manager(),Path(plan.report['recovery']).parent.name,preserve_native_metadata_after=evidence)
+        later['laterAgain']=True;atomic_write(op.user_config,json.dumps(later).encode())
+        with self.assertRaises(PlanStale):recovery.apply(self.state)
+        self.assertTrue(op._json(op.user_config)['laterAgain'])
+
 
 if __name__ == '__main__':
     unittest.main()

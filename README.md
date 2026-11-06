@@ -1,6 +1,6 @@
 # claude-config
 
-当前工作分支开发 **0.8.0.dev0**：[统一插件管理入口](references/plugin-management.md)，支持 `plugin install/upgrade/enable/disable/list/status`、Profile 级版本锁定和统一恢复。尚未发布或更新日常安装。下方 0.7.0 安装说明仍指向已发布版本。
+当前工作分支开发 **0.8.0.dev1**：[统一插件管理入口](references/plugin-management.md)，支持 `plugin install/upgrade/enable/disable/list/status`、Profile 级版本锁定和统一恢复。尚未发布或更新日常安装。下方 0.7.0 安装说明仍指向已发布版本。
 
 管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。
 Claudespace 托管资源正文；Profile 选择配置和资源运行参数；Machine 提供本机绑定。

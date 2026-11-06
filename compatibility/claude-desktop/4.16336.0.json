@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "release": {
+    "version": "4.16336.0",
+    "url": "https://downloads.claude.ai/releases/darwin/universal/4.16336.0/Claude-61c5bb50afdeb36ef1152e82f33cdb2f46fccdee.zip",
+    "sha256": "3740c05b4b82456e4bd60ee9faff13c7640f101a7683715b977333b283f0eecd",
+    "size": 388855481
+  },
+  "status": "needs-review",
+  "checks": [
+    {
+      "name": "app_preference_interface",
+      "status": "blocked",
+      "code": "capability_unknown",
+      "stage": "preference_interface",
+      "version": "4.16336.0",
+      "reason": "已安装应用的偏好接口源码未匹配审查记录；需核对接口后登记签名"
+    }
+  ],
+  "candidate_modules": [
+    {
+      "path": ".vite/build/index.chunk-Du-Wqi0E.js",
+      "sha256": "fcc1026c3634f62ae40581c680389b807c49e85626ff9989838fa0dc931d7f1a",
+      "fields": [
+        "userThemeMode",
+        "locale",
+        "chatTabEnabled",
+        "autoModeEnabled",
+        "builtinBrowserEnabled"
+      ]
+    }
+  ],
+  "native_smoke": "not-run",
+  "scope": "Source interface and temporary preference files; no GUI, account, provider or business validation"
+}

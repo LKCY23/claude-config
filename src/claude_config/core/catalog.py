@@ -174,6 +174,11 @@ class CatalogResolver:
                 item = deepcopy(catalog['resources'][identifier])
                 require(item['kind'] == RESOURCE_KINDS[group], 'Resource kind disagrees with Profile group: ' + ref)
                 require(self.manager.agent in item['compatibility'], 'Resource does not declare support for this agent: ' + ref)
+                pin = getattr(self.manager, 'plugin_locks', {}).get('plugins', {}).get(ref)
+                if pin is not None:
+                    from .plugin_locks import apply_pin
+                    require(item['kind'] == 'plugin', 'Plugin lock applied to a non-plugin resource')
+                    item = apply_pin(item, declared, pin)
                 compatible = item['compatibility'][self.manager.agent]
                 default_entry = compatible['entry']
                 if item['kind'] == 'mcp' and 'entry' in selection.get('options', {}):
@@ -206,6 +211,9 @@ class CatalogResolver:
                     _, expected = snapshot_read(evidence)
                     self.manager.sources[evidence] = expected
                 packages[ref] = Package(ref, group, item, selection, root, entry, files, modes, declared['commit'], digest)
+                if pin is not None:
+                    from .plugin_locks import validate_package_pin
+                    validate_package_pin(packages[ref], pin)
         for ref, package in packages.items():
             for dependency in package.item['requires'].get('resources', []):
                 require(dependency in packages, 'Resource dependency must be explicitly selected: ' + dependency)

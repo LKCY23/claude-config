@@ -22,7 +22,47 @@ def snapshot(value):
         require(value == {'exists': False}, 'Missing-file snapshot cannot contain other fields')
 
 
-def rollback_plan(manager, run):
+def _preserve_native_metadata(operation, row, current, after_file, sources):
+    """Prove the old effect from an exact after-image, retain later shared metadata.
+
+    No raw metadata is changed during preview. Every non-metadata path must
+    still equal the captured result; the recovery executor captures retained
+    bytes in its own journal before any native operation runs.
+    """
+    from .native_plugins import backup_snapshot
+    require(operation.agent == 'claude-code' and row.get('after') and row.get('plugin_actions'),
+            'Metadata preservation requires a captured Claude native operation')
+    user = str(operation.user_config)
+    backups = str(operation.root / 'backups')
+    for group, allowed in (('files', user), ('directories', backups)):
+        require({k: v for k, v in current[group].items() if k != allowed} ==
+                {k: v for k, v in row['after'][group].items() if k != allowed},
+                'Non-metadata state changed after installation; cannot preserve around it')
+    evidence, expected = snapshot_read(Path(after_file).absolute())
+    require(expected.get('sha256') == row['after']['files'][user].get('sha256'),
+            'Metadata evidence must exactly match the recorded user-config after-image')
+    sources[Path(after_file).absolute()] = expected
+    for path, backup in row['backups'].items():
+        require(file_fingerprint(backup).get('sha256') == backup_snapshot(row, path).get('sha256'),
+                'Native recovery backup fingerprint changed')
+    operation.accept_effects(row, user_document=parse_json(evidence))
+    for item in operation.plugins:
+        actual = operation.native(item['desired'])
+        choices = [item['desired']] + ([item['previous']] if item['previous'] else [])
+        require(actual['installed'] and actual['marketplace'] and any(
+            all(actual[k] == pin[k] for k in ('version', 'image', 'enabled')) for pin in choices),
+            'Metadata preservation cannot accept an unknown plugin image or state')
+    rebased = deepcopy(row)
+    for phase in ('before', 'after'):
+        rebased[phase]['files'][user] = deepcopy(current['files'][user])
+        rebased[phase]['directories'][backups] = deepcopy(current['directories'][backups])
+    rebased['backups'] = {path: backup for path, backup in row['backups'].items()
+                          if path != user and Path(path).parent != Path(backups)}
+    rebased['safe_recovery'] = True
+    return rebased
+
+
+def rollback_plan(manager, run, *, preserve_native_metadata_after=None):
     require(isinstance(run, str) and re.fullmatch(r'[0-9a-f]{32}', run), 'Rollback requires a new-format run ID')
     root = manager.state_root / 'runs' / run
     path = root / 'journal.json'
@@ -65,6 +105,7 @@ def rollback_plan(manager, run):
             if row['status'] not in ('started', 'applied', 'recovery_conflict'):
                 continue
             current = operation.world()
+            preserve_metadata = False
             if 'after' not in row and row['status'] == 'started' and current != row['before']:
                 # Only v2 per-plugin intent can support reconstruction of a
                 # missing completion observation. Legacy ambiguity stays blocked.
@@ -73,6 +114,28 @@ def rollback_plan(manager, run):
                         operation.inspect_interrupted(row)
                     except (ValueError, OSError):
                         pass
+            # A newer adapter may recognize a previously rejected, recorded
+            # side effect. Reassess only the exact captured after-state and known
+            # plugin versions. Keep the historical journal evidence unchanged.
+            if (row['status'] == 'recovery_conflict' and not row.get('safe_recovery')
+                    and not row.get('cleanup_safe') and row.get('plugin_actions')
+                    and current == row.get('after')):
+                candidate = deepcopy(row)
+                try:
+                    operation.inspect_interrupted(candidate)
+                except (ValueError, OSError):
+                    pass
+                else:
+                    row = candidate
+                    decisions.append({'path': ['recovery', str(operation.root), 'effect_validation'],
+                        'action': 'revalidate', 'category': 'policy_merge', 'check_status': 'passed',
+                        'reason': 'Current adapter verified exact recorded native after-state; no later edits were accepted'})
+            if preserve_native_metadata_after is not None and current != row['before']:
+                row = _preserve_native_metadata(operation, row, current, preserve_native_metadata_after, sources)
+                preserve_metadata = True
+                decisions.append({'path': ['recovery', str(operation.user_config)], 'action': 'preserve',
+                    'category': 'unchanged', 'check_status': 'passed',
+                    'reason': 'Exact recorded after-image verified; retain current shared metadata and backup rotation'})
             matched = (row.get('safe_recovery') or row.get('cleanup_safe')) and current == row.get('after')
             restored = current == row['before']
             if not (matched or restored):
@@ -96,7 +159,7 @@ def rollback_plan(manager, run):
                 require(actual['sha256'] == backup_snapshot(row, native_path)['sha256'], 'Native recovery backup fingerprint changed')
                 sources[backup_path] = actual
             if matched and not restored:
-                restoration = PluginRestoreOperation(row, root)
+                restoration = PluginRestoreOperation(row, root, preserve_metadata=preserve_metadata)
                 restoration.preflight()
                 native_operations.append(restoration)
                 steps.append(restoration)

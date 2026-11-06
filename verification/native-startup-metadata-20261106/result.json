@@ -62,5 +62,14 @@
     "src/claude_config/core/plugin_manager.py": "68f628d10037e524afd8134bbf3c1bb0d3a1d76d1b98f864058dc5f7130c377d",
     "src/claude_config/core/schema.py": "f66c043bbf28a011b55088e037b5f60960eac0c154f5e5bb55ba47f34fa712a6",
     "src/claude_config/core/reporting.py": "160037bdb21185a9bec7b94270fd383b9529d614ac50cd3814a984f2ea4a73ab"
+  },
+  "local_acceptance": {
+    "version": "0.6.0-dev.14",
+    "enabled": true,
+    "payload_files": 80,
+    "post_plan_changes": 0,
+    "other_plugins_unchanged": true,
+    "other_profile_fields_unchanged": true,
+    "other_native_settings_unchanged": true
   }
 }

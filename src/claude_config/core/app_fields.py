@@ -53,10 +53,12 @@ CLAUDE = {
     'userThemeMode': ('enum', ('system', 'light', 'dark')),
     'locale': ('locale', None),
     'chatTabEnabled': ('bool', None),
+    'desktopHome': ('enum', ('standard', 'off')),
     'autoModeEnabled': ('bool', None),
     'builtinBrowserEnabled': ('bool', None),
 }
-FEATURES = frozenset(('chatTabEnabled', 'autoModeEnabled', 'builtinBrowserEnabled'))
+FEATURES = frozenset(('chatTabEnabled', 'desktopHome', 'autoModeEnabled', 'builtinBrowserEnabled'))
+LOCALE_PATTERN = r'[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*'
 
 # Font selection/files/reset and imported notification sounds are outside scope.
 # Do not reserve them as pending interfaces or accept placeholder declarations.
@@ -64,6 +66,22 @@ FEATURES = frozenset(('chatTabEnabled', 'autoModeEnabled', 'builtinBrowserEnable
 
 def registry(app):
     return CODEX if app == 'codex-app' else CLAUDE
+
+
+def declaration_schema(app):
+    """Public declaration shape derived from the same App field authority."""
+    require(app == 'claude-desktop', 'App declaration editing is not supported for this app')
+    fields = {}
+    for name, (kind, domain) in registry(app).items():
+        field = {'type': 'boolean' if kind == 'bool' else 'string', 'optional': True}
+        if kind == 'enum':
+            field['enum'] = list(domain)
+        elif kind == 'locale':
+            field['pattern'] = LOCALE_PATTERN
+        else:
+            require(kind == 'bool', 'Unsupported declaration field kind')
+        fields[name] = field
+    return {'fields': fields, 'unset_behavior': 'undeclare_only', 'native_apply_separate': True}
 
 
 def validate_settings(app, settings):
@@ -83,7 +101,7 @@ def validate_settings(app, settings):
         elif kind == 'string':
             valid = isinstance(value, str)
         elif kind == 'locale':
-            valid = isinstance(value, str) and re.fullmatch(r'[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*', value) is not None
+            valid = isinstance(value, str) and re.fullmatch(LOCALE_PATTERN, value) is not None
         elif kind == 'open-target':
             closed(value, ('global',), (), 'portable open target')
             valid = 'global' not in value or (isinstance(value['global'], str) and

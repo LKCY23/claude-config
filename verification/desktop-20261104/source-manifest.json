@@ -1,0 +1,15 @@
+{
+  "machine": "Mac mini",
+  "files": {
+    "src/claude_config/core/app_fields.py": "81e792a202443f08c839aea54d1528af99dcde2872b6140dfa206bfbcd70be4e",
+    "src/claude_config/core/app_native.py": "ee9100ae47cf4c60a1f0a712d28d394bdccab469f4b844d31d285aa894087d40",
+    "src/claude_config/core/app_manager.py": "1a66b5e46f4a3d08a955b110f096a15f9c3dafa1c993ccf0419694c299744f1b",
+    "scripts/desktop_compatibility.py": "4f9db23e51ebaba71c093821777bb5d38ec8dba15859e742e71d75ee095e098a",
+    "tests/test_claude_desktop_home.py": "de4384c797899ce9e22175b2659a07e80e62db7bcb76ba2dce29ba1c4b499a34",
+    "tests/claude_desktop_4x_probe.cjs": "69425a04de738920a71bbb952d001e8daecaf17c31258a29eab6e6da51a231ab",
+    "tests/test_native_app_smoke.py": "4bd24dfd1694b173a1a46e6c56ef5d19f1682520e5526d20347a7bfa5d74b018",
+    "tests/test_desktop_compatibility_watch.py": "9da3dc13c44fb4302cb34de1bcb4f1126d8b68ed9bc25f7f81ad9987eba09664",
+    "tests/test_app_profile_api.py": "7d7517e9e62a359901a2712733cb00774d7b40d4976e22d0b8652daba2e57836",
+    "tests/test_claude_desktop_429_audit.py": "fad704221c8fc561b9d5f48f3b758409efc16987290c37650bc645383cbab333"
+  }
+}

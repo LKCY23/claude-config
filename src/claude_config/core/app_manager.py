@@ -9,7 +9,7 @@ import yaml
 
 from .app_fields import (FEATURES, export_paths, registry,
                          native_paths, validate_policies, validate_settings)
-from .app_native import AppProbe
+from .app_native import AppProbe, DESKTOP_HOME_AUDITS
 from .fields import leaves
 from .merge import MISSING, MergePlan, get, same
 from .native import parse_json, parse_native, parse_yaml, projection, put, render_native, snapshot_read
@@ -165,6 +165,33 @@ class AppProfileManager:
                         guards=[binding_guard], step_guard=step_guard, prepare=prepare,
                         recovery_guard=(lambda: self.probe.assert_stopped(self.application)) if native_write else None)
 
+    def _home_semantics(self, native, projected, checks):
+        """Describe local source semantics; never infer policy or current GUI state."""
+        if self.app != 'claude-desktop' or self.deployment_mode != '3p':
+            return []
+        audit = next((row for row in checks if row.get('name') == 'app_preference_interface'
+                      and row.get('status') == 'passed'), {})
+        if audit.get('reviewed_version') not in DESKTOP_HOME_AUDITS:
+            return []
+        if not ({'chatTabEnabled', 'desktopHome'} & set(projected)):
+            return []
+        home = projected.get('desktopHome', native.get('desktopHome', MISSING))
+        row = {'name': 'claude_desktop_home_semantics', 'status': 'warning',
+               'path': ['settings', 'chatTabEnabled'], 'level': 'local-source-semantics',
+               'gui_effect': 'not_verified'}
+        if home is not MISSING and home not in ('standard', 'off', 'simple', 'no-vm'):
+            row.update(state='unrecognized', desktop_home='unrecognized',
+                       reason='本地 desktopHome 值不在已审查的原生选项中；本次不改写或猜测其生效值，Chat 入口效果未验证。')
+        elif home is not MISSING:
+            # Unknown/legacy native values are preserved, not exported as new
+            # portable declarations or silently rewritten to standard/off.
+            row.update(state='overridden', desktop_home=home,
+                       reason='desktopHome 已存在于本地计划结果；Chat 旧开关的存储值仍保留，但不决定统一界面。实际 GUI 和上级策略未验证。')
+        else:
+            row.update(state='default_not_verified', default_at='2026-11-10T20:00:00Z',
+                       reason='desktopHome 未声明且本地未设置，本次不补默认值。新版在 2026-11-10 20:00 UTC 后启动会按统一界面默认规则处理；启动时刻、远程策略及最终生效值未验证，不能以 Chat 存储值判断界面。')
+        return [row]
+
     def plan(self, *, profile=None, run_policy=None, resolutions=None, prepare=True, selection=None):
         _, chosen, _, _, name = self._profile(profile)
         selection = selection or DeploymentScope()
@@ -198,6 +225,7 @@ class AppProfileManager:
         changes, native_write = [], False
         ready = not merge.blockers and not any(row['status'] == 'blocked' for row in checks)
         managed = projection(merge.result['settings'], [path for path, _ in leaves(settings)])
+        checks += self._home_semantics(native, merge.result['settings'], checks)
         if ready:
             validate_settings(self.app, managed)
             for store, (path, value, original, expected, codec) in stores.items():
@@ -239,6 +267,7 @@ class AppProfileManager:
         validate_settings(self.app, incoming)
         validate_policies(self.app, run_policy)
         checks += self.probe.check(self.app, self.application, {key: incoming.get(key) for key in keys}, self.sources)
+        checks += self._home_semantics(native, incoming, checks)
         merge = MergePlan({'settings': incoming}, chosen, source={'kind': 'app-preferences'},
                           destination={'kind': 'app-profile', 'file': name}, scope=[as_pointer(item) for item in scope],
                           profile_policy=chosen.get('merge_policy'), run_policy=run_policy, machine_policy=self.machine.get('merge_policy'),

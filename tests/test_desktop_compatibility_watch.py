@@ -90,8 +90,10 @@ class ReleaseTests(unittest.TestCase):
 
     def test_success_requires_passing_smoke(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(watch, 'inspect', return_value=(
-                [{'status': 'passed'}], [])), patch.object(watch.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, 'ok', '')):
+                [{'status': 'passed'}], [])), patch.object(watch.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, 'ok', '')) as run:
             self.assertEqual(watch.run(release(), Path(directory), app=Path(directory))['status'], 'compatible')
+            command = run.call_args.args[0]
+            self.assertEqual(command[command.index('-k') + 1], 'claude')
 
 
 class PublisherTests(unittest.TestCase):

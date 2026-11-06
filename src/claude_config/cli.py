@@ -13,6 +13,7 @@ HELP = """usage: claude-config COMMAND [OPTIONS]
 专项操作：
   plugin     插件 install/upgrade/enable/disable/list/status；统一预览及部署
   runs       只读查看执行状态；--run ID 核对当前文件与恢复证据
+  app-profile  查看 App 声明 schema/inspect，预览并受控保存五字段声明
   fetch-baseline  获取明确发布的固定来源，不采用或部署配置
   cutover    多客户端配置统一切换与恢复（不安装工具代码）
   migration  旧配置盘点与转换候选
@@ -35,6 +36,9 @@ def main(argv=None):
     command = argv[0]
     if command == 'plugin':
         from .plugin import main as run
+        return run(argv[1:])
+    if command == 'app-profile':
+        from .app_profile import main as run
         return run(argv[1:])
     if command == 'runs':
         from .runs import main as run

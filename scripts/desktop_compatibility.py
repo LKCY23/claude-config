@@ -156,7 +156,7 @@ def run(release, work, app=None):
         env = os.environ.copy()
         env.update(CLAUDE_CONFIG_RUN_NATIVE_SMOKE='1', CLAUDE_CONFIG_CLAUDE_APPLICATION=str(app))
         proc = subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tests',
-                               '-p', 'test_native_app_smoke.py', '-v'], cwd=ROOT, env=env,
+                               '-p', 'test_native_app_smoke.py', '-k', 'claude', '-v'], cwd=ROOT, env=env,
                               capture_output=True, text=True, timeout=120)
         (work / 'native-smoke.log').write_text(proc.stdout + proc.stderr)
         result['native_smoke'] = 'passed' if proc.returncode == 0 else 'failed'

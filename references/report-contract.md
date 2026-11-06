@@ -139,6 +139,10 @@ report_id 每次重新运行都不同；plan_id 对应审阅计划，不能用�
 
 Bootstrap 使用明确的 Machine 运行 plan，再以同一 `plan_id` 运行 apply。只有进程成功、`status=ok`、`ready=true`、报告已保存、目标绑定完整且一致、`preview_only=false`、`execution.started=true`、执行状态为 `completed` 或 `unchanged` 才能启动。成功且无变化的 apply 仍是已执行的操作，不能仅接受 completed。
 
+2026-11-04 启动器可提供一个独立的“跳过配置，仅启动”分支：唯一阻断必须是 `app_preference_interface/capability_unknown`，对应 check 的 `stage` 必须为 `preference_interface`（应用身份已核对，但源码尚未登记）。还须没有错误、冲突、其它阻断或失败、部分执行，文件预检通过、默认第三方目标绑定完整；启动前再次 plan 核对同一 `plan_id` 和目标，并重新满足这些条件。此分支不调用 apply，仍保留 `ready=false`，不能写成已同步。`application_metadata`、`application_identity`、`preference_field` 和 `locale_catalog` 等阶段不属于此例外。claude-config 自身始终拒绝执行受阻的配置计划。
+
+已审查的新版 Claude 可追加非阻断 check `claude_desktop_home_semantics`：`level=local-source-semantics`、`gui_effect=not_verified`。`state=overridden` 表示本地计划结果含已识别的 desktopHome，旧 Chat 存储值不决定界面；`desktop_home` 仅投影 standard/off/simple/no-vm。未知原生值采用 `state=unrecognized`、`desktop_home=unrecognized`，不泄露原值或推断覆盖效果。`state=default_not_verified` 携带 `default_at=2026-11-10T20:00:00Z`，说明本地未设置，不补写默认且未验证启动与策略后的生效值。该 check 不授权写入，不替代 `gui_effect`，也不保证远程策略或当前运行界面的状态。
+
 Bootstrap 只支持已准备好的默认第三方数据目录。`data_root` 与 `default_third_party_data_root` 不同必须在 apply 前停止，不能用普通 `open -a` 假称已把 Desktop 重定向到 Machine 指定的任意目录。
 
 ## 7 保存与错误处理

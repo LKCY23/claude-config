@@ -1,0 +1,48 @@
+{
+  "ready": true,
+  "changes": 0,
+  "blockers": [],
+  "checks": [
+    {
+      "name": "app_preference_interface",
+      "status": "passed",
+      "version": "4.16336.0",
+      "reviewed_version": "4.16336.0",
+      "level": "installed-source-audit",
+      "reason": "Selected preference storage and schemas match reviewed installed code",
+      "id": "K2"
+    },
+    {
+      "name": "claude_desktop_home_semantics",
+      "status": "warning",
+      "path": [
+        "settings",
+        "chatTabEnabled"
+      ],
+      "level": "local-source-semantics",
+      "gui_effect": "not_verified",
+      "state": "default_not_verified",
+      "default_at": "2026-11-10T20:00:00Z",
+      "reason": "desktopHome 未声明且本地未设置，本次不补默认值。新版在 2026-11-10 20:00 UTC 后启动会按统一界面默认规则处理；启动时刻、远程策略及最终生效值未验证，不能以 Chat 存储值判断界面。",
+      "id": "K3"
+    },
+    {
+      "name": "gui_effect",
+      "status": "not_verified",
+      "reason": "Native files are validated; GUI reload, account and policy overrides are not exercised",
+      "id": "K4"
+    }
+  ],
+  "execution": {
+    "status": "preview",
+    "started": false,
+    "results": [
+      {
+        "path": "/Users/lkcy/claude-config-data/.state/managed-apps/680b84dbcfbc537efbd7fe11a74f2c0e9d82f029ef6853b9f0c1a4adaef104b5.json",
+        "owner": "app-managed-baseline",
+        "action": "write",
+        "status": "unchanged"
+      }
+    ]
+  }
+}

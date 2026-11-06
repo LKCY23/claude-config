@@ -1,0 +1,21 @@
+{
+  "machine": "Mac mini",
+  "operation": "real selected Machine read-only plan",
+  "exit_code": 0,
+  "status": "ok",
+  "ready": true,
+  "execution_started": false,
+  "changes": 0,
+  "checks": [
+    {
+      "name": "app_preference_interface",
+      "status": "passed",
+      "version": "4.29.0",
+      "reviewed_version": "4.29.0"
+    }
+  ],
+  "blocker_codes": [],
+  "native_write_requested": false,
+  "application_launch_requested": false,
+  "raw_report_retained_on_mini": true
+}

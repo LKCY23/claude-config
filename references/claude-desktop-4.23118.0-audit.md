@@ -1,17 +1,17 @@
-# Claude Desktop 4.23118.0 source audit
+# Claude Desktop 4.23118.0 preference interface audit
 
-Reviewed 2026-11-06 from the exact pinned official archive in PR #22.
+Reviewed 2026-11-07 from the exact pinned official archive.
 
 - Bundle: `com.anthropic.claudefordesktop`.
 - Archive SHA-256: `5b8feee3da048e26bbb29a5d601e97034f674ac3b76f7d0237751c46d6034b23`.
-- Candidate preference module: `.vite/build/index.chunk-BBUaTQ8d.js`.
-- Candidate module SHA-256: `1ffb394eb87f77ec1e8949c4acb8c30e973fcb6897987133f46444560dcd3df1`.
+- Reviewed module: `.vite/build/index.chunk-BBUaTQ8d.js`.
+- Module SHA-256: `1ffb394eb87f77ec1e8949c4acb8c30e973fcb6897987133f46444560dcd3df1`.
 
-Static source evidence confirms:
+The independent probe covers:
 
-- `userThemeMode` is read from and written to the user `config.json` store; startup accepts `system`, `light`, and `dark`.
-- Third-party feature declarations include `chatTabEnabled`, `autoModeEnabled`, and `builtinBrowserEnabled`.
-- The local configuration library uses `configLibrary/_meta.json`, UUID entry files, and a `hybridPointer`; entry reads preserve sealed values.
-- `desktopHome` accepts the native values `standard`, `simple`, `no-vm`, and `off`, while portable declarations expose `standard` and `off`. The source defines surface grants for Chat, file analysis, and Cowork and applies a deprecation clock beginning 2026-11-10.
+- `userThemeMode` startup and changed/unchanged writes;
+- the `chatTabEnabled`, `autoModeEnabled`, and `builtinBrowserEnabled` 3p declarations;
+- `desktopHome` native values, public options, surface grants, and the 2026-11-10 deprecation clock;
+- `configLibrary` path resolution, applied UUID metadata, hybrid pointer preservation, selected feature values, and sealed-value preservation.
 
-This is source evidence only. The existing 4.x executable probe does not yet cover this module's renamed reader, writer, locale, and surface-policy routines. The 4.23118.0 interface therefore remains **needs-review** and must not be registered as compatible until an independent probe and temporary-file round-trip cover those routines.
+The probe runs only extracted, checksum-pinned source with synthetic files. It never launches Electron, reads user data, uses a key store, or claims GUI/provider behavior. The compatibility report remains source-scoped and does not claim account, GUI, provider, or business validation.

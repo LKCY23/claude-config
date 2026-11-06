@@ -26,7 +26,9 @@ AUDITS = {
 
 # Keep earlier reviewed interface signatures too.
 PREVIOUS_AUDITS = {
-    'claude-desktop': (('4.4212.0', 'com.anthropic.claudefordesktop', {
+    'claude-desktop': (('4.23118.0', 'com.anthropic.claudefordesktop', {
+        '.vite/build/index.chunk-BBUaTQ8d.js': '1ffb394eb87f77ec1e8949c4acb8c30e973fcb6897987133f46444560dcd3df1',
+    }), ('4.4212.0', 'com.anthropic.claudefordesktop', {
         '.vite/build/index.chunk-m4oMImJ-.js': '926694919e5ff5d05cb804945637ffbe6ae75bdeac5e461f30e7c3d5fa043ccb',
     }), ('4.29.0', 'com.anthropic.claudefordesktop', {
         '.vite/build/index.chunk-C7NkbHFq.js': '92e8f69fb04f151845edc56f4246a0d3a2d2f91b311cfdb26e4f64edc43819e0',
@@ -52,8 +54,8 @@ PREVIOUS_AUDITS = {
 }
 
 # These capabilities follow the exact matched source, never a numeric version comparison.
-PACKED_CATALOG_AUDITS = frozenset(('4.29.0', '4.4212.0', '4.16336.0'))
-DESKTOP_HOME_AUDITS = frozenset(('4.4212.0', '4.16336.0'))
+PACKED_CATALOG_AUDITS = frozenset(('4.29.0', '4.4212.0', '4.16336.0', '4.23118.0'))
+DESKTOP_HOME_AUDITS = frozenset(('4.4212.0', '4.16336.0', '4.23118.0'))
 
 
 def asar_entries(content, selected):

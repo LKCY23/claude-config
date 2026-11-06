@@ -91,7 +91,7 @@ class DesktopHomeTests(unittest.TestCase):
     def test_new_exact_audits_preserve_all_old_signatures(self):
         rows = (AUDITS['claude-desktop'], *PREVIOUS_AUDITS['claude-desktop'])
         self.assertEqual(rows[0][0], '4.16336.0')
-        self.assertEqual({row[0] for row in rows}, {'4.16336.0', '4.4212.0', '4.29.0', '3.6556.2', '2.42304.2', '2.42304.0', '2.26454.2'})
+        self.assertEqual({row[0] for row in rows}, {'4.16336.0', '4.23118.0', '4.4212.0', '4.29.0', '3.6556.2', '2.42304.2', '2.42304.0', '2.26454.2'})
 
     def test_home_compatibility_tracks_exact_source_not_build_number(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,0 +1,30 @@
+{
+  "machine": "Mac mini",
+  "kind": "actual_selected_app_profile_read_only",
+  "results": {
+    "schema": {
+      "exitCode": 0,
+      "status": "ok",
+      "capability": "app-profile-declaration-v1",
+      "schemaVersion": 1,
+      "nativeWrite": false,
+      "profileSaved": false,
+      "fieldCount": 5
+    },
+    "inspect": {
+      "exitCode": 0,
+      "status": "ok",
+      "capability": "app-profile-declaration-v1",
+      "schemaVersion": 1,
+      "nativeWrite": false,
+      "profileSaved": false,
+      "fieldCount": 5,
+      "machineId": "mac-mini-third-party",
+      "selectedProfile": "profiles/apps/claude-desktop/current.yaml",
+      "declaredCount": 3
+    }
+  },
+  "realNativeConfigurationAccessed": false,
+  "profileWritten": false,
+  "installedConfigToolChanged": false
+}

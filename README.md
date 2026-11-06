@@ -2,6 +2,12 @@
 
 当前工作分支开发 **0.8.0.dev2**：[统一插件管理入口](references/plugin-management.md)，支持 `plugin install/upgrade/enable/disable/list/status`、Profile 级版本锁定和统一恢复。`plugin --write` 可直接执行，计划 ID 为可选的审核约束。下方 0.7.0 安装说明仍指向已发布版本。
 
+> 2026-10-28 S9：新增 Claude Desktop 4.29.0 偏好接口审计与包内语言目录适配；Mac mini macOS 27.2 上定向回归、真实源码合成偏好验证及真实 Machine 只读 plan 通过。未升级已安装工具或写入日常偏好。见[实现记录](docs/implementation-20261028-s9.md)。
+
+> 2026-11-04 候选：新增 Claude Desktop 4.4212.0 / 4.16336.0 审计、desktopHome standard/off 与旧 Chat 覆盖语义；声明 API 现在为六字段。Mini 回归、源码/合成文件验证和真实只读 plan 已通过，尚未升级日常 CLI 或应用真实配置。见[实现记录](docs/implementation-20261104-desktop.md)。
+
+> 2026-10-28 S7：新增未发布的五字段 App Profile 声明 API，已在 Mac mini 完成回归与 Bootstrap 合成保存／恢复联调。见 [实现记录](docs/implementation-20261028-s7.md)。本机正式安装尚未升级。
+
 管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。
 Claudespace 托管资源正文；Profile 选择配置和资源运行参数；Machine 提供本机绑定。
 

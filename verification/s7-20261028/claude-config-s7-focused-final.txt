@@ -1,0 +1,17 @@
+test_changing_selected_profile_cannot_reuse_the_old_reviewed_plan (test_app_profile_api.AppProfileApiTests.test_changing_selected_profile_cannot_reuse_the_old_reviewed_plan) ... ok
+test_external_profile_patch_machine_and_selection_edits_make_review_stale (test_app_profile_api.AppProfileApiTests.test_external_profile_patch_machine_and_selection_edits_make_review_stale) ... ok
+test_fault_during_profile_commit_is_not_reported_as_saved_and_restores_original (test_app_profile_api.AppProfileApiTests.test_fault_during_profile_commit_is_not_reported_as_saved_and_restores_original) ... ok
+test_inspect_projects_only_selected_five_fields_and_reads_no_native (test_app_profile_api.AppProfileApiTests.test_inspect_projects_only_selected_five_fields_and_reads_no_native) ... ok
+test_noop_preserves_yaml_comments_and_does_not_create_execution_history (test_app_profile_api.AppProfileApiTests.test_noop_preserves_yaml_comments_and_does_not_create_execution_history) ... ok
+test_outside_profile_and_native_data_alias_fail_before_profile_read (test_app_profile_api.AppProfileApiTests.test_outside_profile_and_native_data_alias_fail_before_profile_read) ... ok
+test_pending_fileplan_rechecks_sources_before_any_write (test_app_profile_api.AppProfileApiTests.test_pending_fileplan_rechecks_sources_before_any_write) ... ok
+test_preview_then_write_has_same_plan_changes_backup_and_separate_native_apply (test_app_profile_api.AppProfileApiTests.test_preview_then_write_has_same_plan_changes_backup_and_separate_native_apply) ... ok
+test_repository_selection_is_authoritative_and_never_switched (test_app_profile_api.AppProfileApiTests.test_repository_selection_is_authoritative_and_never_switched) ... ok
+test_schema_requires_no_machine_and_uses_exact_field_authority (test_app_profile_api.AppProfileApiTests.test_schema_requires_no_machine_and_uses_exact_field_authority) ... ok
+test_unknown_wrong_typed_duplicate_and_overlapping_patch_rejected_without_leaks (test_app_profile_api.AppProfileApiTests.test_unknown_wrong_typed_duplicate_and_overlapping_patch_rejected_without_leaks) ... ok
+test_write_requires_exact_reviewed_plan_and_explicit_absolute_inputs (test_app_profile_api.AppProfileApiTests.test_write_requires_exact_reviewed_plan_and_explicit_absolute_inputs) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.106s
+
+OK

@@ -68,19 +68,35 @@ class NativeAppSmoke(unittest.TestCase):
             self.assertNotIn('LOCAL_ONLY', json.dumps(plan.report))
             result = plan.apply(root / 'state')
             if app == 'claude-desktop':
-                info = plistlib.loads((Path(application) / 'Contents/Info.plist').read_bytes())
-                if info['CFBundleShortVersionString'] == '3.6556.2':
+                audit = next(row for row in plan.report['checks'] if row['name'] == 'app_preference_interface')
+                reviewed = audit.get('reviewed_version')
+                if reviewed in ('3.6556.2', '4.29.0', '4.4212.0', '4.16336.0', '4.23118.0'):
                     # Execute only selected, hash-pinned native readers/setters
                     # with in-memory dependencies, never the Electron entrypoint.
                     resources = Path(application) / 'Contents/Resources'
-                    module = '.vite/build/index.chunk-jPKPzV-P.js'
-                    source = asar_entries((resources / 'app.asar').read_bytes(), [module])[module]
+                    new_layout = reviewed != '3.6556.2'
+                    module = {
+                        '3.6556.2': '.vite/build/index.chunk-jPKPzV-P.js',
+                        '4.29.0': '.vite/build/index.chunk-C7NkbHFq.js',
+                        '4.4212.0': '.vite/build/index.chunk-m4oMImJ-.js',
+                        '4.16336.0': '.vite/build/index.chunk-Du-Wqi0E.js',
+                        '4.23118.0': '.vite/build/index.chunk-BBUaTQ8d.js',
+                    }[reviewed]
+                    archive = (resources / 'app.asar').read_bytes()
+                    source = asar_entries(archive, [module])[module]
                     source_path = root / 'source.js'
                     source_path.write_bytes(source)
                     files = {p.relative_to(native).as_posix(): p.read_text() for p in native.rglob('*.json')}
-                    proc = subprocess.run(['node', str(Path(__file__).with_name('claude_desktop_36556_probe.cjs')), str(source_path)],
+                    if new_layout:
+                        catalog_paths = ['resources/i18n/' + name + '.json' for name in ('en-US', 'fr-FR', 'zh-Hans', 'zh-Hant')]
+                        catalogs = [Path(name).name for name in asar_entries(archive, catalog_paths)]
+                    else:
+                        catalogs = [p.name for p in resources.glob('*.json')]
+                    source_probe = ('claude_desktop_423118_probe.cjs' if reviewed == '4.23118.0' else 'claude_desktop_4x_probe.cjs' if reviewed in ('4.4212.0', '4.16336.0')
+                                    else 'claude_desktop_429_probe.cjs' if new_layout else 'claude_desktop_36556_probe.cjs')
+                    proc = subprocess.run(['node', str(Path(__file__).with_name(source_probe)), str(source_path)],
                                           input=json.dumps({'files': files, 'settings': settings,
-                                                            'catalogs': [p.name for p in resources.glob('*.json')]}),
+                                                            'catalogs': catalogs}),
                                           capture_output=True, text=True, timeout=30)
                     self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
                     print(proc.stdout.strip())
@@ -163,3 +179,14 @@ class NativeAppSmoke(unittest.TestCase):
     def test_claude_existing_third_party_feature_preferences(self):
         self.exercise('claude-desktop', os.environ.get('CLAUDE_CONFIG_CLAUDE_APPLICATION', '/Applications/Claude.app'),
                       {'chatTabEnabled': True, 'autoModeEnabled': False, 'builtinBrowserEnabled': True}, features=True)
+
+    def test_claude_desktop_home_round_trip(self):
+        from claude_config.core.app_native import DESKTOP_HOME_AUDITS
+        application = os.environ.get('CLAUDE_CONFIG_CLAUDE_APPLICATION', '/Applications/Claude.app')
+        checks = AppProbe().check('claude-desktop', application, {'desktopHome': 'standard'}, {})
+        if checks[0].get('reviewed_version') not in DESKTOP_HOME_AUDITS:
+            self.skipTest('This source probe requires a reviewed desktopHome interface')
+        for home in ('standard', 'off'):
+            with self.subTest(desktopHome=home):
+                self.exercise('claude-desktop', application,
+                              {'desktopHome': home, 'chatTabEnabled': home == 'off'}, features=True)

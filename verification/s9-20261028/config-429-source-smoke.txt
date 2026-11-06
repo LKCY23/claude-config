@@ -1,0 +1,9 @@
+test_claude_official_appearance_and_language (test_native_app_smoke.NativeAppSmoke.test_claude_official_appearance_and_language) ... ok
+test_claude_existing_third_party_feature_preferences (test_native_app_smoke.NativeAppSmoke.test_claude_existing_third_party_feature_preferences) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.734s
+
+OK
+PASS: pinned 4.29 theme/locale, packed catalog path, feature readers and local/hybrid selection; no GUI
+PASS: pinned 4.29 theme/locale, packed catalog path, feature readers and local/hybrid selection; no GUI

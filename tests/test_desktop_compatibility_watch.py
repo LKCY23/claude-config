@@ -97,28 +97,48 @@ class ReleaseTests(unittest.TestCase):
 
 
 class PublisherTests(unittest.TestCase):
-    def test_existing_open_or_closed_pr_is_never_rewritten(self):
-        for state in ['open', 'closed']:
-            with patch.object(publisher, 'api', return_value=[{'state': state, 'html_url': 'https://github.com/example/pr/1'}]) as api:
-                result = publisher.publish('owner/repo', {'release': release(), 'status': 'needs-review'})
-                self.assertEqual(result['status'], 'existing-' + state)
-                self.assertEqual(api.call_count, 1)
+    def test_existing_closed_pr_is_not_reopened(self):
+        with patch.object(publisher, 'api', return_value=[{'state': 'closed', 'html_url': 'url'}]) as api:
+            self.assertEqual(publisher.publish('owner/repo', {'release': release(), 'status': 'needs-review'})['status'], 'existing-closed')
+            self.assertEqual(api.call_count, 1)
 
-    def test_known_compatible_release_creates_no_pr(self):
+    def test_existing_open_pr_requests_checks_without_rewriting(self):
+        pr = {'number': 1, 'state': 'open', 'html_url': 'url', 'head': {'sha': 'a'*40, 'repo': {'full_name': 'owner/repo'}}}
+        with patch.object(publisher, 'api', side_effect=[[pr], {'default_branch': 'master'}, {'statuses': []}, None]) as api:
+            result = publisher.publish('owner/repo', {'release': release(), 'status': 'needs-review'})
+            self.assertTrue(result['validation_requested'])
+            self.assertTrue(api.call_args.args[0].endswith('/dispatches'))
+            self.assertEqual(api.call_args.args[1]['inputs'], {'pr': '1', 'head': 'a'*40})
+
+    def test_existing_validation_deduplicates_unknown_interface_failures(self):
+        pr = {'number': 1, 'head': {'sha': 'a'*40, 'repo': {'full_name': 'owner/repo'}}}
+        statuses = [{'context': c, 'state': 'failure'} for c in ['claude-config/package','claude-config/desktop']]
+        with patch.object(publisher, 'api', return_value={'statuses': statuses}) as api:
+            self.assertFalse(publisher.request_validation('owner/repo', pr, 'master'))
+            self.assertEqual(api.call_count, 1)
+
+    def test_successful_but_stale_base_is_revalidated(self):
+        pr={'number':1,'head':{'sha':'a'*40,'repo':{'full_name':'owner/repo'}}}
+        statuses=[{'context':c,'state':'success'} for c in ['claude-config/package','claude-config/desktop']]
+        with patch.object(publisher,'api',side_effect=[{'statuses':statuses},{'mergeable_state':'behind'},None]) as api:
+            self.assertTrue(publisher.request_validation('owner/repo',pr,'master'))
+            self.assertTrue(api.call_args.args[0].endswith('/dispatches'))
+
+    def test_failed_report_creates_no_pr(self):
         with patch.object(publisher, 'api') as api:
-            self.assertEqual(publisher.publish('owner/repo', {'release': release(), 'status': 'compatible'})['status'], 'no-pr-needed')
+            self.assertEqual(publisher.publish('owner/repo', {'release': release(), 'status': 'failed'})['status'], 'no-pr-needed')
             api.assert_not_called()
 
-    def test_new_report_creates_only_draft_and_human_handoff(self):
-        responses = [[], {'default_branch': 'master'}, {'object': {'sha': 'base'}}, {'tree': {'sha': 'base-tree'}},
-                     {'sha': 'blob'}, {'sha': 'tree'}, {'sha': 'commit'}, {}, {'html_url': 'https://github.com/owner/repo/pull/1'}]
-        with patch.object(publisher, 'api', side_effect=responses) as api:
-            publisher.publish('owner/repo', {'release': release(), 'status': 'needs-review'})
-            call = api.call_args_list[-1]
-            payload = call.args[1]
-            self.assertTrue(payload['draft'])
-            self.assertIn('post this as a new PR comment', payload['body'])
-            self.assertFalse(any('/comments' in c.args[0] or '/merge' in c.args[0] for c in api.call_args_list))
+    def test_unknown_draft_and_compatible_ready_both_request_validation(self):
+        for status, draft in [('needs-review', True), ('compatible', False)]:
+            pr = {'number': 1, 'html_url': 'url', 'head': {'sha': 'a'*40, 'repo': {'full_name': 'owner/repo'}}}
+            responses = [[], {'default_branch': 'master'}, {'object': {'sha': 'base'}}, {'tree': {'sha': 'base-tree'}},
+                         {'sha': 'blob'}, {'sha': 'tree'}, {'sha': 'commit'}, {}, pr, {'statuses': []}, None]
+            with patch.object(publisher, 'api', side_effect=responses) as api:
+                result = publisher.publish('owner/repo', {'release': release(), 'status': status})
+                self.assertEqual(api.call_args_list[8].args[1]['draft'], draft)
+                self.assertTrue(result['validation_requested'])
+                self.assertFalse(any('/comments' in c.args[0] or '/merge' in c.args[0] for c in api.call_args_list))
 
 
 if __name__ == '__main__':

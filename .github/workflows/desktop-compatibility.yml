@@ -3,6 +3,14 @@ on:
   pull_request:
     paths:
       - 'compatibility/claude-desktop/*.json'
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      head:
+        type: string
+        required: false
   workflow_dispatch:
     inputs:
       version:
@@ -19,9 +27,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.head || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+        with:
+          enable-cache: false
       - run: |
           uv venv --python 3.11
           uv pip install -e . -c constraints.txt

@@ -18,18 +18,39 @@ def api(path, payload=None):
                           capture_output=True, text=True, timeout=40)
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip())
-    return json.loads(proc.stdout)
+    return json.loads(proc.stdout) if proc.stdout.strip() else None
+
+
+
+def request_validation(repo, pr, base):
+    sha = pr['head']['sha']
+    if pr['head']['repo']['full_name'] != repo: raise ValueError('Cannot validate a fork as a bot report')
+    latest = {}
+    for row in api(f'repos/{repo}/commits/{sha}/status')['statuses']:
+        latest.setdefault(row['context'], row['state'])
+    contexts = ('claude-config/package', 'claude-config/desktop')
+    if all(context in latest for context in contexts):
+        if not all(latest[c] == 'success' for c in contexts): return False
+        current = api(f"repos/{repo}/pulls/{pr['number']}")
+        if current.get('mergeable_state') != 'behind': return False
+    api(f'repos/{repo}/actions/workflows/pr-validation.yml/dispatches',
+        {'ref': base, 'inputs': {'pr': str(pr['number']), 'head': sha}})
+    return True
 
 
 def publish(repo, report):
     release = validate_release(report['release'])
-    if report['status'] != 'needs-review':
+    if report['status'] not in ('needs-review', 'compatible'):
         return {'status': 'no-pr-needed'}
     branch = 'compatibility/claude-desktop-' + release['version']
     owner = repo.split('/')[0]
     prior = api(f'repos/{repo}/pulls?state=all&head={owner}:{branch}')
     if prior:
-        return {'status': 'existing-' + prior[0]['state'], 'url': prior[0]['html_url']}
+        result = {'status': 'existing-' + prior[0]['state'], 'url': prior[0]['html_url']}
+        if prior[0]['state'] == 'open':
+            base = api(f'repos/{repo}')['default_branch']
+            result['validation_requested'] = request_validation(repo, prior[0], base)
+        return result
     base = api(f'repos/{repo}')['default_branch']
     head = api(f'repos/{repo}/git/ref/heads/{base}')['object']['sha']
     commit = api(f'repos/{repo}/git/commits/{head}')
@@ -43,7 +64,9 @@ def publish(repo, report):
                                           'tree': tree['sha'], 'parents': [head]})
     # Ref creation fails rather than replacing any existing repair work.
     api(f'repos/{repo}/git/refs', {'ref': 'refs/heads/' + branch, 'sha': new['sha']})
-    body = f'''Claude Desktop **{release['version']}** has a valid official archive and signer, but its configuration interface needs review. This is not proof that its settings are incompatible.
+    compatible = report['status'] == 'compatible'
+    status_text = 'passed the current interface and smoke checks' if compatible else 'requires configuration-interface review; this is not proof that its settings are incompatible'
+    body = f'''Claude Desktop **{release['version']}** has a valid official archive and signer and {status_text}.
 
 Evidence: `{path}`. The archive URL and checksum pin the exact release for reproduction. No application code, account data or API keys are committed.
 
@@ -53,13 +76,13 @@ To request a fix with your connected subscription, **post this as a new PR comme
 @codex Follow .github/codex/desktop-compatibility.md and audit compatibility/claude-desktop/{release['version']}.json. Determine whether the five managed preferences still have the same storage and behavior, implement only the necessary adaptation, and add independent regression evidence. Do not merely replace a hash or weaken checks. Push the fix to this PR and report any macOS checks you cannot run.
 ```
 
-The report alone is not a fix. Keep this PR in draft until the dedicated Desktop compatibility workflow passes. Use its manual run with `version={release['version']}` and branch `{branch}` if GitHub does not start or requires approval for workflows on this bot-created PR. After the human-requested Codex task pushes changes, rerun both package CI and Desktop compatibility checks.
+The report alone is not a fix. Trusted default-branch validation is requested automatically for this exact PR head, including the package matrix and pinned Desktop release. Unknown interfaces remain draft and blocked. Manual recovery: run `pr-validation.yml` from the default branch with this PR number and full current head SHA.
 
-No automatic Codex repair request, merge, release or machine upgrade is performed.
+Only a bot-owned, report-only update with compatible evidence and passing exact-head package/native checks is eligible for auto-merge. Interface or code changes require review. No automatic Codex repair request, release or machine upgrade is performed.
 '''
     pr = api(f'repos/{repo}/pulls', {'title': 'Audit Claude Desktop ' + release['version'] + ' compatibility',
-                                   'head': branch, 'base': base, 'body': body, 'draft': True})
-    return {'status': 'created', 'url': pr['html_url']}
+                                   'head': branch, 'base': base, 'body': body, 'draft': not compatible})
+    return {'status': 'created', 'url': pr['html_url'], 'validation_requested': request_validation(repo, pr, base)}
 
 
 if __name__ == '__main__':

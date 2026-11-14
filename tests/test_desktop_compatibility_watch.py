@@ -117,6 +117,13 @@ class PublisherTests(unittest.TestCase):
             self.assertFalse(publisher.request_validation('owner/repo', pr, 'master'))
             self.assertEqual(api.call_count, 1)
 
+    def test_successful_but_stale_base_is_revalidated(self):
+        pr={'number':1,'head':{'sha':'a'*40,'repo':{'full_name':'owner/repo'}}}
+        statuses=[{'context':c,'state':'success'} for c in ['claude-config/package','claude-config/desktop']]
+        with patch.object(publisher,'api',side_effect=[{'statuses':statuses},{'mergeable_state':'behind'},None]) as api:
+            self.assertTrue(publisher.request_validation('owner/repo',pr,'master'))
+            self.assertTrue(api.call_args.args[0].endswith('/dispatches'))
+
     def test_failed_report_creates_no_pr(self):
         with patch.object(publisher, 'api') as api:
             self.assertEqual(publisher.publish('owner/repo', {'release': release(), 'status': 'failed'})['status'], 'no-pr-needed')

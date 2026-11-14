@@ -25,9 +25,10 @@ class Hub:
     repo = 'owner/repo'
     def __init__(self):
         self.pr = pr(); self.files = [{'filename': 'compatibility/claude-desktop/3.6556.2.json', 'status': 'added'}]
-        self.report = report(); self.posts=[]; self.commands=[]
+        self.report = report(); self.posts=[]; self.commands=[]; self.updates=[]
     def api(self, method, path, payload=None):
         if method == 'POST': self.posts.append((path,payload)); return None
+        if method == 'PUT': self.updates.append((path,payload)); return None
         if path == '': return {'default_branch': 'master', 'allow_auto_merge': True}
         if '/files?' in path: return self.files
         if path.startswith('pulls/'): return self.pr
@@ -41,6 +42,12 @@ class AutomationTests(unittest.TestCase):
         h=Hub();self.assertIn('auto-merge-requested',m.finish(h,1,'a'*40,'success','success','url'))
         self.assertEqual(h.commands,[('merge','1','--auto','--squash','--match-head-commit','a'*40)])
         self.assertTrue(all(p['state']=='success' for _,p in h.posts))
+
+    def test_verified_report_behind_main_requests_guarded_update_not_merge(self):
+        h=Hub();h.pr['mergeable_state']='behind'
+        self.assertIn('base-update-requested',m.finish(h,1,'a'*40,'success','success','url'))
+        self.assertEqual(h.updates,[('pulls/1/update-branch',{'expected_head_sha':'a'*40})])
+        self.assertFalse(h.commands)
 
     def test_unknown_empty_checks_wrong_archive_and_drafts_require_review(self):
         for edit in [lambda h:h.report.update(status='needs-review'),lambda h:h.report.update(native_smoke='not-run'),

@@ -28,8 +28,11 @@ def request_validation(repo, pr, base):
     latest = {}
     for row in api(f'repos/{repo}/commits/{sha}/status')['statuses']:
         latest.setdefault(row['context'], row['state'])
-    if all(context in latest for context in ('claude-config/package', 'claude-config/desktop')):
-        return False
+    contexts = ('claude-config/package', 'claude-config/desktop')
+    if all(context in latest for context in contexts):
+        if not all(latest[c] == 'success' for c in contexts): return False
+        current = api(f"repos/{repo}/pulls/{pr['number']}")
+        if current.get('mergeable_state') != 'behind': return False
     api(f'repos/{repo}/actions/workflows/pr-validation.yml/dispatches',
         {'ref': base, 'inputs': {'pr': str(pr['number']), 'head': sha}})
     return True

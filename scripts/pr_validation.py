@@ -111,6 +111,10 @@ def finish(hub, number, sha, package, desktop, url):
         fresh = hub.api('GET', 'pulls/'+str(pr['number']))
         if not eligible(fresh, hub.repo, meta['default_branch'], sha): return 'superseded'
         if not report_only_compatible(fresh, files, report): return 'ready-for-review'
+        if fresh.get('mergeable_state') == 'behind':
+            disable_owned_auto_merge(hub, fresh)
+            hub.api('PUT', 'pulls/'+str(pr['number'])+'/update-branch', {'expected_head_sha': sha})
+            return 'base-update-requested: validate the new head before merging'
         hub.command('merge', str(pr['number']), '--auto', '--squash', '--match-head-commit', sha)
         return 'auto-merge-requested: verified report only'
     return 'ready-for-review' if passed else 'needs-attention'

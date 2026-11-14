@@ -67,6 +67,16 @@ class BaselineTests(ResourceFixture):
         self.assertEqual(len(plan.report['impacts']), 2)
         self.assertFalse(next(row for row in plan.report['impacts'] if row['agent_type'] == 'codex')['bound'])
 
+    def test_plugin_lock_yaml_is_not_treated_as_a_profile(self):
+        self.prepared()
+        lock = self.data / 'profiles/agents/claude-code/work.plugins.lock.yaml'
+        lock.write_text(yaml.safe_dump({'schema_version': 1,
+                                        'agent_type': 'claude-code',
+                                        'profile': 'profiles/agents/claude-code/work.yaml',
+                                        'plugins': {}}, sort_keys=False))
+        plan = self.plan()
+        self.assertTrue(plan.report['ready'], plan.report['blockers'])
+
     def test_release_identity_digest_and_validation_failures_block(self):
         self.prepared()
         original = deepcopy(self.record)

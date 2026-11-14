@@ -9,7 +9,8 @@ from .catalog import CatalogResolver, git, verify_git
 from .catalog_schema import validate_catalog
 from .merge import MergePlan
 from .native import parse_json, parse_yaml, snapshot_read
-from .schema import COMMIT, RESOURCE_KINDS, closed, require, validate_catalogs, validate_machine, validate_profile, within
+from .schema import (COMMIT, RESOURCE_KINDS, closed, profile_yaml_files, require,
+                     validate_catalogs, validate_machine, validate_profile, within)
 from .transaction import FileChange, FilePlan
 
 
@@ -76,7 +77,7 @@ def adopt_baseline(manager, alias, commit, checkout, release_record, source_map=
     for agent in ('claude-code', 'codex'):
         directory = manager.root / 'profiles/agents' / agent
         directories.add(directory)
-        for path in sorted(directory.glob('*.yaml')):
+        for path in profile_yaml_files(directory):
             profile, _, _ = manager._read(path, parse_yaml)
             validate_profile(profile, expected=agent)
             selections = {ref for entries in profile.get('resources', {}).values() for ref in entries}

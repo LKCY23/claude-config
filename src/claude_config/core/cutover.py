@@ -254,7 +254,10 @@ class Cutover:
         for change in files.values():
             require(not any(change.path.resolve().is_relative_to(root) for root in source_roots), 'Cutover write overlaps a fixed source repository')
         def inventory_guard():
-            members = [str(self.root / 'catalogs.yaml'), *(str(path) for path in sorted((self.root / 'profiles').rglob('*.yaml'))), *(str(path) for path in sorted((self.root / 'machines').glob('*.yaml')))]
+            members = [str(self.root / 'catalogs.yaml'),
+                       *(str(path) for path in profile_yaml_files(self.root / 'profiles', recursive=True)),
+                       *(str(path) for path in sorted((self.root / 'profiles').rglob('*.plugins.lock.yaml'))),
+                       *(str(path) for path in sorted((self.root / 'machines').glob('*.yaml')))]
             require(members == self.data_members, 'Profile data inventory changed')
         def lifecycle_guard():
             if report['ready']:

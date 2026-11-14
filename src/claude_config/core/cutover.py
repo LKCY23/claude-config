@@ -12,7 +12,8 @@ from .fields import validate_settings
 from .manager import ProfileManager
 from .merge import fingerprint
 from .native import parse_native, parse_yaml, render_native, snapshot_read
-from .schema import closed, require, state_directory, validate_catalogs, validate_machine, validate_machine_profiles, validate_profile
+from .schema import (closed, profile_yaml_files, require, state_directory, validate_catalogs,
+                     validate_machine, validate_machine_profiles, validate_profile)
 from .machine_profiles import MachineProfiles
 from .transaction import FileChange, FilePlan, file_fingerprint
 from .execution_context import progress
@@ -73,7 +74,7 @@ class Cutover:
     def data_changes(self):
         target = Path(self.spec['data_target'])
         require(not target.is_symlink(), 'Configuration data target cannot be a symlink')
-        profiles = sorted((self.root / 'profiles').rglob('*.yaml'))
+        profiles = profile_yaml_files(self.root / 'profiles', recursive=True)
         require(bool(profiles), 'Cutover data has no independent Profiles')
         files = [self.root / 'catalogs.yaml', *profiles, *sorted((self.root / 'machines').glob('*.yaml'))]
         changes = []

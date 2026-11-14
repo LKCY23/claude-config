@@ -15,6 +15,7 @@ REF = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*@[A-Za-z0-9][A-Za-z0-9_.-]*\Z')
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*\Z')
 COMMIT = re.compile(r'[0-9a-f]{40}\Z')
 POLICIES = ('source_wins', 'keep_target', 'fail_if_different')
+PLUGIN_LOCK_SUFFIX = '.plugins.lock.yaml'
 
 
 class SchemaError(ValueError):
@@ -24,6 +25,14 @@ class SchemaError(ValueError):
 def require(condition, message):
     if not condition:
         raise SchemaError(message)
+
+
+def profile_yaml_files(root, *, recursive=False):
+    """Return Profile YAML files without adjacent per-Profile plugin locks."""
+    root = Path(root)
+    pattern = '**/*.yaml' if recursive else '*.yaml'
+    return sorted(path for path in root.glob(pattern)
+                  if path.is_file() and not path.name.endswith(PLUGIN_LOCK_SUFFIX))
 
 
 def mapping(value, label):

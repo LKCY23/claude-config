@@ -81,6 +81,18 @@ class FrameworkCutoverTests(CutoverFixture):
         self.assertEqual(calls, [plan])
         self.assertTrue(plan.report['ready'], plan.report['blockers'])
 
+    def test_cutover_copies_plugin_lock_with_profile(self):
+        lock = self.data / 'profiles/agents/codex/work.plugins.lock.yaml'
+        lock.write_text(yaml.safe_dump({'schema_version': 1,
+                                        'agent_type': 'codex',
+                                        'profile': 'profiles/agents/codex/work.yaml',
+                                        'plugins': {}}, sort_keys=False))
+        plan = self.coordinator().plan()
+        self.assertTrue(plan.report['ready'], plan.report['blockers'])
+        plan.apply(self.state)
+        self.assertEqual((self.target_data / 'profiles/agents/codex/work.plugins.lock.yaml').read_bytes(),
+                         lock.read_bytes())
+
     def test_source_drift_before_native_stage_blocks_install_and_restores_prior_files(self):
         package = self.add('tiny', 'plugin', {'.codex-plugin/plugin.json': json.dumps({'name': 'tiny', 'version': '1.0.0'}),
                                              'body.txt': 'reviewed'}, '.codex-plugin/plugin.json')

@@ -12,7 +12,9 @@ from .fields import validate_settings
 from .manager import ProfileManager
 from .merge import fingerprint
 from .native import parse_native, parse_yaml, render_native, snapshot_read
-from .schema import closed, require, state_directory, validate_catalogs, validate_machine, validate_machine_profiles, validate_profile
+from .plugin_locks import validate_locks
+from .schema import (closed, profile_yaml_files, require, state_directory, validate_catalogs,
+                     validate_machine, validate_machine_profiles, validate_profile)
 from .machine_profiles import MachineProfiles
 from .transaction import FileChange, FilePlan, file_fingerprint
 from .execution_context import progress
@@ -73,9 +75,11 @@ class Cutover:
     def data_changes(self):
         target = Path(self.spec['data_target'])
         require(not target.is_symlink(), 'Configuration data target cannot be a symlink')
-        profiles = sorted((self.root / 'profiles').rglob('*.yaml'))
+        profiles = profile_yaml_files(self.root / 'profiles', recursive=True)
+        plugin_locks = sorted((self.root / 'profiles').rglob('*.plugins.lock.yaml'))
         require(bool(profiles), 'Cutover data has no independent Profiles')
-        files = [self.root / 'catalogs.yaml', *profiles, *sorted((self.root / 'machines').glob('*.yaml'))]
+        files = [self.root / 'catalogs.yaml', *profiles, *plugin_locks,
+                 *sorted((self.root / 'machines').glob('*.yaml'))]
         changes = []
         self.data_decisions = []
         ignore_path = target / '.gitignore'
@@ -102,6 +106,13 @@ class Cutover:
                 validator = lambda data: validate_catalogs(parse_yaml(data))
             elif relative.parts[0] == 'machines':
                 validator = lambda data, identity=relative.stem: validate_machine_profiles(parse_yaml(data), identity)
+            elif relative.name.endswith('.plugins.lock.yaml'):
+                parts = relative.parts
+                require(len(parts) == 4 and parts[:2] == ('profiles', 'agents'), 'Invalid plugin lock layout')
+                agent = parts[2]
+                profile_name = relative.name[:-len('.plugins.lock.yaml')] + '.yaml'
+                profile = str(Path('profiles') / 'agents' / agent / profile_name)
+                validator = lambda data, agent=agent, profile=profile: validate_locks(parse_yaml(data), agent, profile)
             else:
                 parts = relative.parts
                 require(len(parts) == 4 and parts[:1] == ('profiles',) and parts[1] in ('agents', 'apps'), 'Invalid data Profile layout')
@@ -243,7 +254,10 @@ class Cutover:
         for change in files.values():
             require(not any(change.path.resolve().is_relative_to(root) for root in source_roots), 'Cutover write overlaps a fixed source repository')
         def inventory_guard():
-            members = [str(self.root / 'catalogs.yaml'), *(str(path) for path in sorted((self.root / 'profiles').rglob('*.yaml'))), *(str(path) for path in sorted((self.root / 'machines').glob('*.yaml')))]
+            members = [str(self.root / 'catalogs.yaml'),
+                       *(str(path) for path in profile_yaml_files(self.root / 'profiles', recursive=True)),
+                       *(str(path) for path in sorted((self.root / 'profiles').rglob('*.plugins.lock.yaml'))),
+                       *(str(path) for path in sorted((self.root / 'machines').glob('*.yaml')))]
             require(members == self.data_members, 'Profile data inventory changed')
         def lifecycle_guard():
             if report['ready']:

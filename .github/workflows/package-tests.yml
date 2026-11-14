@@ -29,7 +29,7 @@ jobs:
           cd "$RUNNER_TEMP"
           bash "$GITHUB_WORKSPACE/scripts/setup-cloud.sh"
       - name: Build reproducible wheel
-        run: SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$GITHUB_SHA")" uv build
+        run: SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" uv build
       - run: uv tool install --managed-python --python '${{ matrix.python }}' -c constraints.txt dist/*.whl
       - name: Test modules and installed command
         run: |

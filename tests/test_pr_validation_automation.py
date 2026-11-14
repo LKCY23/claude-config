@@ -81,6 +81,7 @@ class AutomationTests(unittest.TestCase):
             self.assertEqual(value['jobs'][name]['with']['head'],'${{ needs.select.outputs.head }}')
         for name in ['select','report']:
             self.assertEqual(value['jobs'][name]['steps'][0]['with']['ref'],'${{ github.sha }}')
+        self.assertIn('git show -s --format=%ct HEAD', (root/'package-tests.yml').read_text())
         for name in ['package-tests.yml','desktop-compatibility.yml']:
             data=yaml.load((root/name).read_text(),Loader=yaml.BaseLoader)
             self.assertEqual(data['permissions'],{'contents':'read'})

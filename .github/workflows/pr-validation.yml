@@ -1,0 +1,80 @@
+name: Validate PR head
+on:
+  workflow_run:
+    workflows: [Package and verify CLI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        type: string
+        required: true
+      head:
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: config-pr-head-${{ inputs.head || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+jobs:
+  select:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+      statuses: write
+    outputs:
+      eligible: ${{ steps.target.outputs.eligible }}
+      number: ${{ steps.target.outputs.number }}
+      head: ${{ steps.target.outputs.head }}
+      version: ${{ steps.target.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr }}
+          PR_HEAD: ${{ inputs.head }}
+        run: python3 scripts/pr_validation.py select --repo "$GITHUB_REPOSITORY"
+  package:
+    needs: select
+    if: needs.select.outputs.eligible == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/package-tests.yml
+    with:
+      head: ${{ needs.select.outputs.head }}
+  desktop:
+    needs: select
+    if: needs.select.outputs.eligible == 'true' && needs.select.outputs.version != ''
+    permissions:
+      contents: read
+    uses: ./.github/workflows/desktop-compatibility.yml
+    with:
+      head: ${{ needs.select.outputs.head }}
+      version: ${{ needs.select.outputs.version }}
+  report:
+    needs: [select, package, desktop]
+    if: ${{ always() && needs.select.outputs.eligible == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.select.outputs.number }}
+          PR_HEAD: ${{ needs.select.outputs.head }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          DESKTOP_RESULT: ${{ needs.desktop.result }}
+        run: python3 scripts/pr_validation.py report --repo "$GITHUB_REPOSITORY"

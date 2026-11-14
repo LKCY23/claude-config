@@ -78,6 +78,14 @@ class AutomationTests(unittest.TestCase):
         with self.assertRaises(ValueError):m.changed_files(h,h.pr)
         with self.assertRaises(ValueError):m.report_version(h.files+[{'filename':'compatibility/claude-desktop/1.2.3.json'}])
 
+    def test_large_code_pr_file_list_is_paginated_not_truncated(self):
+        from unittest.mock import Mock
+        h=Hub();h.pr['changed_files']=101
+        rows=[{'filename':f'src/file{i}.py','status':'modified'} for i in range(101)]
+        h.api=Mock(side_effect=[rows[:100],rows[100:]])
+        self.assertEqual(m.changed_files(h,h.pr),rows)
+        self.assertTrue(h.api.call_args.args[1].endswith('page=2'))
+
     def test_workflow_privilege_separation_and_exact_checkout(self):
         root=Path(__file__).resolve().parents[1]/'.github/workflows'
         value=yaml.load((root/'pr-validation.yml').read_text(),Loader=yaml.BaseLoader)

@@ -56,9 +56,16 @@ def select(hub, event, number='', sha=''):
 
 
 def changed_files(hub, pr):
-    files = hub.api('GET', 'pulls/'+str(pr['number'])+'/files?per_page=100')
-    if len(files) != pr['changed_files'] or len(files) >= 100:
-        raise ValueError('Complete PR file list required; split changes larger than 99 files')
+    count = pr['changed_files']
+    if not isinstance(count, int) or not 0 <= count <= 3000:
+        raise ValueError('PR exceeds GitHub file-list limit; explicit review required')
+    files = []
+    for page in range(1, (count + 99) // 100 + 1):
+        rows = hub.api('GET', 'pulls/'+str(pr['number'])+'/files?per_page=100&page='+str(page))
+        files.extend(rows)
+        if len(rows) < 100: break
+    if len(files) != count or len({row['filename'] for row in files}) != count:
+        raise ValueError('Complete, unambiguous PR file list required')
     return files
 
 

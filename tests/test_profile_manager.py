@@ -28,7 +28,7 @@ class FakeProbe:
 
 class ManagerTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(prefix='profile-env-')
         self.root = Path(self.temp.name)
         self.data = self.root / 'data'
         self.state = self.root / 'state'
@@ -82,7 +82,11 @@ class ManagerTests(unittest.TestCase):
         self.assertFalse(self.state.exists())
         self.assertEqual(path.read_bytes(), before)
         self.assertNotIn('LOCAL_ONLY', json.dumps(plan.report))
-        self.assertNotIn('env', json.dumps(self.probe.calls, default=str))
+        self.assertTrue(self.probe.calls)
+        for _agent, _executable, settings, context in self.probe.calls:
+            self.assertNotIn('env', settings)
+            self.assertNotIn('env', context)
+            self.assertNotIn('LOCAL_ONLY', json.dumps((settings, context), default=str))
         plan.apply(self.state)
         self.assertEqual(json.loads(path.read_text()), {'model': 'selected', 'env': {'ANTHROPIC_AUTH_TOKEN': 'LOCAL_ONLY'}})
         after = path.read_bytes()

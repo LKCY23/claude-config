@@ -16,7 +16,7 @@ from .core.catalog_schema import NAME, validate_catalog
 from .core.manager import ProfileManager
 from .core.native import parse_json, parse_yaml, snapshot_read
 from .core.reporting import build_report, fallback_state_root, save_report, _private_path
-from .core.schema import COMMIT, SchemaError, require, validate_catalogs, validate_profile, within
+from .core.schema import COMMIT, SchemaError, profile_yaml_files, require, validate_catalogs, validate_profile, within
 from .core.transaction import atomic_write
 
 
@@ -131,7 +131,7 @@ def fetch(manager, alias, release, source_map=None, *, report=None):
     prepared = set()
     impacts = []
     for agent in ('claude-code', 'codex'):
-        for path in sorted((manager.root / 'profiles/agents' / agent).glob('*.yaml')):
+        for path in profile_yaml_files(manager.root / 'profiles/agents' / agent):
             profile = manager._read(path, parse_yaml)[0]
             validate_profile(profile, expected=agent)
             selections = {ref for group in profile.get('resources', {}).values() for ref in group}

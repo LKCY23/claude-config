@@ -235,6 +235,11 @@ def validate_catalogs(value):
         require(isinstance(entry['repo'], str) and re.fullmatch(r'[\w.-]+/[\w.-]+', entry['repo']), 'Invalid repository')
         require(isinstance(entry['commit'], str) and COMMIT.fullmatch(entry['commit']), 'Catalog requires a full lowercase commit SHA')
         relative(entry['path'], 'catalog path')
+    entries = value['catalogs']
+    if 'claudespace-external' in entries:
+        repo = entries['claudespace-external']['repo'].lower()
+        pins = {item['commit'] for item in entries.values() if item['repo'].lower() == repo}
+        require(len(pins) == 1, 'Aliased catalogs of the unified repository must share one commit')
     return value
 
 

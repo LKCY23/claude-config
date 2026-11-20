@@ -58,6 +58,34 @@ class BaselineTests(ResourceFixture):
         self.assertFalse(self.native.exists())
         self.assertFalse(self.manager().state_path.exists())
 
+    def test_repository_pair_requires_both_records_and_adopts_once(self):
+        self.prepared()
+        alias = 'claudespace-external'
+        external = self.candidate / 'domains/catalog.json'
+        external.parent.mkdir()
+        external.write_text(json.dumps({**self.catalog, 'name': alias}))
+        run_git(self.candidate, 'add', '.')
+        run_git(self.candidate, 'commit', '-qm', 'paired release')
+        self.commit = run_git(self.candidate, 'rev-parse', 'HEAD')
+        self.write_record()
+        lock = self.data / 'catalogs.yaml'
+        config = yaml.safe_load(lock.read_bytes())
+        config['catalogs'][alias] = {**config['catalogs']['test'], 'path': 'domains'}
+        lock.write_text(yaml.safe_dump(config))
+        self.machine['catalog_roots'][alias] = str(self.repo)
+        self.save_profile()
+        before = lock.read_bytes(), self.machine_path.read_bytes()
+        with self.assertRaises((ValueError, OSError)):
+            self.plan()
+        self.assertEqual(before, (lock.read_bytes(), self.machine_path.read_bytes()))
+        sibling_record = self.record_path.parent / (alias + '.baseline.json')
+        sibling_record.write_text(json.dumps({**self.record, 'catalog_path': 'domains',
+                                               'catalog_sha256': hashlib.sha256(external.read_bytes()).hexdigest()}))
+        self.plan().apply(self.state)
+        self.assertEqual({self.commit}, {row['commit'] for row in yaml.safe_load(lock.read_bytes())['catalogs'].values()})
+        self.assertEqual({str(self.candidate.resolve())}, set(yaml.safe_load(self.machine_path.read_bytes())['catalog_roots'].values()))
+        self.assertTrue(all(change.content == change.path.read_bytes() for change in self.plan().changes))
+
     def test_impacts_include_unbound_profiles_for_both_agents(self):
         self.prepared()
         path = self.data / 'profiles/agents/codex/later.yaml'

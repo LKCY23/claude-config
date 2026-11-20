@@ -10,7 +10,7 @@ import tempfile
 from types import SimpleNamespace
 
 from .profile import ReportParser, UsageError, output_report, report_format
-from .core.baseline import catalog_target, validate_record
+from .core.baseline import baseline_group, catalog_target, validate_record
 from .core.catalog import CatalogResolver, git, verify_git
 from .core.catalog_schema import NAME, validate_catalog
 from .core.manager import ProfileManager
@@ -102,6 +102,18 @@ def fetch(manager, alias, release, source_map=None, *, report=None):
     catalogs, _, _ = manager._read(manager.root / 'catalogs.yaml', lambda raw: validate_catalogs(parse_yaml(raw)))
     require(alias in catalogs['catalogs'] and alias in manager.machine['catalog_roots'],
             'Fetch requires an existing declared and bound catalog')
+    aliases = baseline_group(catalogs, alias)
+    require(len(aliases) == 1 or source_map is None, 'Repository fetch expects stable catalog paths')
+    report['scope'] = [['catalogs', name] for name in aliases]
+    impacts = []
+    for name in [sibling for sibling in aliases if sibling != alias] + [alias]:
+        _fetch_one(manager, name, release, source_map, catalogs, commit, report, aliases)
+        impacts.extend(report['impacts'])
+    report['impacts'] = impacts
+    return report
+
+
+def _fetch_one(manager, alias, release, source_map, catalogs, commit, report, aliases):
     mapping = manager._read(Path(source_map).absolute(), parse_yaml)[0] if source_map else None
     target = catalog_target(catalogs['catalogs'][alias], alias, commit, mapping)
     record_bytes = release_record(target['repo'], commit, alias)
@@ -125,9 +137,11 @@ def fetch(manager, alias, release, source_map=None, *, report=None):
             and catalog_bytes == git(checkout, 'show', commit + ':' + file.relative_to(checkout.resolve()).as_posix()),
             'Prepared catalog differs from the published release record')
     candidate = deepcopy(catalogs)
+    for name in aliases:
+        candidate['catalogs'][name]['commit'] = commit
     candidate['catalogs'][alias] = target
     machine = deepcopy(manager.machine)
-    machine['catalog_roots'][alias] = str(checkout)
+    machine['catalog_roots'].update(dict.fromkeys(aliases, str(checkout)))
     prepared = set()
     impacts = []
     for agent in ('claude-code', 'codex'):

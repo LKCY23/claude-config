@@ -49,6 +49,25 @@ def validate_record(record, target):
             'Unsupported or failed release validation record')
 
 
+def baseline_group(catalogs, alias):
+    entries = catalogs['catalogs']
+    repo = entries[alias]['repo'].lower()
+    if 'claudespace-external' in entries and entries['claudespace-external']['repo'].lower() == repo:
+        return [name for name, entry in entries.items() if entry['repo'].lower() == repo]
+    return [alias]
+
+
+def released_catalog(manager, alias, target, root, release_record):
+    record, _, _ = manager._read(Path(release_record).absolute(), parse_json)
+    validate_record(record, target)
+    file = within(root, target['path']) / 'catalog.json'
+    value, raw, _ = manager._read(file, parse_json)
+    validate_catalog(value)
+    require(value['name'] == alias and raw == git(root, 'show', target['commit'] + ':' + file.relative_to(root).as_posix()), 'Candidate catalog identity or committed bytes differ')
+    require(record['catalog_sha256'] == hashlib.sha256(raw).hexdigest(), 'Release catalog fingerprint differs from prepared contents')
+    return value
+
+
 def adopt_baseline(manager, alias, commit, checkout, release_record, source_map=None):
     require(isinstance(commit, str) and COMMIT.fullmatch(commit), 'Baseline adoption requires a full lowercase commit SHA')
     catalogs_path = manager.root / 'catalogs.yaml'
@@ -57,17 +76,19 @@ def adopt_baseline(manager, alias, commit, checkout, release_record, source_map=
     old = catalogs['catalogs'][alias]
     mapping = manager._read(Path(source_map).absolute(), parse_yaml)[0] if source_map else None
     target = catalog_target(old, alias, commit, mapping)
-    record, _, _ = manager._read(Path(release_record).absolute(), parse_json)
-    validate_record(record, target)
+    aliases = baseline_group(catalogs, alias)
+    require(len(aliases) == 1 or mapping is None, 'Repository adoption expects stable catalog paths')
+    targets = {name: {**catalogs['catalogs'][name], 'commit': commit} for name in aliases}
+    targets[alias] = target
     reference = Path(checkout).absolute()
     root = reference.resolve()
     manager.references[reference] = root
     verify_git(root, target['repo'], commit)
-    file = within(root, target['path']) / 'catalog.json'
-    value, raw, _ = manager._read(file, parse_json)
-    validate_catalog(value)
-    require(value['name'] == alias and raw == git(root, 'show', commit + ':' + file.relative_to(root).as_posix()), 'Candidate catalog identity or committed bytes differ')
-    require(record['catalog_sha256'] == hashlib.sha256(raw).hexdigest(), 'Release catalog fingerprint differs from prepared contents')
+    values = {}
+    for name, selected_target in targets.items():
+        require(name in manager.machine['catalog_roots'], 'Catalog is not bound: ' + name)
+        record_path = Path(release_record) if name == alias else Path(release_record).parent / (name + '.baseline.json')
+        values[name] = released_catalog(manager, name, selected_target, root, record_path)
     checks = [{'name': 'release_record', 'status': 'passed', 'level': 'structural', 'reason': 'Prepared release identity and committed registry bytes verified; no resource business logic is executed'}]
     if mapping:
         checks.append({'name': 'catalog_source_map', 'status': 'passed',
@@ -81,13 +102,13 @@ def adopt_baseline(manager, alias, commit, checkout, release_record, source_map=
             profile, _, _ = manager._read(path, parse_yaml)
             validate_profile(profile, expected=agent)
             selections = {ref for entries in profile.get('resources', {}).values() for ref in entries}
-            selected = [(group, ref) for group, entries in profile.get('resources', {}).items() for ref in entries if ref.split('@')[1] == alias]
+            selected = [(group, ref) for group, entries in profile.get('resources', {}).items() for ref in entries if ref.split('@')[1] in values]
             if not selected:
                 continue
             affected = []
             for group, ref in selected:
-                identifier = ref.split('@')[0]
-                item = value['resources'].get(identifier)
+                identifier, catalog_name = ref.split('@')
+                item = values[catalog_name]['resources'].get(identifier)
                 require(item is not None and item['kind'] == RESOURCE_KINDS[group], 'New baseline removes or reclassifies a selected resource')
                 require(agent in item['compatibility'] and item['compatibility'][agent]['validation']['status'] != 'failed', 'New baseline lacks passing/unevaluated compatibility for an affected Profile')
                 require(all(dep in selections for dep in item['requires'].get('resources', [])), 'New baseline adds an unselected resource dependency')
@@ -95,7 +116,8 @@ def adopt_baseline(manager, alias, commit, checkout, release_record, source_map=
             impacts.append({'profile': path.relative_to(manager.root).as_posix(), 'agent_type': agent, 'resources': affected,
                             'bound': manager.machine['agents'].get(agent, {}).get('profile') == path.relative_to(manager.root).as_posix()})
     candidate = deepcopy(catalogs)
-    candidate['catalogs'][alias] = target
+    candidate['catalogs'].update(targets)
+    roots = dict.fromkeys(aliases, str(root))
     # Parse every affected prepared package, including exact external/submodule
     # sources and dependency cycles, through the existing trusted resolver.
     for impact in impacts:
@@ -109,7 +131,7 @@ def adopt_baseline(manager, alias, commit, checkout, release_record, source_map=
             preview = SimpleNamespace(agent=impact['agent_type'], root=manager.root, state_root=manager.state_root,
                                       machine=deepcopy(manager.machine), sources=manager.sources, references=manager.references, _read=manager._read)
         preview.machine = deepcopy(manager.machine)
-        preview.machine['catalog_roots'][alias] = str(root)
+        preview.machine['catalog_roots'].update(roots)
         resolver = CatalogResolver(preview)
         resolver.catalogs = candidate
         resolver.resolve(profile, selected=set(impact['resources']), source_only=True)
@@ -118,15 +140,17 @@ def adopt_baseline(manager, alias, commit, checkout, release_record, source_map=
         manager.references.update(preview.references)
         checks.append({'name': 'affected_sources', 'status': 'passed', 'profile': impact['profile'], 'reason': 'Exact selected bodies and explicit dependencies are prepared'})
     machine = deepcopy(manager.local_machine)
-    machine['catalog_roots'][alias] = str(root)
-    merge = MergePlan({'catalogs': {alias: target}, 'catalog_roots': {alias: str(root)}},
+    machine['catalog_roots'].update(roots)
+    merge = MergePlan({'catalogs': targets, 'catalog_roots': roots},
                       {'catalogs': catalogs['catalogs'], 'catalog_roots': manager.machine['catalog_roots']},
                       source={'kind': 'released-baseline', 'file': str(release_record)}, destination={'kind': 'catalog-selection'},
-                      scope=['/catalogs/' + alias + '/' + key for key in ('repo', 'commit', 'path')] + ['/catalog_roots/' + alias])
+                      scope=[f'/catalogs/{name}/{key}' for name in aliases for key in ('repo', 'commit', 'path')]
+                            + [f'/catalog_roots/{name}' for name in aliases])
     report = merge.report()
     report.update(operation='adopt-baseline', agent_type=manager.agent, ready=True, impacts=impacts)
     report['catalog_source'] = {'catalog': alias, 'previous': old, 'selected': target,
                                 'source_map': str(source_map) if source_map else None}
+    report['adopted_catalogs'] = aliases
     report['checks'] += checks
     def guard(data):
         verify_git(root, target['repo'], commit)

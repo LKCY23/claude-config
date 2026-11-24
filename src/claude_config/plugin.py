@@ -6,6 +6,7 @@ from .profile import ReportParser, UsageError, report_format
 from .core.manager import ProfileManager
 from .core.plugin_manager import PluginManager
 from .core.schema import SchemaError, require
+from .core.source_transport import DEFAULT_GIT_TRANSPORT, GIT_TRANSPORTS
 from .core.transaction import PlanStale, UnfinishedRun
 from .core.reporting import build_report, encode_json, exit_code, render_text, save_report
 
@@ -63,6 +64,8 @@ def main(argv=None):
         parser.add_argument('--enable', action='store_true', help='Also enable while upgrading; otherwise preserve enablement')
         parser.add_argument('--disabled', action='store_true', help='Install new plugin without enabling it')
         parser.add_argument('--binding', action='append', default=[], metavar='NAME=MACHINE_REFERENCE')
+        parser.add_argument('--git-transport', choices=GIT_TRANSPORTS, default=DEFAULT_GIT_TRANSPORT,
+                            help='Git transport for preparing missing sources (default: gh-https)')
         execution = parser.add_mutually_exclusive_group()
         execution.add_argument('--dry-run', action='store_true')
         execution.add_argument('--write', action='store_true', help='Generate, validate and execute a fresh plan; no manual plan ID needed')
@@ -74,10 +77,10 @@ def main(argv=None):
         query = args.action in ('list', 'status')
         if (args.action == 'list') != (args.plugin is None):
             raise UsageError('list takes no plugin; all other actions require one')
-        if query and (args.version or args.commit or args.enable or args.disabled or args.binding or args.write or args.expect_plan_id):
+        if query and (args.version or args.commit or args.enable or args.disabled or args.binding or args.write or args.expect_plan_id or args.git_transport != DEFAULT_GIT_TRANSPORT):
             raise UsageError('list/status are read-only queries')
-        if args.action in ('enable', 'disable') and (args.version or args.commit or args.enable or args.disabled or args.binding):
-            raise UsageError('enable/disable change usage only, not version or bindings')
+        if args.action in ('enable', 'disable') and (args.version or args.commit or args.enable or args.disabled or args.binding or args.git_transport != DEFAULT_GIT_TRANSPORT):
+            raise UsageError('enable/disable change usage only, not version, bindings, or git transport')
         if args.enable and args.action != 'upgrade' or args.disabled and args.action != 'install' or args.binding and args.action != 'install':
             raise UsageError('Invalid flag for this plugin action')
         bindings = {}
@@ -86,7 +89,7 @@ def main(argv=None):
             require(bool(sep and key and value) and key not in bindings, 'Binding must be a unique NAME=MACHINE_REFERENCE')
             bindings[key] = value
         manager = ProfileManager(args.machine, args.agent)
-        service = PluginManager(manager)
+        service = PluginManager(manager, git_transport=args.git_transport)
         if query:
             report = service.inventory(args.plugin)
         else:

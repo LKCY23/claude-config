@@ -9,9 +9,15 @@
 ```sh
 claude-config fetch-baseline --agent codex --catalog claudespace-candidates \
   --release baseline-<完整40位SHA>
+# 无钥匙串或远程 SSH 会话可显式使用本机 SSH Key：
+claude-config fetch-baseline --agent codex --catalog claudespace-candidates \
+  --release baseline-<完整40位SHA> --git-transport ssh
 ```
 
 命令从 `catalogs.yaml` 指定仓库读取已发布 GitHub Release，核对 tag 的准确提交、`<catalog别名>.baseline.json` 和 Git 中的登记正文。仅获取此 catalog 被各 Agent Profile 明确选择的资源及已声明依赖；候选目录中的其他资源不会自动安装。跨 catalog 依赖须已选择并准备好其来源。
+
+- **Git 传输（`--git-transport`）**：默认为 `gh-https`（HTTPS + `!gh auth git-credential`）；传入 `ssh` 时改用 `git@github.com:<repo>.git` 与 `GIT_SSH_COMMAND='ssh -o BatchMode=yes'`，不修改本机 `~/.ssh` 或 `machine.yaml`。
+- **Release 记录访问**：优先调用 `gh api`；仅当 `gh` 凭据不可用（例如未登录或 SSH 会话钥匙串未解锁）时，自动回退一次公开只读 GitHub HTTPS REST 接口并在报告记录 `public-https-fallback`；私有 Release 仍严格要求有效的 `gh` 凭据。
 
 目录默认在 `<config_dir>/.state/`：
 

@@ -423,6 +423,12 @@ def outcome_lines(report):
                      '来源：' + prepared['source']['repo'] + '@' + prepared['source']['commit'],
                      '准备目录：' + prepared['checkout'], '发布记录：' + prepared['release_record'],
                      '下一步预览采用：' + prepared['adopt_command']]
+            sr = report.get('source_retrieval')
+            if sr:
+                line = f"传输方式：git={sr['git_transport']}，release={sr['release_access']}"
+                if sr.get('release_fallback_reason'):
+                    line += f"（{sr['release_fallback_reason']}）"
+                lines.append(line)
     elif execution['started'] and report['errors'] and any(row.get('phase') != 'report' for row in report['errors']):
         recovery = report['recovery']
         text = '执行失败'

@@ -83,7 +83,7 @@ def _main(argv):
     parser.add_argument('operation', choices=('plan', 'validate', 'apply', 'export', 'switch', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run', 'retire-skills'))
     parser.add_argument('--machine', type=Path, default=Path.home() / '.claude-config-tool/machine.yaml')
     target = parser.add_mutually_exclusive_group(required=True)
-    target.add_argument('--agent', choices=('claude-code', 'codex'))
+    target.add_argument('--agent', choices=('claude-code', 'codex', 'antigravity'))
     target.add_argument('--app', choices=('codex-app', 'claude-desktop'))
     parser.add_argument('--profile', help='Config-dir-relative Profile of the selected type')
     parser.add_argument('--preserve-native-metadata-after', type=Path, help='Rollback only: exact recorded Claude user-config after-image; retain later shared metadata')
@@ -214,7 +214,12 @@ def _main(argv):
         if args.expect_plan_id and report['plan_id'] != args.expect_plan_id:
             raise PlanStale('Reviewed plan has changed; generate a new preview')
         report['preview_only'] = preview_only
-        if write and not args.dry_run and report['ready']:
+        if args.agent == 'antigravity' and write and not args.dry_run:
+            reason = 'Antigravity Phase A is read-only; apply/write operations are blocked'
+            report['checks'].append({'name': 'phase_a_read_only', 'status': 'blocked', 'code': 'phase_a_read_only', 'reason': reason})
+            report['blockers'].append({'code': 'phase_a_read_only', 'reason': reason})
+            report['ready'] = False
+        elif write and not args.dry_run and report['ready']:
             phase = 'execution'
             started = True
             report = plan.apply(manager.state_root)

@@ -39,6 +39,7 @@ class Cutover:
         self.state_root = state_directory(self.machine, config_dir=spec['data_target'])
         self.native_path, self.entry = Path(spec['machine_target']), {}
         self.agents = {agent: ProfileManager(self.machine_path, agent, probe=agent_probe, state_root=self.state_root) for agent in self.machine['agents']}
+        require('antigravity' not in self.agents, 'phase_a_read_only: Antigravity Phase A is read-only; cutover is not supported')
         self.apps = {app: AppProfileManager(self.machine_path, app, probe=app_probe, state_root=self.state_root) for app in self.machine['apps']}
         require(len({manager.native_path.parent.resolve() for manager in self.agents.values()}) == len(self.agents), 'Different Agents cannot share a plugin configuration root')
         self.recovery_scopes = sorted({str(self.native_path.resolve()), str(Path(spec['data_target']).resolve()),

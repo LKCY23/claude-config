@@ -64,6 +64,14 @@ def app_instances(machine, runner=None):
             plist = plistlib.loads((bundle / 'Contents/Info.plist').read_bytes())
             executable = str(bundle / 'Contents/MacOS' / plist['CFBundleExecutable'])
             bindings[executable] = (app, entry['binding']['data_root'])
+        ag_entry = machine.get('agents', {}).get('antigravity')
+        if ag_entry and 'application' in ag_entry.get('binding', {}):
+            bundle = Path(ag_entry['binding']['application'])
+            info_plist = bundle / 'Contents/Info.plist'
+            if info_plist.is_file():
+                plist = plistlib.loads(info_plist.read_bytes())
+                executable = str(bundle / 'Contents/MacOS' / plist['CFBundleExecutable'])
+                bindings[executable] = ('antigravity', ag_entry['binding']['config_root'])
         rows = []
         for line in processes.splitlines():
             parts = line.strip().split(None, 1)
@@ -82,3 +90,46 @@ def app_instances(machine, runner=None):
                 'scope': 'Explicit process arguments only; default directories and effective sessions are not inferred'}
     except (OSError, ValueError, KeyError, subprocess.SubprocessError):
         return {'status': 'not_verified', 'reason': 'Process or App metadata could not be inspected', 'instances': []}
+
+
+def agent_processes(machine, runner=None):
+    """Observe Antigravity processes without reading environment values or sensitive arguments."""
+    runner = runner or subprocess.run
+    if sys.platform not in ('darwin', 'linux'):
+        return {'status': 'not_verified', 'reason': 'Agent process observation requires POSIX ps', 'instances': []}
+    ag_entry = machine.get('agents', {}).get('antigravity')
+    if not ag_entry:
+        return {'status': 'not_applicable', 'instances': []}
+    binding = ag_entry.get('binding', {})
+    bound_exec = str(Path(binding['executable'])) if 'executable' in binding else None
+    bound_app_exec = None
+    if 'application' in binding:
+        info_plist = Path(binding['application']) / 'Contents/Info.plist'
+        if info_plist.is_file():
+            try:
+                plist = plistlib.loads(info_plist.read_bytes())
+                bound_app_exec = str(Path(binding['application']) / 'Contents/MacOS' / plist['CFBundleExecutable'])
+            except (OSError, ValueError, KeyError):
+                pass
+    try:
+        processes = runner(['ps', 'ax', '-o', 'pid=,comm='], capture_output=True, text=True, timeout=5, check=True).stdout
+        rows = []
+        for line in processes.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) != 2 or not parts[0].isdigit():
+                continue
+            pid, comm = parts
+            name = Path(comm).name
+            kind = None
+            if name.startswith('language_server'):
+                kind = 'language_server'
+            elif bound_exec and comm == bound_exec or name == 'agy':
+                kind = 'cli'
+            elif bound_app_exec and comm == bound_app_exec or 'Antigravity.app/' in comm or name == 'Antigravity':
+                kind = 'application'
+            if kind is not None:
+                rows.append({'agent': 'antigravity', 'pid': int(pid), 'process': name, 'command_path': comm, 'kind': kind})
+        return {'status': 'observed', 'instances': rows,
+                'scope': 'Process command paths and PIDs only; environment values and CLI arguments are not collected'}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {'status': 'not_verified', 'reason': 'Agent process metadata could not be inspected', 'instances': []}

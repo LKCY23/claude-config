@@ -2,9 +2,12 @@
 from collections import Counter
 from pathlib import Path
 import hashlib
+import json
+import re
 import sqlite3
 
 from .merge import fingerprint
+from .native import parse_json, parse_yaml, snapshot_read
 from .transaction import PlanStale, file_fingerprint
 
 
@@ -40,6 +43,8 @@ def skill_entry(path):
 
 
 def cc_switch_root(manager):
+    if manager.agent == 'antigravity':
+        return None
     explicit = manager.machine.get('bindings', {}).get('paths', {}).get('cc-switch-data')
     if explicit:
         return Path(explicit)
@@ -67,6 +72,8 @@ def external_claims(root, agent, identities):
 
 
 def native_enabled(agent, native, identity, entry):
+    if agent == 'antigravity':
+        return None
     if agent == 'claude-code':
         value = native.get('skillOverrides', {}).get(identity)
         return {'on': True, 'off': False}.get(value)
@@ -75,6 +82,219 @@ def native_enabled(agent, native, identity, entry):
                and isinstance(row.get('path'), str)
                and Path(row['path']).resolve() == entry.resolve()]
     return matches[0] if len(matches) == 1 else None
+
+
+def _read_json_readonly(path):
+    raw, expected = snapshot_read(path)
+    if not expected['exists']:
+        return None, expected
+    return parse_json(raw), expected
+
+
+def _antigravity_skill_name(skill_md, fallback):
+    try:
+        if skill_md.is_symlink() or not skill_md.is_file() or skill_md.stat().st_size > 2 * 1024 * 1024:
+            return fallback
+        text = snapshot_read(skill_md)[0].decode()
+        match = re.match(r'\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)', text, re.S)
+        if match:
+            meta = parse_yaml(match[1].encode())
+            name = meta.get('name')
+            if isinstance(name, str) and name:
+                return name
+    except (OSError, ValueError, UnicodeError):
+        pass
+    return fallback
+
+
+def _antigravity_mcp_servers(path, checks, subject):
+    try:
+        doc, expected = _read_json_readonly(path)
+    except (OSError, ValueError) as exc:
+        checks.append({'name': 'antigravity_mcp_config', 'status': 'blocked', 'code': 'antigravity_mcp_unreadable',
+                       'subject': subject, 'reason': f'Cannot read Antigravity MCP config ({type(exc).__name__})'})
+        return []
+    if not expected['exists'] or doc is None:
+        return []
+    servers = doc.get('mcpServers', {})
+    if not isinstance(servers, dict):
+        checks.append({'name': 'antigravity_mcp_config', 'status': 'blocked', 'code': 'antigravity_mcp_invalid',
+                       'subject': subject, 'reason': 'Antigravity mcpServers must be an object'})
+        return []
+    return sorted(name for name in servers if isinstance(name, str) and name)
+
+
+def inspect_antigravity(config_root):
+    """Read-only Antigravity discovery; redacts/never retains userSettings, globalPermissionGrants, sidecars, or tokens."""
+    root = Path(config_root)
+    checks = []
+    plugins_enabled = {}
+    config_status = 'absent'
+    config_path = root / 'config.json'
+    try:
+        config_doc, expected = _read_json_readonly(config_path)
+        if expected['exists'] and config_doc is not None:
+            config_status = 'read'
+            raw_plugins = config_doc.get('plugins', {})
+            if isinstance(raw_plugins, dict):
+                for directory, entry in sorted(raw_plugins.items()):
+                    if isinstance(directory, str) and isinstance(entry, dict) and type(entry.get('enabled')) is bool:
+                        plugins_enabled[directory] = entry['enabled']
+            del config_doc
+    except (OSError, ValueError) as exc:
+        config_status = 'unreadable'
+        checks.append({'name': 'antigravity_config', 'status': 'blocked', 'code': 'antigravity_config_unreadable',
+                       'reason': f'Cannot read Antigravity config.json ({type(exc).__name__})'})
+
+    plugins = []
+    plugins_dir = root / 'plugins'
+    if plugins_dir.is_dir() and not plugins_dir.is_symlink():
+        for entry_dir in sorted(plugins_dir.iterdir(), key=lambda p: p.name):
+            if entry_dir.is_symlink() or not entry_dir.is_dir():
+                continue
+            manifest_path = None
+            for candidate in (entry_dir / 'plugin.json', entry_dir / '.antigravity-plugin' / 'plugin.json'):
+                if candidate.exists() or candidate.is_symlink():
+                    manifest_path = candidate
+                    break
+            if manifest_path is None:
+                continue
+            try:
+                manifest, expected = _read_json_readonly(manifest_path)
+                if not expected['exists'] or manifest is None:
+                    continue
+            except (OSError, ValueError) as exc:
+                checks.append({'name': 'antigravity_plugin_manifest', 'status': 'blocked',
+                               'code': 'invalid_plugin_manifest', 'plugin_dir': entry_dir.name,
+                               'reason': f"Cannot read plugin manifest in '{entry_dir.name}' ({type(exc).__name__})"})
+                continue
+            raw_name = manifest.get('name')
+            manifest_name = raw_name if isinstance(raw_name, str) and raw_name else None
+            effective_name = manifest_name or entry_dir.name
+            manifest_disabled = manifest.get('disabled') if type(manifest.get('disabled')) is bool else None
+            config_enabled = plugins_enabled.get(entry_dir.name)
+            enabled = config_enabled if config_enabled is not None else (not manifest_disabled if manifest_disabled is not None else True)
+
+            plugin_skills = []
+            plugin_skills_dir = entry_dir / 'skills'
+            if plugin_skills_dir.is_dir() and not plugin_skills_dir.is_symlink():
+                for sub in sorted(plugin_skills_dir.iterdir(), key=lambda p: p.name):
+                    skill_md = sub / 'SKILL.md'
+                    if not sub.is_symlink() and sub.is_dir() and skill_md.is_file():
+                        skill_name = _antigravity_skill_name(skill_md, sub.name)
+                        plugin_skills.append({'dir': sub.name, 'name': skill_name, 'path': str(skill_md)})
+
+            plugin_mcp = _antigravity_mcp_servers(entry_dir / 'mcp_config.json', checks, 'plugin:' + entry_dir.name)
+            has_hooks = (entry_dir / 'hooks.json').is_file() and not (entry_dir / 'hooks.json').is_symlink()
+            plugins.append({
+                'dir': entry_dir.name,
+                'name': effective_name,
+                'manifest_name': manifest_name,
+                'dir_name_mismatch': manifest_name is not None and manifest_name != entry_dir.name,
+                'manifest_path': str(manifest_path),
+                'manifest_kind': 'antigravity-plugin' if manifest_path.parent.name == '.antigravity-plugin' else 'plugin.json',
+                'config_enabled': config_enabled,
+                'manifest_disabled': manifest_disabled,
+                'enabled': enabled,
+                'skills': [s['name'] for s in plugin_skills],
+                'skill_entries': plugin_skills,
+                'mcp_servers': plugin_mcp,
+                'has_hooks': has_hooks,
+            })
+
+    standalone_skills = []
+    skills_dir = root / 'skills'
+    if skills_dir.is_dir() and not skills_dir.is_symlink():
+        for skill_dir in sorted(skills_dir.iterdir(), key=lambda p: p.name):
+            skill_md = skill_dir / 'SKILL.md'
+            if not skill_dir.is_symlink() and skill_dir.is_dir() and skill_md.is_file():
+                skill_name = _antigravity_skill_name(skill_md, skill_dir.name)
+                standalone_skills.append({
+                    'dir': skill_dir.name,
+                    'name': skill_name,
+                    'path': str(skill_md),
+                    'entry': skill_entry(skill_md),
+                })
+
+    global_mcp = _antigravity_mcp_servers(root / 'mcp_config.json', checks, 'global')
+
+    # Collision & hygiene checks
+    by_name = {}
+    by_dir = {p['dir']: p for p in plugins}
+    for plugin in plugins:
+        by_name.setdefault(plugin['name'], []).append(plugin)
+    for plugin_name, group in sorted(by_name.items()):
+        if len(group) > 1:
+            dirs = [p['dir'] for p in group]
+            checks.append({
+                'name': 'duplicate_plugin_name',
+                'status': 'blocked',
+                'code': 'duplicate_plugin_name',
+                'plugin_name': plugin_name,
+                'directories': dirs,
+                'reason': f"Duplicate Antigravity plugin name '{plugin_name}' across directories: {', '.join(dirs)}",
+            })
+    for plugin in plugins:
+        if plugin['dir_name_mismatch'] and plugin['manifest_name'] in by_dir:
+            target = by_dir[plugin['manifest_name']]
+            if target['dir'] != plugin['dir'] and target['name'] != plugin['manifest_name']:
+                checks.append({
+                    'name': 'plugin_dir_name_collision',
+                    'status': 'blocked',
+                    'code': 'plugin_dir_name_collision',
+                    'plugin_name': plugin['manifest_name'],
+                    'directories': sorted({plugin['dir'], target['dir']}),
+                    'reason': f"Plugin directory '{plugin['dir']}' declares name '{plugin['manifest_name']}', colliding with plugin directory '{target['dir']}'",
+                })
+
+    for standalone in standalone_skills:
+        standalone_keys = {standalone['dir'], standalone['name']}
+        for plugin in plugins:
+            for ps in plugin['skill_entries']:
+                if standalone_keys & {ps['dir'], ps['name']}:
+                    checks.append({
+                        'name': 'skill_plugin_overlap',
+                        'status': 'blocked',
+                        'code': 'skill_plugin_overlap',
+                        'skill': standalone['dir'],
+                        'plugin_dir': plugin['dir'],
+                        'plugin_skill': ps['dir'],
+                        'reason': f"Standalone skill '{standalone['dir']}' overlaps plugin '{plugin['dir']}' skill '{ps['dir']}'",
+                    })
+
+    global_mcp_set = set(global_mcp)
+    for plugin in plugins:
+        for server_name in sorted(global_mcp_set & set(plugin['mcp_servers'])):
+            checks.append({
+                'name': 'mcp_server_collision',
+                'status': 'blocked',
+                'code': 'mcp_server_collision',
+                'server': server_name,
+                'plugin_dir': plugin['dir'],
+                'reason': f"Global MCP server '{server_name}' in mcp_config.json collides with plugin '{plugin['dir']}' mcp_config.json",
+            })
+
+    if not any(row['status'] in ('blocked', 'failed') for row in checks):
+        checks.append({'name': 'antigravity_discovery', 'status': 'passed',
+                       'reason': 'Antigravity read-only discovery completed with no collisions'})
+
+    payload = {
+        'config_root': str(root),
+        'config_status': config_status,
+        'plugins_enabled': plugins_enabled,
+        'plugins': plugins,
+        'skills': standalone_skills,
+        'mcp_servers': global_mcp,
+        'checks': checks,
+    }
+    payload['fingerprint'] = fingerprint({
+        'config_status': config_status,
+        'plugins_enabled': plugins_enabled,
+        'plugins': plugins,
+        'skills': standalone_skills,
+        'mcp_servers': global_mcp,
+    })
+    return payload
 
 
 def inspect_skills(manager, previous, rendered, native, *, selected_refs=None):
@@ -148,10 +368,20 @@ def inspect_skills(manager, previous, rendered, native, *, selected_refs=None):
             checks.append({'name': 'skill_legacy_entry', 'path': path, 'status': 'blocked',
                            'code': 'duplicate_skill_entry',
                            'reason': 'A same-name legacy Codex entry remains; explicitly review and retire that entry'})
+    ag_inventory = None
+    if manager.agent == 'antigravity':
+        ag_inventory = inspect_antigravity(manager.native_path.parent)
+        checks.extend(ag_inventory['checks'])
     def guard():
         if external_claims(cc_root, manager.agent, identities) != claims:
             raise PlanStale('External skill ownership changed after planning')
         if any(skill_entry(path) != expected for path, expected in legacy_snapshots.items()):
             raise PlanStale('Legacy skill entry changed after planning')
-    return {'agent_type': manager.agent, 'skills': rows, 'external_manager_status': claims['status'],
-            'ownership_fingerprint': fingerprint(claims), 'checks': checks}, guard
+        if ag_inventory is not None and inspect_antigravity(manager.native_path.parent)['fingerprint'] != ag_inventory['fingerprint']:
+            raise PlanStale('Antigravity native discovery changed after planning')
+    result = {'agent_type': manager.agent, 'skills': rows, 'external_manager_status': claims['status'],
+              'ownership_fingerprint': fingerprint({'claims': claims, 'antigravity': ag_inventory['fingerprint']}) if ag_inventory is not None else fingerprint(claims),
+              'checks': checks}
+    if ag_inventory is not None:
+        result['antigravity'] = ag_inventory
+    return result, guard

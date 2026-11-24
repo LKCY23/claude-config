@@ -107,7 +107,10 @@ for key in ('network_access', 'exclude_slash_tmp', 'exclude_tmpdir_env_var'):
 for key in ('mcp_elicitations', 'request_permissions', 'rules', 'sandbox_approval', 'skill_approval'):
     CODEX.append(Field(('approval_policy', 'granular', key), 'bool'))
 
-REGISTRY = {'claude-code': CLAUDE, 'codex': CODEX}
+ANTIGRAVITY_DOC = 'antigravity-phase-a'
+ANTIGRAVITY = []
+
+REGISTRY = {'claude-code': CLAUDE, 'codex': CODEX, 'antigravity': ANTIGRAVITY}
 
 
 def matches(pattern, path):
@@ -209,7 +212,7 @@ def capability_checks(agent, settings, version, *, native_context=None):
         if field is None:
             continue
         row = {'name': 'field_capability', 'path': ['settings', *path], 'version': version,
-               'status': 'passed', 'evidence': CLAUDE_DOC if agent == 'claude-code' else CODEX_DOC,
+               'status': 'passed', 'evidence': CLAUDE_DOC if agent == 'claude-code' else ANTIGRAVITY_DOC if agent == 'antigravity' else CODEX_DOC,
                'level': 'documented-config-interface'}
         if field.since and version_tuple(version) < version_tuple(field.since):
             row.update(status='blocked', code='unsupported', reason='Requires ' + field.since + ' or later')

@@ -19,12 +19,14 @@ MCP_FIELDS = {
               'http_headers', 'env_http_headers', 'startup_timeout_sec', 'tool_timeout_sec',
               'enabled', 'required', 'enabled_tools', 'disabled_tools', 'default_tools_approval_mode',
               'tools', 'supports_parallel_tool_calls', 'tool_input_schema_max_bytes'),
+    'antigravity': ('command', 'args', 'env', 'url', 'serverUrl'),
 }
 MCP_OPTIONS = {
     'claude-code': ('timeout',),
     'codex': ('startup_timeout_sec', 'tool_timeout_sec', 'enabled', 'required', 'enabled_tools',
               'disabled_tools', 'default_tools_approval_mode', 'tools', 'supports_parallel_tool_calls',
               'tool_input_schema_max_bytes'),
+    'antigravity': (),
 }
 EVENTS = {
     'claude-code': frozenset(('SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreToolUse',
@@ -33,6 +35,7 @@ EVENTS = {
                              'TeammateIdle', 'TaskCompleted')),
     'codex': frozenset(('SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest',
                        'PostToolUse', 'PreCompact', 'PostCompact', 'SubagentStart', 'SubagentStop', 'Stop', 'Interrupt')),
+    'antigravity': frozenset(('SessionStart', 'PreToolUse', 'PostToolUse', 'PreInvocation', 'PostInvocation', 'Stop')),
 }
 HOOK_OPTIONS = ('timeout', 'async', 'statusMessage')
 SENSITIVE = re.compile(r'(?:token|password|secret|authorization|api[-_]?key)', re.I)

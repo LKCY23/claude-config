@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 import urllib.error
 from unittest.mock import patch
@@ -294,6 +295,46 @@ class SourceRetrievalTransportTests(ResourceFixture):
             self.assertNotEqual(rc_bad, 0)
             payload = json.loads(err_out.getvalue())
             self.assertEqual(payload['errors'][0]['code'], 'invalid_arguments')
+
+    def test_prepare_git_disables_gitattributes_crlf_conversion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            upstream = base / 'upstream'
+            upstream.mkdir()
+            run_git(upstream, 'init', '-q')
+            run_git(upstream, 'config', 'core.autocrlf', 'false')
+            run_git(upstream, 'config', 'user.name', 'Test')
+            run_git(upstream, 'config', 'user.email', 'test@example.invalid')
+            (upstream / '.gitattributes').write_bytes(b'*.cmd text eol=crlf\n')
+            run_git(upstream, 'add', '.gitattributes')
+            blob_sha = subprocess.check_output(
+                ['git', '-C', str(upstream), 'hash-object', '-w', '--stdin'],
+                input=b'@echo off\nrem line2\n',
+            ).decode().strip()
+            run_git(upstream, 'update-index', '--add', '--cacheinfo', f'100644,{blob_sha},script.cmd')
+            run_git(upstream, 'commit', '-q', '-m', 'lf cmd with crlf gitattributes')
+            commit = run_git(upstream, 'rev-parse', 'HEAD')
+
+            def local_runner(args, extra_env=None):
+                rewritten = [
+                    str(upstream) if ('fetch' in args and a == 'origin') else a
+                    for a in args
+                ]
+                rewritten = ['protocol.file.allow=always' if a == 'protocol.file.allow=never' else a for a in rewritten]
+                return subprocess.check_output(rewritten)
+
+            dest = base / 'dest' / commit
+            dest.parent.mkdir(parents=True)
+            dest.parent.chmod(0o700)
+            changed = prepare_git(
+                dest, 'owner/attrrepo', commit, runner=local_runner,
+            )
+            self.assertTrue(changed)
+            disk_bytes = (dest / 'script.cmd').read_bytes()
+            git_blob = subprocess.check_output(['git', '-C', str(dest), 'cat-file', 'blob', f'{commit}:script.cmd'])
+            self.assertEqual(disk_bytes, b'@echo off\nrem line2\n')
+            self.assertEqual(disk_bytes, git_blob)
+            self.assertEqual(run_git(dest, 'status', '--porcelain'), '')
 
 
 if __name__ == '__main__':

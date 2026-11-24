@@ -84,6 +84,14 @@ def prepare_git(root, repo, commit, *, git_transport=DEFAULT_GIT_TRANSPORT, runn
     remote_url = git_remote_url(repo, git_transport)
     with tempfile.TemporaryDirectory(prefix='.fetch-', dir=root.parent) as stage:
         _invoke_runner(runner, ['git', '-c', 'core.hooksPath=/dev/null', 'init', '--quiet', stage])
+        # Immutable prepared checkouts must match raw Git blob bytes verbatim, even when
+        # upstream .gitattributes requests eol=crlf or smudge filters.
+        info_dir = Path(stage) / '.git' / 'info'
+        info_dir.mkdir(parents=True, exist_ok=True)
+        (info_dir / 'attributes').write_text(
+            '* -text -eol -filter -ident -working-tree-encoding\n',
+            encoding='utf-8',
+        )
         _invoke_runner(runner, ['git', '-C', stage, 'remote', 'add', 'origin', remote_url])
         common = [
             'git', '-C', stage,

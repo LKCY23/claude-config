@@ -60,9 +60,25 @@ def parse_json(content):
     return mapping(value, 'native JSON')
 
 
+def sanitize_antigravity_config(raw):
+    """Retain only plugins.<dir>.enabled booleans from Antigravity config.json."""
+    plugins = raw.get('plugins')
+    if not isinstance(plugins, dict):
+        return {}
+    sanitized = {}
+    for directory, entry in plugins.items():
+        if isinstance(directory, str) and isinstance(entry, dict) and type(entry.get('enabled')) is bool:
+            sanitized[directory] = {'enabled': entry['enabled']}
+    return {'plugins': sanitized} if sanitized else {}
+
+
 def parse_native(agent, content):
     try:
-        return parse_json(content) if agent == 'claude-code' else mapping(tomllib.loads(content.decode()), 'native TOML')
+        if agent == 'claude-code':
+            return parse_json(content)
+        if agent == 'antigravity':
+            return sanitize_antigravity_config(parse_json(content))
+        return mapping(tomllib.loads(content.decode()), 'native TOML')
     except (ValueError, TypeError, UnicodeError) as exc:
         raise ValueError('Native configuration cannot be parsed; no writes are allowed') from exc
 

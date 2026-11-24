@@ -88,7 +88,7 @@ def validate_catalog(value):
         if 'packaging_revision' in item:
             require(type(item['packaging_revision']) is int and item['packaging_revision'] >= 1, 'Invalid packaging revision')
         compatibility = item['compatibility']
-        require(isinstance(compatibility, dict) and not set(compatibility) - {'claude-code', 'codex'}, 'Unknown compatible agent')
+        require(isinstance(compatibility, dict) and not set(compatibility) - {'claude-code', 'codex', 'antigravity'}, 'Unknown compatible agent')
         for host, entry in compatibility.items():
             obj(entry, ('mode', 'entry', 'entries', 'validation'), ('mode', 'entry', 'validation'), 'compatibility.' + host)
             text(entry['mode'], 'compatibility mode')

@@ -168,13 +168,14 @@ class FileChange:
 
 
 class FilePlan:
-    def __init__(self, changes, *, sources=(), scopes=(), report=None, directories=(), native_operations=(), native_index=None, steps=None, recovery_guard=None, guards=(), step_guard=None, prepare=True):
+    def __init__(self, changes, *, sources=(), scopes=(), report=None, directories=(), native_operations=(), native_index=None, steps=None, recovery_guard=None, guards=(), step_guard=None, prepare=True, read_only_reason=None):
         self.changes = tuple(replace(change, path=Path(change.path).absolute()) for change in changes)
         self.native_operations = tuple(native_operations)
         self.recovery_guard = recovery_guard
         self.guards = tuple(guards)
         self.step_guard = step_guard
         self.prepared = prepare
+        self.read_only_reason = read_only_reason
         self.steps = list(self.changes) if steps is None else [replace(step, path=Path(step.path).absolute()) if isinstance(step, FileChange) else step for step in steps]
         if steps is None:
             index = len(self.steps) if native_index is None else native_index
@@ -318,6 +319,9 @@ class FilePlan:
             raise PlanStale('Target changed', path=path, expected=expected, actual=current) from exc
 
     def apply(self, state_dir, *, writer=atomic_write):
+        if self.read_only_reason:
+            from .schema import SchemaError
+            raise SchemaError(f'{self.read_only_reason}: Read-only plan cannot apply writes')
         if not self.prepared:
             raise ValueError('A declaration-only child plan cannot execute')
         if self.blockers:

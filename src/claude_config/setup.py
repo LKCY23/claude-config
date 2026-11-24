@@ -170,12 +170,23 @@ def doctor(machine_path, *, resources=False, processes=False, storage=False):
                 except (ValueError, OSError) as exc:
                     checks.append({'name': 'profile_compatibility', 'status': 'failed', 'subject': name,
                                    'reason': str(exc) if isinstance(exc, SchemaError) else 'Profile cannot be parsed'})
-            key = 'executable' if group == 'agents' else 'application'
-            target = Path(entry['binding'][key])
-            valid = target.is_dir() if group == 'apps' else target.is_file() and os.access(target, os.X_OK)
-            if group == 'apps' and sys.platform != 'darwin':
-                checks.append({'name': 'app_platform', 'status': 'failed', 'subject': name, 'reason': '此 App 适配仅支持 macOS。'})
-            checks.append({'name': 'native_entry', 'status': 'passed' if valid else 'failed', 'subject': name, 'reason': str(target)})
+            if group == 'agents' and name == 'antigravity':
+                binding = entry['binding']
+                if 'executable' in binding:
+                    target = Path(binding['executable'])
+                    valid = target.is_file() and os.access(target, os.X_OK)
+                    checks.append({'name': 'native_entry', 'status': 'passed' if valid else 'failed', 'subject': name, 'reason': str(target)})
+                if 'application' in binding:
+                    target = Path(binding['application'])
+                    valid = target.is_dir()
+                    checks.append({'name': 'native_entry', 'status': 'passed' if valid else 'failed', 'subject': name, 'reason': str(target)})
+            else:
+                key = 'executable' if group == 'agents' else 'application'
+                target = Path(entry['binding'][key])
+                valid = target.is_dir() if group == 'apps' else target.is_file() and os.access(target, os.X_OK)
+                if group == 'apps' and sys.platform != 'darwin':
+                    checks.append({'name': 'app_platform', 'status': 'failed', 'subject': name, 'reason': '此 App 适配仅支持 macOS。'})
+                checks.append({'name': 'native_entry', 'status': 'passed' if valid else 'failed', 'subject': name, 'reason': str(target)})
     for name, value in machine.get('bindings', {}).get('executables', {}).items():
         checks.append({'name': 'local_dependency', 'subject': name,
                        'status': 'passed' if Path(value).is_file() and os.access(value, os.X_OK) else 'failed', 'reason': value})
@@ -183,7 +194,7 @@ def doctor(machine_path, *, resources=False, processes=False, storage=False):
         checks.append({'name': 'catalog_directory', 'subject': name, 'status': 'passed' if Path(value).is_dir() else 'failed', 'reason': value})
     if not machine['agents'] and not machine['apps']:
         checks.append({'name': 'client_bindings', 'status': 'warning', 'reason': '尚未绑定 Agent 或 App；init 不推测客户端和 Profile。'})
-    from .core.diagnostics import tool_identity, app_instances, storage_summary
+    from .core.diagnostics import agent_processes, tool_identity, app_instances, storage_summary
     result = {'machine_id': machine['machine_id'], 'checks': checks, 'decisions': [],
               'installation': tool_identity(),
               'profile_selection': {'kind': 'repository' if selected.selection_path else 'embedded',
@@ -197,6 +208,8 @@ def doctor(machine_path, *, resources=False, processes=False, storage=False):
             plan = ProfileManager(machine_path, agent).plan(prepare=False)
             inventory = plan.report.get('resource_inventory', {'agent_type': agent, 'skills': []})
             result['resource_inventories'].append(inventory)
+            if 'antigravity' in inventory:
+                result['antigravity_inventory'] = inventory['antigravity']
             checks.extend(inventory.get('checks', []))
             for row in inventory.get('skills', []):
                 if row['selected'] and row['file_changes']:
@@ -206,8 +219,15 @@ def doctor(machine_path, *, resources=False, processes=False, storage=False):
             # A missing inventory cannot turn failed source/native validation green.
             checks.extend(row for row in plan.report.get('checks', [])
                           if row['status'] in ('blocked', 'failed') and row not in checks)
+    elif 'antigravity' in machine['agents']:
+        from .core.resource_inventory import inspect_antigravity
+        ag_inventory = inspect_antigravity(machine['agents']['antigravity']['binding']['config_root'])
+        result['antigravity_inventory'] = ag_inventory
+        checks.extend(ag_inventory['checks'])
     if processes:
         result['app_processes'] = app_instances(machine)
+        if 'antigravity' in machine['agents']:
+            result['agent_processes'] = agent_processes(machine)
     if storage:
         result['storage'] = storage_summary(state_directory(machine))
     failed = any(row['status'] in ('failed', 'blocked') for row in checks)

@@ -1,4 +1,6 @@
 """Fetch an explicit GitHub baseline into private prepared-source directories."""
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 import hashlib
 import os
@@ -6,7 +8,6 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
-import tempfile
 from types import SimpleNamespace
 
 from .profile import ReportParser, UsageError, output_report, report_format
@@ -17,32 +18,42 @@ from .core.manager import ProfileManager
 from .core.native import parse_json, parse_yaml, snapshot_read
 from .core.reporting import build_report, fallback_state_root, save_report, _private_path
 from .core.schema import COMMIT, SchemaError, profile_yaml_files, require, validate_catalogs, validate_profile, within
+from .core.source_transport import (
+    DEFAULT_GIT_TRANSPORT,
+    GIT_TRANSPORTS,
+    classify_command_error,
+    github_api as _github_api,
+    prepare_git as _prepare_git,
+    validate_git_transport,
+)
 from .core.transaction import atomic_write
 
+_ACCESS_STATE: ContextVar[dict | None] = ContextVar('claude_config_release_access_state', default=None)
 
-def command(args, *, timeout=120):
+
+@contextmanager
+def _capture_access_state(state):
+    token = _ACCESS_STATE.set(state)
+    try:
+        yield
+    finally:
+        _ACCESS_STATE.reset(token)
+
+
+def command(args, *, timeout=120, extra_env=None):
     env = dict(os.environ, GIT_TERMINAL_PROMPT='0')
+    if extra_env:
+        env.update(extra_env)
     for key in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'):
         env.pop(key, None)
     result = subprocess.run(args, capture_output=True, env=env, timeout=timeout)
     if result.returncode:
-        diagnostic = result.stderr.decode(errors='replace').lower()
-        if '401' in diagnostic or 'requires authentication' in diagnostic or 'not logged' in diagnostic:
-            raise SchemaError('GitHub 凭据当前不可用或被拒绝；检查当前执行环境的登录和钥匙串可访问性，不能仅据此认定 token 过期。')
-        if '403' in diagnostic or '404' in diagnostic or 'repository not found' in diagnostic:
-            raise SchemaError('GitHub 拒绝访问或找不到明确来源；核对仓库、Release 和当前账号权限。')
-        if any(text in diagnostic for text in ('could not resolve', 'timed out', 'failed to connect', 'network is unreachable')):
-            raise SchemaError('获取固定来源时网络不可达或超时；已保留准备好的来源，未采用配置。')
-        raise SchemaError('获取失败：检查 GitHub 访问权限、网络及 Git/gh 配置；未修改配置选择。')
+        raise classify_command_error(result.stderr.decode(errors='replace'))
     return result.stdout
 
 
 def api(path, *, binary=False):
-    args = ['gh', 'api', path]
-    if binary:
-        args += ['-H', 'Accept: application/octet-stream']
-    data = command(args)
-    return data if binary else parse_json(data)
+    return _github_api(path, binary=binary, gh_runner=command, access_state=_ACCESS_STATE.get())
 
 
 def release_record(repo, commit, alias):
@@ -67,34 +78,18 @@ def release_record(repo, commit, alias):
     return raw
 
 
-def prepare_git(root, repo, commit):
+def prepare_git(root, repo, commit, *, git_transport=DEFAULT_GIT_TRANSPORT):
     """Keep existing checkouts intact; publish a new checkout only when complete."""
-    root = Path(root).absolute()
-    require(not root.is_symlink(), 'Prepared source cannot be a symlink')
-    if root.exists() and any(root.iterdir()):
-        verify_git(root, repo, commit)
-        return False
-    _private_path(root.parent)
-    with tempfile.TemporaryDirectory(prefix='.fetch-', dir=root.parent) as stage:
-        command(['git', '-c', 'core.hooksPath=/dev/null', 'init', '--quiet', stage])
-        command(['git', '-C', stage, 'remote', 'add', 'origin', 'https://github.com/' + repo + '.git'])
-        common = ['git', '-C', stage, '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
-                  '-c', 'protocol.file.allow=never', '-c', 'credential.helper=',
-                  '-c', 'credential.helper=!gh auth git-credential']
-        command([*common, 'fetch', '--quiet', '--depth=1', 'origin', commit])
-        command([*common, 'checkout', '--quiet', '--detach', 'FETCH_HEAD'])
-        verify_git(Path(stage), repo, commit)
-        if root.exists():
-            require(root.is_dir() and not any(root.iterdir()), 'Source destination changed during retrieval')
-            root.rmdir()
-        Path(stage).rename(root)
-    return True
+    return _prepare_git(root, repo, commit, git_transport=git_transport, runner=command)
 
 
-def fetch(manager, alias, release, source_map=None, *, report=None):
+def fetch(manager, alias, release, source_map=None, *, report=None, git_transport=DEFAULT_GIT_TRANSPORT):
+    validate_git_transport(git_transport)
+    access_state = {'release_access': 'gh'}
     report = {} if report is None else report
     report.update(ready=False, checks=[], decisions=[], blockers=[], results=[], scope=[['catalogs', alias]],
-                  fetch_programs={name: shutil.which(name) for name in ('git', 'gh')})
+                  fetch_programs={name: shutil.which(name) for name in ('git', 'gh')},
+                  source_retrieval={'git_transport': git_transport, **access_state})
     require(isinstance(alias, str) and NAME.fullmatch(alias), 'Invalid catalog alias')
     require(release.startswith('baseline-') and COMMIT.fullmatch(release[9:]),
             '--release requires baseline- followed by the exact 40-character commit')
@@ -107,16 +102,21 @@ def fetch(manager, alias, release, source_map=None, *, report=None):
     report['scope'] = [['catalogs', name] for name in aliases]
     impacts = []
     for name in [sibling for sibling in aliases if sibling != alias] + [alias]:
-        _fetch_one(manager, name, release, source_map, catalogs, commit, report, aliases)
+        _fetch_one(manager, name, release, source_map, catalogs, commit, report, aliases,
+                   git_transport=git_transport, access_state=access_state)
         impacts.extend(report['impacts'])
     report['impacts'] = impacts
     return report
 
 
-def _fetch_one(manager, alias, release, source_map, catalogs, commit, report, aliases):
+def _fetch_one(manager, alias, release, source_map, catalogs, commit, report, aliases,
+               *, git_transport=DEFAULT_GIT_TRANSPORT, access_state=None):
     mapping = manager._read(Path(source_map).absolute(), parse_yaml)[0] if source_map else None
     target = catalog_target(catalogs['catalogs'][alias], alias, commit, mapping)
-    record_bytes = release_record(target['repo'], commit, alias)
+    state = {'release_access': 'gh'} if access_state is None else access_state
+    with _capture_access_state(state):
+        record_bytes = release_record(target['repo'], commit, alias)
+    report['source_retrieval'] = {'git_transport': git_transport, **state}
     record = parse_json(record_bytes)
     validate_record(record, target)
     source_root = manager.state_root / 'sources'
@@ -124,7 +124,11 @@ def _fetch_one(manager, alias, release, source_map, catalogs, commit, report, al
     results = report['results']
 
     def prepare(root, repo, pin):
-        changed = prepare_git(root, repo, pin)
+        changed = (
+            prepare_git(root, repo, pin)
+            if git_transport == DEFAULT_GIT_TRANSPORT
+            else prepare_git(root, repo, pin, git_transport=git_transport)
+        )
         results.append({'path': str(root), 'owner': 'prepared-source', 'action': 'fetch',
                         'status': 'applied' if changed else 'unchanged'})
 
@@ -211,6 +215,8 @@ def main(argv):
     parser.add_argument('--catalog', required=True)
     parser.add_argument('--release', required=True)
     parser.add_argument('--source-map', type=Path)
+    parser.add_argument('--git-transport', choices=GIT_TRANSPORTS, default=DEFAULT_GIT_TRANSPORT,
+                        help='Git transport for preparing fixed commits (default: gh-https)')
     parser.add_argument('--format', choices=('auto', 'text', 'json'), default='auto')
     manager, error, raw, started = None, None, {}, False
     state = fallback_state_root()
@@ -219,7 +225,8 @@ def main(argv):
         manager = ProfileManager(args.machine.expanduser().absolute(), args.agent)
         state = manager.state_root
         started = True
-        raw = fetch(manager, args.catalog, args.release, args.source_map, report=raw)
+        raw = fetch(manager, args.catalog, args.release, args.source_map, report=raw,
+                    git_transport=args.git_transport)
     except (Exception, KeyboardInterrupt) as exc:
         error = {'code': 'interrupted' if isinstance(exc, KeyboardInterrupt) else 'fetch_failed', 'phase': 'retrieval',
                  'reason': str(exc) if isinstance(exc, (UsageError, SchemaError, ValueError)) else '基线获取失败；检查 Git/gh、网络、权限和来源声明。',

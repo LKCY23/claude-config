@@ -1,12 +1,12 @@
 name: Watch Claude Desktop
 on:
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '23 3 * * 1'
   workflow_dispatch:
   pull_request:
     paths:
       - scripts/desktop_compatibility.py
-      - scripts/open_desktop_compatibility_pr.py
+      - scripts/report_desktop_compatibility_issue.py
       - .github/workflows/desktop-watch.yml
 permissions:
   contents: read
@@ -36,15 +36,14 @@ jobs:
           path: ${{ runner.temp }}/desktop-report/
           retention-days: 7
           if-no-files-found: warn
-  report-pr:
+  report-issue:
     needs: probe
     if: github.event_name != 'pull_request' && (needs.probe.outputs.status == 'needs-review' || needs.probe.outputs.status == 'compatible')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: write
-      pull-requests: write
-      actions: write
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -53,6 +52,6 @@ jobs:
         with:
           name: desktop-report
           path: ${{ runner.temp }}/desktop-report
-      - run: python3 scripts/open_desktop_compatibility_pr.py --repo "$GITHUB_REPOSITORY" --report "$RUNNER_TEMP/desktop-report/report.json"
+      - run: python3 scripts/report_desktop_compatibility_issue.py --repo "$GITHUB_REPOSITORY" --report "$RUNNER_TEMP/desktop-report/report.json"
         env:
           GH_TOKEN: ${{ github.token }}

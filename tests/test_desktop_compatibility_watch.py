@@ -1,4 +1,4 @@
-"""Release identity, failure classification and PR deduplication boundaries."""
+"""Release identity, failure classification and rolling issue watch boundaries."""
 import importlib.util
 import io
 import json
@@ -10,12 +10,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 sys.path.insert(0, str(ROOT / 'src'))
 import desktop_compatibility as watch
-import open_desktop_compatibility_pr as publisher
+import report_desktop_compatibility_issue as publisher
 
 
 def release():
@@ -97,48 +98,109 @@ class ReleaseTests(unittest.TestCase):
 
 
 class PublisherTests(unittest.TestCase):
-    def test_existing_closed_pr_is_not_reopened(self):
-        with patch.object(publisher, 'api', return_value=[{'state': 'closed', 'html_url': 'url'}]) as api:
-            self.assertEqual(publisher.publish('owner/repo', {'release': release(), 'status': 'needs-review'})['status'], 'existing-closed')
-            self.assertEqual(api.call_count, 1)
+    def sample_report(self, version='3.6556.2', status='needs-review', module='.vite/build/index.chunk-abc123.js'):
+        rel = dict(release(), version=version,
+                   url=f'https://downloads.claude.ai/releases/darwin/universal/{version}/Claude-fixed.zip')
+        return {
+            'schema_version': 1,
+            'release': rel,
+            'status': status,
+            'checks': [{'name': 'app_preference_interface', 'status': 'blocked' if status == 'needs-review' else 'passed'}],
+            'candidate_modules': [{'path': module, 'sha256': 'b' * 64, 'fields': ['userThemeMode', 'locale']}] if module else [],
+            'native_smoke': 'passed' if status == 'compatible' else 'not-run',
+            'scope': 'Source interface and temporary preference files',
+        }
 
-    def test_existing_open_pr_requests_checks_without_rewriting(self):
-        pr = {'number': 1, 'state': 'open', 'html_url': 'url', 'head': {'sha': 'a'*40, 'repo': {'full_name': 'owner/repo'}}}
-        with patch.object(publisher, 'api', side_effect=[[pr], {'default_branch': 'master'}, {'statuses': []}, None]) as api:
-            result = publisher.publish('owner/repo', {'release': release(), 'status': 'needs-review'})
-            self.assertTrue(result['validation_requested'])
-            self.assertTrue(api.call_args.args[0].endswith('/dispatches'))
-            self.assertEqual(api.call_args.args[1]['inputs'], {'pr': '1', 'head': 'a'*40})
-
-    def test_existing_validation_deduplicates_unknown_interface_failures(self):
-        pr = {'number': 1, 'head': {'sha': 'a'*40, 'repo': {'full_name': 'owner/repo'}}}
-        statuses = [{'context': c, 'state': 'failure'} for c in ['claude-config/package','claude-config/desktop']]
-        with patch.object(publisher, 'api', return_value={'statuses': statuses}) as api:
-            self.assertFalse(publisher.request_validation('owner/repo', pr, 'master'))
-            self.assertEqual(api.call_count, 1)
-
-    def test_successful_but_stale_base_is_revalidated(self):
-        pr={'number':1,'head':{'sha':'a'*40,'repo':{'full_name':'owner/repo'}}}
-        statuses=[{'context':c,'state':'success'} for c in ['claude-config/package','claude-config/desktop']]
-        with patch.object(publisher,'api',side_effect=[{'statuses':statuses},{'mergeable_state':'behind'},None]) as api:
-            self.assertTrue(publisher.request_validation('owner/repo',pr,'master'))
-            self.assertTrue(api.call_args.args[0].endswith('/dispatches'))
-
-    def test_failed_report_creates_no_pr(self):
+    def test_failed_report_calls_no_api(self):
         with patch.object(publisher, 'api') as api:
-            self.assertEqual(publisher.publish('owner/repo', {'release': release(), 'status': 'failed'})['status'], 'no-pr-needed')
+            self.assertEqual(publisher.publish('owner/repo', {'release': release(), 'status': 'failed'})['status'],
+                             'no-issue-needed')
             api.assert_not_called()
 
-    def test_unknown_draft_and_compatible_ready_both_request_validation(self):
-        for status, draft in [('needs-review', True), ('compatible', False)]:
-            pr = {'number': 1, 'html_url': 'url', 'head': {'sha': 'a'*40, 'repo': {'full_name': 'owner/repo'}}}
-            responses = [[], {'default_branch': 'master'}, {'object': {'sha': 'base'}}, {'tree': {'sha': 'base-tree'}},
-                         {'sha': 'blob'}, {'sha': 'tree'}, {'sha': 'commit'}, {}, pr, {'statuses': []}, None]
-            with patch.object(publisher, 'api', side_effect=responses) as api:
-                result = publisher.publish('owner/repo', {'release': release(), 'status': status})
-                self.assertEqual(api.call_args_list[8].args[1]['draft'], draft)
-                self.assertTrue(result['validation_requested'])
-                self.assertFalse(any('/comments' in c.args[0] or '/merge' in c.args[0] for c in api.call_args_list))
+    def test_compatible_report_with_no_open_tracking_issue_is_noop(self):
+        with patch.object(publisher, 'api', return_value=[]) as api:
+            result = publisher.publish('owner/repo', self.sample_report(status='compatible'))
+            self.assertEqual(result['status'], 'compatible-no-issue')
+            self.assertEqual(api.call_count, 1)
+
+    def test_compatible_report_closes_existing_bot_tracking_issue(self):
+        issue = {'number': 42, 'html_url': 'https://github.com/owner/repo/issues/42',
+                 'user': {'login': 'github-actions[bot]'},
+                 'body': publisher.MARKER + '\nold tracking issue'}
+        with patch.object(publisher, 'api', side_effect=[[issue], {}, {}]) as api:
+            result = publisher.publish('owner/repo', self.sample_report(version='6.28899.6', status='compatible'))
+            self.assertEqual(result, {'status': 'closed', 'number': 42, 'url': 'https://github.com/owner/repo/issues/42'})
+            self.assertEqual(api.call_args_list[1].args[:2], ('POST', 'repos/owner/repo/issues/42/comments'))
+            self.assertIn('6.28899.6', api.call_args_list[1].args[2]['body'])
+            self.assertEqual(api.call_args_list[2].args,
+                             ('PATCH', 'repos/owner/repo/issues/42', {'state': 'closed', 'state_reason': 'completed'}))
+
+    def test_needs_review_ignores_prs_and_non_bot_issues_and_creates_single_labeled_issue(self):
+        noise = [
+            {'number': 1, 'pull_request': {}, 'user': {'login': 'github-actions[bot]'}, 'body': publisher.MARKER},
+            {'number': 2, 'user': {'login': 'human'}, 'body': publisher.MARKER},
+        ]
+        created = {'number': 7, 'html_url': 'https://github.com/owner/repo/issues/7'}
+        report = self.sample_report(version='6.28899.6', status='needs-review')
+        with patch.object(publisher, 'api', side_effect=[noise, {}, created]) as api:
+            result = publisher.publish('owner/repo', report)
+            self.assertEqual(result, {'status': 'created', 'number': 7, 'url': 'https://github.com/owner/repo/issues/7'})
+            self.assertEqual(api.call_args_list[1].args[:2], ('POST', 'repos/owner/repo/labels'))
+            method, path, payload = api.call_args_list[2].args
+            self.assertEqual((method, path), ('POST', 'repos/owner/repo/issues'))
+            self.assertEqual(payload['title'], 'Claude Desktop compatibility watch: 6.28899.6 needs review')
+            self.assertEqual(payload['labels'], [publisher.LABEL])
+            self.assertIn(publisher.MARKER, payload['body'])
+            self.assertIn(report['release']['url'], payload['body'])
+            self.assertIn(report['release']['sha256'], payload['body'])
+            self.assertIn('.vite/build/index.chunk-abc123.js', payload['body'])
+
+    def test_repeated_needs_review_for_same_version_is_idempotent(self):
+        report = self.sample_report(version='6.28899.6', status='needs-review')
+        body = publisher.render_body(report)
+        existing = {
+            'number': 7,
+            'html_url': 'https://github.com/owner/repo/issues/7',
+            'title': 'Claude Desktop compatibility watch: 6.28899.6 needs review',
+            'user': {'login': 'github-actions[bot]'},
+            'body': body,
+        }
+        with patch.object(publisher, 'api', return_value=[existing]) as api:
+            result = publisher.publish('owner/repo', report)
+            self.assertEqual(result, {'status': 'unchanged', 'number': 7, 'url': 'https://github.com/owner/repo/issues/7'})
+            self.assertEqual(api.call_count, 1)
+
+    def test_newer_needs_review_updates_existing_issue_and_retains_history(self):
+        old_report = self.sample_report(version='6.28899.2', status='needs-review', module='.vite/build/old.js')
+        old_body = publisher.render_body(old_report)
+        existing = {
+            'number': 7,
+            'html_url': 'https://github.com/owner/repo/issues/7',
+            'title': 'Claude Desktop compatibility watch: 6.28899.2 needs review',
+            'user': {'login': 'github-actions[bot]'},
+            'body': old_body,
+        }
+        new_report = self.sample_report(version='6.28899.6', status='needs-review', module='.vite/build/new.js')
+        updated = {'number': 7, 'html_url': 'https://github.com/owner/repo/issues/7'}
+        with patch.object(publisher, 'api', side_effect=[[existing], updated]) as api:
+            result = publisher.publish('owner/repo', new_report)
+            self.assertEqual(result, {'status': 'updated', 'number': 7, 'url': 'https://github.com/owner/repo/issues/7'})
+            method, path, payload = api.call_args_list[1].args
+            self.assertEqual((method, path), ('PATCH', 'repos/owner/repo/issues/7'))
+            self.assertEqual(payload['title'], 'Claude Desktop compatibility watch: 6.28899.6 needs review')
+            self.assertIn('| `6.28899.6` | `needs-review` |', payload['body'])
+            self.assertIn('| `6.28899.2` | `needs-review` |', payload['body'])
+
+    def test_watch_workflow_schedule_permissions_and_publisher(self):
+        workflow = yaml.load((ROOT / '.github/workflows/desktop-watch.yml').read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual(workflow['on']['schedule'], [{'cron': '23 3 * * 1'}])
+        self.assertIn('workflow_dispatch', workflow['on'])
+        self.assertIn('report-issue', workflow['jobs'])
+        self.assertNotIn('report-pr', workflow['jobs'])
+        job = workflow['jobs']['report-issue']
+        self.assertEqual(job['permissions'], {'contents': 'read', 'issues': 'write'})
+        steps_text = json.dumps(job['steps'])
+        self.assertIn('scripts/report_desktop_compatibility_issue.py', steps_text)
 
 
 if __name__ == '__main__':

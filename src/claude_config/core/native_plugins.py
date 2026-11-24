@@ -41,12 +41,25 @@ def require_image(condition, message):
         raise ImageContentMismatch(message)
 
 
+def _is_empty_plugin_dependencies_lockfile(root, entries):
+    lockfile = 'node_modules/.package-lock.json'
+    if lockfile not in entries or any(name != lockfile and name.startswith('node_modules/') for name in entries):
+        return False
+    try:
+        data = json.loads((Path(root) / lockfile).read_text(encoding='utf-8'))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(data, dict) and data.get('name') == 'plugin-dependencies' and data.get('packages') == {}
+
+
 def image_fingerprint(path):
     value = directory_fingerprint(path)
     require_image(value['exists'] and bool(value['entries']), 'Native plugin image is missing')
     require_image(all('sha256' in entry for entry in value['entries'].values()), 'Native plugin image contains symlinks')
+    ignore_empty_lockfile = _is_empty_plugin_dependencies_lockfile(path, value['entries'])
     return fingerprint({name: {'sha256': entry['sha256'], 'executable': bool(entry['mode'] & 0o111)} for name, entry in value['entries'].items()
-                        if '.orphaned_at' not in Path(name).parts})
+                        if '.orphaned_at' not in Path(name).parts
+                        and not (ignore_empty_lockfile and name == 'node_modules/.package-lock.json')})
 
 
 def validate_receipt(value):

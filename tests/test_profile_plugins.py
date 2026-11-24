@@ -727,6 +727,51 @@ with patch.object(PluginOperation,'_call',lambda op,args,work: installer(op,args
         with self.assertRaises(PlanStale):recovery.apply(self.state)
         self.assertTrue(op._json(op.user_config)['laterAgain'])
 
+    def test_image_fingerprint_ignores_only_empty_plugin_dependencies_lockfile(self):
+        from claude_config.core.native_plugins import image_fingerprint
+        source = self.root / 'source-plugin'
+        (source / 'package.json').parent.mkdir(parents=True, exist_ok=True)
+        (source / 'package.json').write_text('{"name":"hud","version":"0.15.0"}\n')
+        expected = image_fingerprint(source)
+
+        cache = self.root / 'cache-plugin'
+        shutil.copytree(source, cache)
+        lockfile = cache / 'node_modules/.package-lock.json'
+        lockfile.parent.mkdir(parents=True, exist_ok=True)
+        lockfile.write_text(json.dumps({
+            'name': 'plugin-dependencies',
+            'version': '0.0.0',
+            'lockfileVersion': 3,
+            'requires': True,
+            'packages': {},
+        }))
+        self.assertEqual(image_fingerprint(cache), expected)
+
+        # Non-empty packages must still change the image fingerprint.
+        lockfile.write_text(json.dumps({
+            'name': 'plugin-dependencies',
+            'version': '0.0.0',
+            'lockfileVersion': 3,
+            'requires': True,
+            'packages': {'node_modules/pkg': {'version': '1.0.0'}},
+        }))
+        self.assertNotEqual(image_fingerprint(cache), expected)
+
+        # Non-matching name must still change the image fingerprint.
+        lockfile.write_text(json.dumps({'name': 'other', 'packages': {}}))
+        self.assertNotEqual(image_fingerprint(cache), expected)
+
+        # Invalid JSON must still change the image fingerprint.
+        lockfile.write_text('{not-json')
+        self.assertNotEqual(image_fingerprint(cache), expected)
+
+        # Any extra file under node_modules/ must prevent ignoring the lockfile.
+        lockfile.write_text(json.dumps({'name': 'plugin-dependencies', 'packages': {}}))
+        extra = cache / 'node_modules/extra/index.js'
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        extra.write_text('export {};\n')
+        self.assertNotEqual(image_fingerprint(cache), expected)
+
 
 if __name__ == '__main__':
     unittest.main()

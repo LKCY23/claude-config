@@ -14,6 +14,7 @@ from .native_plugins import PluginOperation
 from .plugin_locks import (apply_pin, empty_locks, locator, read_locks, validate_locks)
 from .registrations import claude_user_config
 from .schema import COMMIT, REF, SchemaError, require, validate_catalogs, validate_profile, within
+from .source_transport import DEFAULT_GIT_TRANSPORT, validate_git_transport
 from .transaction import FileChange, FilePlan, UnfinishedRun, file_fingerprint
 from .journal import unfinished
 
@@ -65,11 +66,12 @@ def decision(path, before, after, reason):
 
 
 class PluginManager:
-    def __init__(self, manager, *, fetcher=None, resolve_release=None):
+    def __init__(self, manager, *, fetcher=None, resolve_release=None, git_transport=DEFAULT_GIT_TRANSPORT):
         require(manager.agent == 'claude-code', 'Plugin commands currently support the Claude Code adapter only')
         self.manager = manager
         self.fetcher = fetcher
         self.resolve_release = resolve_release or release_commit
+        self.git_transport = validate_git_transport(git_transport)
         self.prepared = []
 
     def context(self):
@@ -162,7 +164,12 @@ class PluginManager:
     def prepare_source(self, source):
         from ..fetch_baseline import prepare_git
         root = self.manager.state_root / 'sources' / source['repo'].replace('/', '--') / source['commit']
-        created = (self.fetcher or prepare_git)(root, source['repo'], source['commit'])
+        if self.fetcher is not None:
+            created = self.fetcher(root, source['repo'], source['commit'])
+        elif self.git_transport == DEFAULT_GIT_TRANSPORT:
+            created = prepare_git(root, source['repo'], source['commit'])
+        else:
+            created = prepare_git(root, source['repo'], source['commit'], git_transport=self.git_transport)
         verify_git(root, source['repo'], source['commit'])
         if created:
             self.prepared.append({'repo': source['repo'], 'commit': source['commit'], 'path': str(root)})

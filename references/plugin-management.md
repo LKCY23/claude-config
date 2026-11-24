@@ -24,11 +24,12 @@ claude-config plugin disable sanctuary-translate --agent claude-code
 
 已安装其他版本时 `install` 报告应使用 `upgrade`；启用未安装的插件会报告应先安装。禁止隐式降级及同一原生版本号复用不同内容。短名优先匹配 Profile 中的唯一插件；未选择的新插件从已准备的 catalog 查找，歧义必须写完整 `name@catalog`。新 catalog 缓存尚未准备时请写完整引用；工具只在声明的私有 sources 缓存位置自动准备，不覆盖自定义 checkout。
 
-带必需运行绑定的新安装可以显式传入：
+带必需运行绑定的新安装可以显式传入；在无 `gh` 钥匙串的远程 SSH 会话准备未缓存源码时，可为 `install` / `upgrade` 传入 `--git-transport ssh`：
 
 ```sh
 claude-config plugin install sanctuary-translate@claudespace-personal --agent claude-code \
   --binding node=executables.sanctuary-node
+claude-config plugin install folio@claudespace-personal --agent claude-code --git-transport ssh --dry-run
 ```
 
 既有插件的绑定不由此入口改写。依赖必须已经明确选择在 Profile 中；工具准备它们的固定来源，沿用已有依赖扩展报告，不偷偷添加未知依赖。

@@ -53,7 +53,8 @@ LABELS.update(clients='客户端', framework='框架文件', shared_files='共�
 LABELS.update(catalogs='资源目录', catalog_roots='本机来源目录', repo='来源仓库', commit='固定提交',
               path='仓库内路径', release_record='发布记录', released_baseline='发布基线检查',
               catalog_source_map='来源迁移映射', affected_sources='受影响资源来源')
-LABELS.update(antigravity_discovery='Antigravity 只读盘点', duplicate_plugin_name='插件名称冲突',
+LABELS.update(antigravity_discovery='Antigravity 只读盘点', antigravity_binding='Antigravity 绑定检查',
+              antigravity_plugin_package='Antigravity 插件包', duplicate_plugin_name='插件名称冲突',
               plugin_dir_name_collision='插件目录与名称冲突', skill_plugin_overlap='技能与插件技能重名',
               mcp_server_collision='全局与插件 MCP 重名', phase_a_read_only='Phase A 只读保护')
 POLICY_LABELS.update({'exact-framework-release': '按已核对的框架版本更新',

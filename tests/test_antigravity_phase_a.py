@@ -374,17 +374,15 @@ class AntigravityDiscoveryAndGuardTests(AntigravityPhaseAFixture):
             doc_report, _ = doctor(self.machine_path, processes=True)
         self.assertEqual(doc_report['agent_processes'], observed)
 
-    def test_plan_and_validate_read_only_and_apply_blocked_with_zero_writes(self):
+    def test_plan_and_validate_read_only_and_cutover_blocked_with_zero_writes(self):
         (self.ag_config / 'config.json').write_text(json.dumps({'userSettings': {'keep': True}, 'plugins': {'p1': {'enabled': True}}}))
         before = self.snapshot_tree(self.ag_config)
 
-        # Direct Python API: plan succeeds, apply raises phase_a_read_only
+        # Direct Python API: plan succeeds with zero changes for empty profile
         manager = ProfileManager(self.machine_path, 'antigravity')
         plan = manager.plan()
         self.assertTrue(plan.report['ready'], plan.report['blockers'])
         self.assertEqual(plan.changes, ())
-        with self.assertRaisesRegex(SchemaError, 'phase_a_read_only'):
-            plan.apply(self.state)
         self.assertEqual(self.snapshot_tree(self.ag_config), before)
         self.assertFalse((self.state / 'runs').exists())
 
@@ -410,26 +408,10 @@ class AntigravityDiscoveryAndGuardTests(AntigravityPhaseAFixture):
         self.assertEqual(code, 0, out.getvalue())
         self.assertTrue(json.loads(out.getvalue())['preview_only'])
 
-        # CLI apply (without --dry-run) and switch are explicitly blocked with phase_a_read_only
-        other_profile = self.data / 'profiles/agents/antigravity/other.yaml'
-        other_profile.write_text(yaml.safe_dump({'schema_version': 1, 'agent_type': 'antigravity'}))
-        for argv in (
-            ['apply', '--machine', str(self.machine_path), '--agent', 'antigravity', '--format', 'json'],
-            ['switch', '--machine', str(self.machine_path), '--agent', 'antigravity', '--profile', 'profiles/agents/antigravity/other.yaml', '--format', 'json'],
-        ):
-            out = io.StringIO()
-            with redirect_stdout(out):
-                code = cli_main(argv)
-            self.assertEqual(code, 1, out.getvalue())
-            report = json.loads(out.getvalue())
-            self.assertFalse(report['ready'])
-            self.assertFalse(report['execution']['started'])
-            self.assertIn('phase_a_read_only', [b.get('code') for b in report['blockers']])
-
         self.assertEqual(self.snapshot_tree(self.ag_config), before)
         self.assertFalse((self.state / 'runs').exists())
 
-        # Cutover with antigravity is also blocked
+        # Cutover with antigravity remains intentionally deferred/blocked in Phase B
         spec_path = self.root / 'cutover.yaml'
         spec_path.write_text(yaml.safe_dump({
             'schema_version': 2,
@@ -437,7 +419,7 @@ class AntigravityDiscoveryAndGuardTests(AntigravityPhaseAFixture):
             'machine_target': str(self.root / 'new-machine.yaml'),
             'data_target': str(self.root / 'new-data'),
         }))
-        with self.assertRaisesRegex(SchemaError, 'phase_a_read_only'):
+        with self.assertRaisesRegex(SchemaError, 'unsupported_antigravity_cutover'):
             Cutover(spec_path)
 
 

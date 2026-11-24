@@ -148,7 +148,7 @@ def _fetch_one(manager, alias, release, source_map, catalogs, commit, report, al
     machine['catalog_roots'].update(dict.fromkeys(aliases, str(checkout)))
     prepared = set()
     impacts = []
-    for agent in ('claude-code', 'codex'):
+    for agent in ('claude-code', 'codex', 'antigravity'):
         for path in profile_yaml_files(manager.root / 'profiles/agents' / agent):
             profile = manager._read(path, parse_yaml)[0]
             validate_profile(profile, expected=agent)
@@ -211,7 +211,7 @@ def _fetch_one(manager, alias, release, source_map, catalogs, commit, report, al
 def main(argv):
     parser = ReportParser(prog='claude-config fetch-baseline', description=__doc__)
     parser.add_argument('--machine', type=Path, default=Path.home() / '.claude-config-tool/machine.yaml')
-    parser.add_argument('--agent', required=True, choices=('claude-code', 'codex'))
+    parser.add_argument('--agent', required=True, choices=('claude-code', 'codex', 'antigravity'))
     parser.add_argument('--catalog', required=True)
     parser.add_argument('--release', required=True)
     parser.add_argument('--source-map', type=Path)

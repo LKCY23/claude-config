@@ -16,11 +16,12 @@ from .merge import fingerprint
 from .native import parse_json, parse_yaml, put, snapshot_read
 from .registrations import HOOK_OPTIONS, MCP_OPTIONS, Registrations, validate_registration
 from .native_plugins import PluginPlanner, validate_receipt
+from .resource_options import merge_options
 from .skill_controls import invocation_controls, register_skill_control, validate_skill_control
 from .agent_options import agent_options, definition_options
 from .resource_conflicts import ResourceConflicts, validate_review
 from .resource_references import package_references, instruction_body
-from .schema import NAME, REF, RESOURCE_KINDS, SchemaError, closed, pointer, require, within
+from .schema import NAME, REF, RESOURCE_KINDS, SchemaError, closed, mapping, pointer, require, within
 from .transaction import FileChange, file_fingerprint
 
 START, END = '<!-- claude-config:begin -->', '<!-- claude-config:end -->'
@@ -63,6 +64,8 @@ def check_execpolicy(executable, files, entry):
 
 def render_package(package, agent, options=None):
     kind = package.item['kind']
+    if agent == 'antigravity':
+        require(kind in ('plugin', 'skill', 'mcp'), 'Antigravity resource kind is not supported in Phase B: ' + kind)
     options = package.selection.get('options', {}) if options is None else options
     allowed = {'plugin': ('enabled',), 'skill': ('control',), 'mcp': (*MCP_OPTIONS[agent], 'entry'),
                'hook': HOOK_OPTIONS if package.item['compatibility'][agent]['mode'] != 'status-line' else (),
@@ -72,14 +75,26 @@ def render_package(package, agent, options=None):
         require(type(options['enabled']) is bool, 'Plugin enabled must be Boolean')
     files = dict(package.files)
     identity = package.ref.split('@')[0]
-    if kind == 'skill':
+    if kind == 'plugin' and agent == 'antigravity':
+        require(package.root.is_dir() and package.entry in ('plugin.json', '.antigravity-plugin/plugin.json'),
+                'Antigravity plugin requires a complete directory with plugin.json or .antigravity-plugin/plugin.json')
+        manifest = parse_json(files[package.entry])
+        no_secrets(manifest)
+        name = manifest.get('name')
+        require(isinstance(name, str) and bool(NAME.fullmatch(name)), 'Antigravity plugin manifest requires a safe name')
+        if 'version' in manifest:
+            require(isinstance(manifest['version'], str) and bool(manifest['version']), 'Antigravity plugin manifest version must be a non-empty string')
+        if 'disabled' in manifest:
+            require(type(manifest['disabled']) is bool, 'Antigravity plugin manifest disabled must be Boolean')
+        identity = name
+    elif kind == 'skill':
         require(package.root.is_dir() and package.entry == 'SKILL.md', 'Independent skill must select a complete directory with root SKILL.md')
         meta, body, _ = frontmatter(files[package.entry])
         no_secrets(meta)
         require(all(isinstance(meta.get(key), str) and meta[key] for key in ('name', 'description')), 'Skill requires name and description')
         identity = meta['name']
         control = options.get('control', {})
-        allowed_control = ('allow_implicit_invocation', 'enabled') if agent == 'codex' else ('enabled', 'disable-model-invocation', 'user-invocable')
+        allowed_control = () if agent == 'antigravity' else ('allow_implicit_invocation', 'enabled') if agent == 'codex' else ('enabled', 'disable-model-invocation', 'user-invocable')
         closed(control, allowed_control, (), 'native skill control')
         require(all(type(value) is bool for value in control.values()), 'Skill controls must be Boolean')
         claude_control = {key: value for key, value in control.items() if key != 'enabled'}
@@ -161,7 +176,7 @@ def validate_resource_state(records):
             require(expected['exists'] is True and type(expected['mode']) is int and 0 <= expected['mode'] <= 0o777
                     and isinstance(expected['sha256'], str) and len(expected['sha256']) == 64 and all(char in '0123456789abcdef' for char in expected['sha256']),
                     'Invalid resource file snapshot')
-        closed(record['native'], ('identity', 'root', 'global_block', 'registration', 'plugin', 'skill_control', 'review', 'mcp_entry'), (), 'native resource identity')
+        closed(record['native'], ('identity', 'root', 'global_block', 'registration', 'plugin', 'antigravity_plugin', 'skill_control', 'review', 'mcp_entry'), (), 'native resource identity')
         if 'mcp_entry' in record['native']:
             from .schema import relative
             require(record['kind'] == 'mcp', 'MCP entry state on another resource kind')
@@ -174,6 +189,19 @@ def validate_resource_state(records):
         if 'plugin' in record['native']:
             validate_receipt(record['native']['plugin'])
             require(record['kind'] == 'plugin', 'Plugin receipt on another resource kind')
+        if 'antigravity_plugin' in record['native']:
+            require(record['kind'] == 'plugin', 'Antigravity plugin state on another resource kind')
+            plugin_state = record['native']['antigravity_plugin']
+            closed(plugin_state, ('dir', 'root', 'entry', 'version', 'enabled', 'config_enabled', 'manifest_disabled'),
+                   ('dir', 'root', 'entry'), 'antigravity plugin state')
+            require(isinstance(plugin_state['dir'], str) and bool(NAME.fullmatch(plugin_state['dir'])), 'Invalid Antigravity plugin dir')
+            require(isinstance(plugin_state['root'], str) and Path(plugin_state['root']).is_absolute(), 'Invalid Antigravity plugin root')
+            require(plugin_state['entry'] in ('plugin.json', '.antigravity-plugin/plugin.json'), 'Invalid Antigravity plugin manifest entry')
+            if 'version' in plugin_state:
+                require(isinstance(plugin_state['version'], str) and bool(plugin_state['version']), 'Invalid Antigravity plugin version')
+            for key in ('enabled', 'config_enabled', 'manifest_disabled'):
+                if key in plugin_state:
+                    require(type(plugin_state[key]) is bool, f'Invalid Antigravity plugin {key} flag')
         if 'registration' in record['native']:
             validate_registration(record['native']['registration'])
             require(record['native']['registration']['kind'] == record['kind'], 'Resource registration kind disagrees with state')
@@ -280,6 +308,79 @@ class ResourcePlan:
         for path, (content, mode) in sorted(wanted.items(), key=lambda row: (row[0].name == 'SKILL.md', row[0] in existing, str(row[0]))):
             self._write(ref, path, content, mode)
         self.changes.extend(obsolete)
+
+    def _antigravity_plugin(self, ref, item):
+        manifest = parse_json(item['files'][item['package'].entry])
+        plugin_dir = item['identity']
+        plugin_root = self._target(self.manager.native_path.parent / 'plugins', plugin_dir)
+        item['cache'] = plugin_root
+        self.rendered[ref]['cache'] = plugin_root
+        self.records[ref]['cache'] = str(plugin_root)
+        previous = self.previous.get(ref)
+        old_ag = previous.get('native', {}).get('antigravity_plugin') if previous else None
+        if old_ag is not None and old_ag['dir'] != plugin_dir:
+            self._block(ref, 'plugin_identity_changed', 'Antigravity plugin directory name changed under the same resource reference')
+            return
+        require(self.registrations is not None, 'Native registration context is required')
+        config_path, document = self.registrations.document(self.manager.native_path)
+        plugins_map = mapping(document.get('plugins', {}), 'antigravity plugins')
+        current_entry = plugins_map.get(plugin_dir)
+        if current_entry is not None:
+            require(isinstance(current_entry, dict), 'Antigravity plugin config entry must be an object')
+        current_enabled = current_entry.get('enabled') if current_entry is not None else None
+        if current_enabled is not None:
+            require(type(current_enabled) is bool, 'Antigravity plugin enabled must be Boolean')
+        if old_ag is None and current_enabled is not None:
+            self._block(ref, 'unmanaged_plugin_collision',
+                        f"Antigravity config.json already tracks plugins.{plugin_dir}.enabled outside this resource")
+            return
+        if old_ag is not None and current_enabled != old_ag.get('config_enabled') and ref not in self.conflicts.restore:
+            self._block(ref, 'plugin_drift',
+                        f"Antigravity plugins.{plugin_dir}.enabled was modified outside managed state")
+            return
+        self._directory(ref, plugin_root, item['files'], item['modes'])
+        selected_opts = item['package'].selection.get('options', {})
+        incoming_opts = {'enabled': selected_opts['enabled']} if 'enabled' in selected_opts else {}
+        if ref in self.conflicts.restore:
+            current_opts = {'enabled': old_ag['config_enabled']} if old_ag and 'config_enabled' in old_ag else {}
+        else:
+            current_opts = {'enabled': current_enabled} if current_enabled is not None else {}
+        baseline_opts = {'enabled': old_ag['config_enabled']} if old_ag and 'config_enabled' in old_ag else None
+        merged = merge_options(self, ref, incoming_opts, current_opts, baseline=baseline_opts,
+                               report_prefix=(str(config_path), 'plugins', plugin_dir))
+        if 'enabled' in merged:
+            document.setdefault('plugins', {})
+            require(isinstance(document['plugins'], dict), 'Antigravity plugins config must be an object')
+            entry = dict(current_entry or {})
+            entry['enabled'] = merged['enabled']
+            document['plugins'][plugin_dir] = entry
+        elif 'plugins' in document and plugin_dir in document['plugins'] and isinstance(document['plugins'][plugin_dir], dict):
+            entry = dict(document['plugins'][plugin_dir])
+            entry.pop('enabled', None)
+            if entry:
+                document['plugins'][plugin_dir] = entry
+            else:
+                document['plugins'].pop(plugin_dir, None)
+        if config_path == self.registrations.main_path:
+            self.registrations.main_roots.add('plugins')
+        manifest_disabled = manifest.get('disabled') if type(manifest.get('disabled')) is bool else None
+        effective_enabled = merged['enabled'] if 'enabled' in merged else (not manifest_disabled if manifest_disabled is not None else True)
+        state_entry = {
+            'dir': plugin_dir,
+            'root': str(plugin_root),
+            'entry': item['package'].entry,
+            'enabled': effective_enabled,
+        }
+        if isinstance(manifest.get('version'), str) and manifest['version']:
+            state_entry['version'] = manifest['version']
+        if 'enabled' in merged:
+            state_entry['config_enabled'] = merged['enabled']
+        if manifest_disabled is not None:
+            state_entry['manifest_disabled'] = manifest_disabled
+        self.records[ref]['native']['antigravity_plugin'] = state_entry
+        self.checks.append({'name': 'antigravity_plugin_package', 'ref': ref, 'status': 'passed',
+                            'level': 'documented-config-interface',
+                            'reason': 'Plugin files deployed under plugins/<dir> and enablement recorded in config.json'})
 
     def _instructions(self, ref, item):
         path = self._target(self.manager.native_path.parent, 'CLAUDE.md' if self.manager.agent == 'claude-code' else 'AGENTS.md')
@@ -497,6 +598,9 @@ class ResourcePlan:
                 self.records[ref]['cache'] = str(item['cache'])
                 self.records[ref]['rendered_fingerprint'] = item['rendered_fingerprint']
             if kind == 'plugin':
+                if self.manager.agent == 'antigravity':
+                    self._antigravity_plugin(ref, item)
+                    continue
                 self.plugins.add(ref, item)
                 self._directory(ref, item['cache'], item['files'], item['modes'])
                 continue

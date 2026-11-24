@@ -40,8 +40,9 @@ def retirement_plan(manager, refs):
         expected_cache = manager.native_path.parent.resolve() / '.claude-config-resources' / ref.split('@')[1] / ref.split('@')[0] / old['rendered_fingerprint']
         require(cache == expected_cache and cache.resolve() == cache and root.resolve() == root,
                 'Recorded retirement root or cache is no longer an unambiguous bound path')
-        if manager.agent == 'claude-code':
-            require(root == manager.native_path.parent.resolve() / 'skills' / identity, 'Retirement root differs from the bound Claude skills directory')
+        if manager.agent in ('claude-code', 'antigravity'):
+            require(root == manager.native_path.parent.resolve() / 'skills' / identity,
+                    'Retirement root differs from the bound ' + manager.agent + ' skills directory')
         else:
             roots = {Path(value).resolve() for value in manager.machine.get('bindings', {}).get('paths', {}).values()
                      if Path(value).parts[-2:] == ('.agents', 'skills')}
@@ -62,7 +63,9 @@ def retirement_plan(manager, refs):
                               'policy': 'explicit-retirement', 'reason': 'Delete only the unchanged owned file'})
         control = old['native'].get('skill_control')
         require(not control or 'plugin_selector' not in control, 'A skills-dir plugin requires the native plugin lifecycle')
-        if manager.agent == 'claude-code':
+        if manager.agent == 'antigravity':
+            require(not control, 'Antigravity skill retirement does not manage skill controls')
+        elif manager.agent == 'claude-code':
             overrides = result.get('skillOverrides', {})
             if control:
                 require(overrides.get(control['name']) == ('on' if control['entry']['enabled'] else 'off'),

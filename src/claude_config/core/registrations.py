@@ -7,7 +7,7 @@ import shlex
 from urllib.parse import urlsplit
 
 from .merge import fingerprint, get, same
-from .native import parse_json, put, snapshot_read
+from .native import parse_json, parse_json_or_empty, put, snapshot_read
 from .resource_options import merge_options
 from .schema import NAME, closed, mapping, relative, require, string
 from .transaction import FileChange
@@ -49,6 +49,14 @@ def claude_user_config(binding):
     allowed = {root / '.claude.json', ordinary}
     require(chosen in allowed, 'Claude user_config must match its default or explicit-directory native layout')
     return chosen
+
+
+def mcp_target(manager):
+    if manager.agent == 'claude-code':
+        return claude_user_config(manager.entry['binding']), 'mcpServers'
+    if manager.agent == 'antigravity':
+        return manager.native_path.parent / 'mcp_config.json', 'mcpServers'
+    return manager.native_path, 'mcp_servers'
 
 
 def validate_registration(value):
@@ -154,7 +162,9 @@ def mcp_definition(item, agent):
             else:
                 target[key] = deepcopy(value)
     merge_options(server, options)
-    require(('command' in server) != ('url' in server), 'MCP needs exactly one command or URL')
+    has_url = ('url' in server) or (agent == 'antigravity' and 'serverUrl' in server)
+    require(not ('url' in server and 'serverUrl' in server), 'MCP URL cannot specify both url and serverUrl')
+    require(('command' in server) != has_url, 'MCP needs exactly one command or URL')
     stdio = 'command' in server
     if agent == 'claude-code':
         transport = server.get('type', 'stdio' if stdio else 'http')
@@ -170,17 +180,18 @@ def mcp_definition(item, agent):
             server['cwd'] = template.slot(server['cwd'], 'path')
             require(Path(server['cwd']).is_dir(), 'MCP working directory must be a directory')
         if 'env' in server:
-            server['env'] = template.public_values(server['env'], interpolation=agent == 'claude-code')
+            server['env'] = template.public_values(server['env'], interpolation=agent in ('claude-code', 'antigravity'))
         if 'env_vars' in server:
             require(isinstance(server['env_vars'], list), 'MCP env_vars must be a list of credential bindings')
             server['env_vars'] = [template.credential(ref) for ref in server['env_vars']]
             require(len(server['env_vars']) == len(set(server['env_vars'])), 'Duplicate forwarded credential variable')
     else:
         require(not set(server).intersection(('args', 'cwd', 'env', 'env_vars')), 'HTTP MCP cannot have stdio options')
-        server['url'] = template.url(server['url'])
+        url_key = 'serverUrl' if agent == 'antigravity' and 'serverUrl' in server else 'url'
+        server[url_key] = template.url(server[url_key])
         for field in ('headers', 'http_headers'):
             if field in server:
-                server[field] = template.public_values(server[field], interpolation=agent == 'claude-code', headers=True)
+                server[field] = template.public_values(server[field], interpolation=agent in ('claude-code', 'antigravity'), headers=True)
         if 'bearer_token_env_var' in server:
             server['bearer_token_env_var'] = template.credential(server['bearer_token_env_var'])
         if 'env_http_headers' in server:
@@ -267,7 +278,8 @@ class Registrations:
         require(not path.is_symlink(), 'Native registration file cannot be a symlink')
         path = self.resources._target(path.parent, path.name)
         if path not in self.documents:
-            value, content, expected = self.manager._read(path, parse_json)
+            parser = parse_json_or_empty if self.manager.agent == 'antigravity' and path.name == 'mcp_config.json' else parse_json
+            value, content, expected = self.manager._read(path, parser)
             self.documents[path] = {'value': value, 'original': content, 'expected': expected}
         return path, self.documents[path]['value']
 
@@ -278,9 +290,8 @@ class Registrations:
     def add_mcp(self, ref, item):
         agent = self.manager.agent
         name, server = mcp_definition(item, agent)
-        path = claude_user_config(self.manager.entry['binding']) if agent == 'claude-code' else self.manager.native_path
+        path, key = mcp_target(self.manager)
         path, document = self.document(path)
-        key = 'mcpServers' if agent == 'claude-code' else 'mcp_servers'
         entries = mapping(document.get(key, {}), 'native MCP entries')
         old = self.resources.previous.get(ref, {}).get('native', {}).get('registration')
         if old is not None and old['path'] != str(path):
@@ -421,6 +432,7 @@ class Registrations:
             if path == self.main_path:
                 continue
             original = document['original']
-            content = original if same(parse_json(original), document['value']) else (json.dumps(document['value'], indent=2, ensure_ascii=False) + '\n').encode()
-            changes.append(FileChange(path, content, 'native-resource-registrations', parse_json, document['expected']))
+            parser = parse_json_or_empty if self.manager.agent == 'antigravity' and path.name == 'mcp_config.json' else parse_json
+            content = original if same(parser(original), document['value']) else (json.dumps(document['value'], indent=2, ensure_ascii=False) + '\n').encode()
+            changes.append(FileChange(path, content, 'native-resource-registrations', parser, document['expected']))
         return changes

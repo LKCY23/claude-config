@@ -214,12 +214,7 @@ def _main(argv):
         if args.expect_plan_id and report['plan_id'] != args.expect_plan_id:
             raise PlanStale('Reviewed plan has changed; generate a new preview')
         report['preview_only'] = preview_only
-        if args.agent == 'antigravity' and write and not args.dry_run:
-            reason = 'Antigravity Phase A is read-only; apply/write operations are blocked'
-            report['checks'].append({'name': 'phase_a_read_only', 'status': 'blocked', 'code': 'phase_a_read_only', 'reason': reason})
-            report['blockers'].append({'code': 'phase_a_read_only', 'reason': reason})
-            report['ready'] = False
-        elif write and not args.dry_run and report['ready']:
+        if write and not args.dry_run and report['ready']:
             phase = 'execution'
             started = True
             report = plan.apply(manager.state_root)

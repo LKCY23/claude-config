@@ -11,6 +11,8 @@ def invocation_controls(resources, ref, item, skill_root):
     from .native import parse_yaml, snapshot_read
     from .resources import frontmatter
     agent = resources.manager.agent
+    if agent == 'antigravity':
+        return item
     keys = ('allow_implicit_invocation',) if agent == 'codex' else ('disable-model-invocation', 'user-invocable')
     if agent == 'codex':
         relative = 'agents/openai.yaml'
@@ -77,6 +79,8 @@ def claude_skill_plugin_selector(item):
 
 
 def register_skill_control(resources, ref, item, skill_root):
+    if resources.manager.agent == 'antigravity':
+        return
     if resources.manager.agent == 'claude-code':
         return register_claude_skill_control(resources, ref, item, skill_root)
     controls = item['package'].selection.get('options', {}).get('control', {})

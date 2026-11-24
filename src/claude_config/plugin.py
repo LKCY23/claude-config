@@ -17,8 +17,8 @@ def summary(report):
         before, after = intent.get('before') or {}, intent['after']
         flag = lambda value: '启用' if value is True else '禁用' if value is False else '未声明'
         lines = [f"插件：{intent['resource']}", f"Profile：{intent['profile']}",
-                 f"版本：{before.get('version') or '未安装'} → {after['version']}",
-                 f"状态：{flag(before.get('enabled'))} → {flag(after['enabled'])}",
+                 f"版本：{before.get('version') or '未安装'} → {after['version'] or '已移除'}",
+                 f"状态：{flag(before.get('enabled'))} → {'已移除' if intent['action'] == 'remove' else flag(after['enabled'])}",
                  '范围：当前 Agent 用户级插件；共用配置目录的 CLI / Desktop 会受影响']
         if report.get('plan_id'):
             lines.append('计划 ID：' + report['plan_id'])
@@ -53,10 +53,10 @@ def main(argv=None):
     preview = True
     operation = 'plugin'
     try:
-        parser = ReportParser(prog='claude-config plugin', description='Manage one declared Claude Code plugin with a checked Profile/native transaction.')
-        parser.add_argument('action', choices=('install', 'upgrade', 'enable', 'disable', 'list', 'status'))
+        parser = ReportParser(prog='claude-config plugin', description='Manage one declared Claude Code or Antigravity plugin with a checked Profile/native transaction.')
+        parser.add_argument('action', choices=('install', 'upgrade', 'enable', 'disable', 'remove', 'list', 'status'))
         parser.add_argument('plugin', nargs='?', help='name@catalog, or an unambiguous short name')
-        parser.add_argument('--agent', required=True, choices=('claude-code',))
+        parser.add_argument('--agent', required=True, choices=('claude-code', 'antigravity'))
         parser.add_argument('--machine', type=Path, default=Path.home() / '.claude-config-tool/machine.yaml')
         source = parser.add_mutually_exclusive_group()
         source.add_argument('--version', help='Exact version from a published GitHub release')
@@ -72,6 +72,8 @@ def main(argv=None):
         parser.add_argument('--expect-plan-id', help='Optional: require an exact previously reviewed plan ID')
         parser.add_argument('--format', choices=('auto', 'text', 'json'), default='auto')
         args = parser.parse_args(argv)
+        if args.action == 'remove' and args.agent != 'antigravity':
+            raise UsageError('remove is currently supported for --agent antigravity only')
         mode = args.format
         operation = 'plugin-' + args.action
         query = args.action in ('list', 'status')
@@ -79,8 +81,8 @@ def main(argv=None):
             raise UsageError('list takes no plugin; all other actions require one')
         if query and (args.version or args.commit or args.enable or args.disabled or args.binding or args.write or args.expect_plan_id or args.git_transport != DEFAULT_GIT_TRANSPORT):
             raise UsageError('list/status are read-only queries')
-        if args.action in ('enable', 'disable') and (args.version or args.commit or args.enable or args.disabled or args.binding or args.git_transport != DEFAULT_GIT_TRANSPORT):
-            raise UsageError('enable/disable change usage only, not version, bindings, or git transport')
+        if args.action in ('enable', 'disable', 'remove') and (args.version or args.commit or args.enable or args.disabled or args.binding or args.git_transport != DEFAULT_GIT_TRANSPORT):
+            raise UsageError('enable/disable/remove change usage or ownership only, not version, bindings, or git transport')
         if args.enable and args.action != 'upgrade' or args.disabled and args.action != 'install' or args.binding and args.action != 'install':
             raise UsageError('Invalid flag for this plugin action')
         bindings = {}

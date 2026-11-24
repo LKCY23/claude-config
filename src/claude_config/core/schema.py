@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-AGENTS = ('claude-code', 'codex')
+AGENTS = ('claude-code', 'codex', 'antigravity')
 APPS = ('claude-desktop', 'codex-app')
 RESOURCE_KINDS = dict(plugins='plugin', skills='skill', mcp_servers='mcp',
                       hooks='hook', instructions='instruction', rules='rule', agents='agent')
@@ -277,10 +277,16 @@ def validate_machine(value):
             closed(entry, keys, keys, 'Machine entry')
             if not external:
                 profile_path(entry['profile'], group, name)
-            allowed = ('executable', 'config_root') if group == 'agents' else ('application', 'data_root', 'backend')
-            if group == 'agents' and name == 'claude-code':
-                allowed += ('user_config',)
-            closed(entry['binding'], allowed, allowed[:2], 'runtime binding')
+            if group == 'agents' and name == 'antigravity':
+                allowed = ('config_root', 'executable', 'application', 'cli_settings')
+                closed(entry['binding'], allowed, ('config_root',), 'runtime binding')
+                require('executable' in entry['binding'] or 'application' in entry['binding'],
+                        'antigravity binding requires at least one of executable or application')
+            else:
+                allowed = ('executable', 'config_root') if group == 'agents' else ('application', 'data_root', 'backend')
+                if group == 'agents' and name == 'claude-code':
+                    allowed += ('user_config',)
+                closed(entry['binding'], allowed, allowed[:2], 'runtime binding')
             for key, location in entry['binding'].items():
                 absolute(location, key)
     bindings = value['bindings']

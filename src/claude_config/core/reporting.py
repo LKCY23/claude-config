@@ -16,7 +16,7 @@ from .merge import redact, same
 from .transaction import atomic_write, ignore_local_state
 
 
-LABELS = {'claude-code': 'Claude Code', 'codex': 'Codex',
+LABELS = {'claude-code': 'Claude Code', 'codex': 'Codex', 'antigravity': 'Antigravity',
           'codex-app': 'Codex App', 'claude-desktop': 'Claude Desktop',
           'model': '默认模型', 'effortLevel': '推理强度',
           'model_reasoning_effort': '推理强度', 'language': '输出语言',
@@ -53,6 +53,9 @@ LABELS.update(clients='客户端', framework='框架文件', shared_files='共�
 LABELS.update(catalogs='资源目录', catalog_roots='本机来源目录', repo='来源仓库', commit='固定提交',
               path='仓库内路径', release_record='发布记录', released_baseline='发布基线检查',
               catalog_source_map='来源迁移映射', affected_sources='受影响资源来源')
+LABELS.update(antigravity_discovery='Antigravity 只读盘点', duplicate_plugin_name='插件名称冲突',
+              plugin_dir_name_collision='插件目录与名称冲突', skill_plugin_overlap='技能与插件技能重名',
+              mcp_server_collision='全局与插件 MCP 重名', phase_a_read_only='Phase A 只读保护')
 POLICY_LABELS.update({'exact-framework-release': '按已核对的框架版本更新',
                       'identical-immutable-snapshot': '合并相同的恢复副本', 'exact-profile-data': '使用已校验的 Profile',
                       'one-time-format-migration': '迁移到新版格式'})
@@ -523,11 +526,20 @@ def report_sections(report, *, compact=False):
             '；差异：' + str(row['change_counts']) +
             ('；存在旧入口' if row['legacy_entry'] else '') + '；原生发现：未验证'
             for row in inventory.get('skills', [])], False))
+    if report.get('antigravity_inventory'):
+        ag = report['antigravity_inventory']
+        sections.append(('Antigravity 只读发现', [
+            f"配置目录：{ag['config_root']}（config.json：{ag['config_status']}）",
+            f"插件：{len(ag['plugins'])} 个；独立技能：{len(ag['skills'])} 个；全局 MCP：{len(ag['mcp_servers'])} 个",
+            *[f"插件 {p['dir']}（name={p['name']}，enabled={p['enabled']}，skills={len(p['skills'])}，mcp={len(p['mcp_servers'])}）"
+              for p in ag['plugins']]], False))
     if report.get('installation'):
         sections.append(('工具与机器选择', [json.dumps(report['installation'], ensure_ascii=False),
                                           json.dumps(report['profile_selection'], ensure_ascii=False)], False))
     if report.get('app_processes'):
         sections.append(('App 运行实例（不等同配置验收）', [json.dumps(report['app_processes'], ensure_ascii=False)], False))
+    if report.get('agent_processes'):
+        sections.append(('Agent 运行进程（只读观察）', [json.dumps(report['agent_processes'], ensure_ascii=False)], False))
     if report.get('storage'):
         sections.append(('本机状态保留分类（不会自动删除）', [json.dumps(report['storage'], ensure_ascii=False)], False))
     inventory = report.get('migration_inventory')

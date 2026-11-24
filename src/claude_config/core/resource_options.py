@@ -9,7 +9,7 @@ def option_kind(agent, group, path):
     if group == 'plugins':
         return 'bool' if path == ('enabled',) else None
     if group == 'skills':
-        keys = ('enabled', 'allow_implicit_invocation') if agent == 'codex' else ('enabled', 'disable-model-invocation', 'user-invocable')
+        keys = () if agent == 'antigravity' else ('enabled', 'allow_implicit_invocation') if agent == 'codex' else ('enabled', 'disable-model-invocation', 'user-invocable')
         return 'bool' if len(path) == 2 and path[0] == 'control' and path[1] in keys else None
     if group == 'mcp_servers':
         from .registrations import MCP_OPTIONS

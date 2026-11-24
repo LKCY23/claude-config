@@ -9,13 +9,13 @@ import yaml
 from .catalog import CatalogResolver, verify_git
 from .deployment_scope import DeploymentScope
 from .merge import fingerprint
-from .native import parse_json, parse_yaml
+from .native import parse_json, parse_native, parse_yaml, render_native, snapshot_read
 from .native_plugins import PluginOperation
 from .plugin_locks import (apply_pin, empty_locks, locator, read_locks, validate_locks)
 from .registrations import claude_user_config
 from .schema import COMMIT, REF, SchemaError, require, validate_catalogs, validate_profile, within
 from .source_transport import DEFAULT_GIT_TRANSPORT, validate_git_transport
-from .transaction import FileChange, FilePlan, UnfinishedRun, file_fingerprint
+from .transaction import FileChange, FilePlan, UnfinishedRun, directory_fingerprint, file_fingerprint
 from .journal import unfinished
 
 _PRERELEASE = r'(?:0|[1-9]\d*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
@@ -67,7 +67,7 @@ def decision(path, before, after, reason):
 
 class PluginManager:
     def __init__(self, manager, *, fetcher=None, resolve_release=None, git_transport=DEFAULT_GIT_TRANSPORT):
-        require(manager.agent == 'claude-code', 'Plugin commands currently support the Claude Code adapter only')
+        require(manager.agent in ('claude-code', 'antigravity'), 'Plugin commands currently support Claude Code and Antigravity only')
         self.manager = manager
         self.fetcher = fetcher
         self.resolve_release = resolve_release or release_commit
@@ -155,6 +155,47 @@ class PluginManager:
             'plugins': [{'ref': ref, 'previous': deepcopy(previous), 'desired': deepcopy(desired or previous)}]})
 
     def installed(self, ref):
+        if self.manager.agent == 'antigravity':
+            old = self.state.get('resources', {}).get(ref, {})
+            plugin_state = old.get('native', {}).get('antigravity_plugin')
+            if plugin_state is None:
+                return None, None
+            before = {
+                'version': plugin_state.get('version') or '0.0.0',
+                'image': old['rendered_fingerprint'],
+                'enabled': plugin_state.get('enabled', True),
+                'dir': plugin_state['dir'],
+                'root': plugin_state['root'],
+                'entry': plugin_state['entry'],
+                'config_enabled': plugin_state.get('config_enabled'),
+            }
+            plugin_root = Path(plugin_state['root'])
+            manifest_path = plugin_root / plugin_state['entry']
+            if not plugin_root.is_dir() or plugin_root.is_symlink() or not manifest_path.is_file() or manifest_path.is_symlink():
+                return before, {'installed': False, 'marketplace': False, 'version': None, 'image': None, 'enabled': None, 'config_enabled': None}
+            snapshot = directory_fingerprint(plugin_root)
+            if any('sha256' not in info for info in snapshot['entries'].values()):
+                return before, {'installed': False, 'marketplace': False, 'version': None, 'image': None, 'enabled': None, 'config_enabled': None}
+            files, modes = {}, {}
+            for relative, info in snapshot['entries'].items():
+                data, actual = snapshot_read(plugin_root / relative)
+                if actual != info:
+                    return before, {'installed': False, 'marketplace': False, 'version': None, 'image': None, 'enabled': None, 'config_enabled': None}
+                files[relative], modes[relative] = data, info['mode']
+            from .resources import tree_digest
+            manifest = parse_json(files[plugin_state['entry']])
+            native, _, _ = self.manager._read(self.manager.native_path, lambda raw: parse_native('antigravity', raw))
+            config_enabled = native.get('plugins', {}).get(plugin_state['dir'], {}).get('enabled')
+            manifest_disabled = manifest.get('disabled') if type(manifest.get('disabled')) is bool else None
+            effective_enabled = config_enabled if config_enabled is not None else (not manifest_disabled if manifest_disabled is not None else True)
+            return before, {
+                'installed': True,
+                'marketplace': True,
+                'version': manifest.get('version') or '0.0.0',
+                'image': tree_digest(files, modes),
+                'enabled': effective_enabled,
+                'config_enabled': config_enabled,
+            }
         previous = self.state.get('resources', {}).get(ref, {}).get('native', {}).get('plugin')
         if previous is None:
             return None, None
@@ -190,11 +231,12 @@ class PluginManager:
         return pin
 
     def plan(self, action, ref, *, version=None, commit=None, enable=False, disabled=False, bindings=None):
-        require(action in ('install', 'upgrade', 'enable', 'disable'), 'Unknown plugin operation')
+        require(action in ('install', 'upgrade', 'enable', 'disable', 'remove'), 'Unknown plugin operation')
+        require(action != 'remove' or self.manager.agent == 'antigravity', 'Unknown plugin operation')
         require(not (version and commit), 'Choose --version or --commit, not both')
         require(not enable or action == 'upgrade', '--enable is only for upgrade')
         require(not disabled or action == 'install', '--disabled is only for install')
-        require(action in ('install', 'upgrade') or not (version or commit or bindings), 'Enable/disable cannot select versions or bindings')
+        require(action in ('install', 'upgrade') or not (version or commit or bindings), 'Enable/disable/remove cannot select versions or bindings')
         require(commit is None or isinstance(commit, str) and COMMIT.fullmatch(commit), '--commit requires a full 40-character SHA')
         require(version is None or isinstance(version, str) and SEMVER.fullmatch(version), '--version requires exact SemVer')
         require(not bindings or action == 'install', 'Bindings can only be declared during install')
@@ -203,7 +245,7 @@ class PluginManager:
             raise UnfinishedRun(pending)
         self.context()
         require(not self.state or self.state['profile'] == self.name, 'Complete the Profile switch before managing one plugin')
-        ref = self.resolve_ref(ref, registered=action == 'install')
+        ref = self.resolve_ref(ref, registered=action == 'install', include_retained=action == 'remove')
         before, actual = self.installed(ref)
         if action != 'install':
             require(before is not None and actual['installed'], 'Plugin is not a managed installation; use install or explicit adoption first')
@@ -211,6 +253,8 @@ class PluginManager:
             require(actual['installed'] and actual['marketplace'] and all(actual[k] == before[k] for k in ('version', 'image')),
                     'Installed plugin version or content drifted; use the existing conflict/adoption workflow')
         candidate = deepcopy(self.profile)
+        if action == 'remove':
+            return self.remove_plan(ref, candidate, before, actual)
         selected = candidate.setdefault('resources', {}).setdefault('plugins', {}).setdefault(ref, {})
         if bindings:
             require(not before, 'Existing plugin bindings require explicit Profile migration')
@@ -270,6 +314,35 @@ class PluginManager:
         if action == 'enable' and pin:
             require(pin['version'] == before['version'] and self.state['resources'][ref]['source_fingerprint'] == pin['source_fingerprint'],
                     'Installed plugin differs from the selected lock; upgrade/install it first')
+        if m.agent == 'antigravity':
+            native, original, native_expected = m._read(m.native_path, lambda raw: parse_native('antigravity', raw))
+            require(actual.get('config_enabled') == before.get('config_enabled'),
+                    'Antigravity plugin enablement drifted outside managed state')
+            desired_enabled = action == 'enable'
+            updated = deepcopy(native)
+            updated.setdefault('plugins', {})[before['dir']] = {'enabled': desired_enabled}
+            state = deepcopy(self.state)
+            plugin_state = state['resources'][ref]['native']['antigravity_plugin']
+            plugin_state['enabled'] = desired_enabled
+            plugin_state['config_enabled'] = desired_enabled
+            changes = [
+                FileChange(m.native_path, render_native('antigravity', original, updated), 'agent-settings',
+                           lambda raw: parse_native('antigravity', raw), native_expected),
+                FileChange(m.state_path, (json.dumps(state, indent=2, ensure_ascii=False) + '\n').encode(),
+                           'managed-baseline', lambda raw: m._validate_state(parse_json(raw)), self.state_expected),
+            ]
+            def guard():
+                _, observed = self.installed(ref)
+                require(observed is not None and all(observed[k] == actual[k] for k in ('installed', 'marketplace', 'version', 'image')),
+                        'Plugin changed since the usage plan was prepared')
+            report = {'ready': True, 'checks': [{'name': 'managed_plugin_identity', 'status': 'passed'},
+                {'name': 'effective_session', 'status': 'not_verified', 'reason': 'Existing sessions may need to reload the plugin'}],
+                'blockers': [], 'decisions': [], 'activation': [{'resource': ref, 'mode': 'reload_plugins', 'verified': False}],
+                'deployment_scope': DeploymentScope(resources=(ref,)).report({ref}, set(), {ref}, set()),
+                'plan_id': fingerprint({'action': action, 'ref': ref, 'state': self.state_expected, 'native': native_expected})}
+            deployment = FilePlan(changes, sources=m.sources, scopes=[str(m.native_path.resolve())], report=report,
+                                  guards=[guard], prepare=False)
+            return self.combine(action, ref, candidate, self.locks, deployment, before, before['version'], desired_enabled)
         desired = {**before, 'enabled': action == 'enable'}
         previous = {**before, 'enabled': actual['enabled']}
         operation = self.operation(ref, previous, desired)
@@ -288,6 +361,63 @@ class PluginManager:
         deployment = FilePlan([state_change], sources=m.sources, scopes=[str(m.native_path.resolve())], report=report,
                               native_operations=[operation], native_index=0, guards=[guard], prepare=False)
         return self.combine(action, ref, candidate, self.locks, deployment, previous, before['version'], desired['enabled'])
+
+    def remove_plan(self, ref, candidate, before, actual):
+        m = self.manager
+        require(actual.get('config_enabled') == before.get('config_enabled'),
+                'Antigravity plugin enablement drifted outside managed state')
+        old = self.state['resources'][ref]
+        plugin_root = Path(before['root'])
+        require(plugin_root.resolve() == plugin_root and plugin_root == (m.native_path.parent / 'plugins' / before['dir']).resolve(),
+                'Recorded plugin root differs from the bound Antigravity plugins directory')
+        other_files = {path for other, row in self.state.get('resources', {}).items() if other != ref for path in row['files']}
+        require(not other_files.intersection(old['files']), 'Another managed resource shares plugin files')
+        world = directory_fingerprint(plugin_root)
+        require(all(str(plugin_root / rel) in old['files'] for rel in world['entries']),
+                'Unknown files remain in the plugin directory; remove cannot delete them')
+        candidate.get('resources', {}).get('plugins', {}).pop(ref, None)
+        if candidate.get('resources', {}).get('plugins') == {}:
+            candidate['resources'].pop('plugins', None)
+        if candidate.get('resources') == {}:
+            candidate.pop('resources', None)
+        locks = deepcopy(self.locks)
+        locks['plugins'].pop(ref, None)
+        changes = []
+        for location, expected in sorted(old['files'].items()):
+            path = Path(location)
+            require(path.is_relative_to(plugin_root), 'Recorded plugin file escapes plugin directory')
+            actual_fp = file_fingerprint(path)
+            m.sources[path] = actual_fp
+            require(actual_fp == expected, 'Plugin file changed since installation; resolve drift before removal')
+            changes.append(FileChange(path, b'', 'plugin-remove', lambda data: None, expected, delete=True))
+        native, original, native_expected = m._read(m.native_path, lambda raw: parse_native('antigravity', raw))
+        if before['dir'] in native.get('plugins', {}):
+            updated = deepcopy(native)
+            updated['plugins'].pop(before['dir'], None)
+            if not updated['plugins']:
+                updated.pop('plugins', None)
+            changes.append(FileChange(m.native_path, render_native('antigravity', original, updated), 'plugin-remove-config',
+                                      lambda raw: parse_native('antigravity', raw), native_expected))
+        state = deepcopy(self.state)
+        del state['resources'][ref]
+        changes.append(FileChange(m.state_path, (json.dumps(state, indent=2, ensure_ascii=False) + '\n').encode(),
+                                  'managed-baseline', lambda raw: m._validate_state(parse_json(raw)), self.state_expected))
+        def guard():
+            world_now = directory_fingerprint(plugin_root)
+            unexpected = [rel for rel in world_now['entries'] if str(plugin_root / rel) not in old['files']]
+            require(not unexpected, 'Unknown files appeared in plugin directory after removal was planned')
+        report = {
+            'ready': True,
+            'checks': [{'name': 'managed_plugin_identity', 'status': 'passed'},
+                       {'name': 'effective_session', 'status': 'not_verified', 'reason': 'Existing sessions may need to reload plugins'}],
+            'blockers': [], 'decisions': [],
+            'activation': [{'resource': ref, 'mode': 'reload_plugins', 'verified': False}],
+            'deployment_scope': DeploymentScope(resources=(ref,)).report({ref}, set(), {ref}, set()),
+            'plan_id': fingerprint({'action': 'remove', 'ref': ref, 'state': self.state_expected, 'native': native_expected}),
+        }
+        deployment = FilePlan(changes, sources=m.sources, scopes=[str(m.native_path.resolve())], report=report,
+                              directories={plugin_root}, guards=[guard], prepare=False)
+        return self.combine('remove', ref, candidate, locks, deployment, before, None, None)
 
     def combine(self, action, ref, candidate, locks, deployment, before, version, enabled):
         m = self.manager

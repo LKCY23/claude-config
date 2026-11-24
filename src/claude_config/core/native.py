@@ -60,6 +60,10 @@ def parse_json(content):
     return mapping(value, 'native JSON')
 
 
+def parse_json_or_empty(content):
+    return parse_json(content if content.strip() else b'')
+
+
 def sanitize_antigravity_config(raw):
     """Retain only plugins.<dir>.enabled booleans from Antigravity config.json."""
     plugins = raw.get('plugins')
@@ -111,6 +115,29 @@ def render_native(agent, before, result):
         return before
     if agent == 'claude-code':
         return (json.dumps(result, indent=2, ensure_ascii=False) + '\n').encode()
+    if agent == 'antigravity':
+        full = parse_json(before)
+        had_plugins = 'plugins' in full
+        old_plugins = old.get('plugins', {})
+        wanted_plugins = result.get('plugins', {})
+        if wanted_plugins or 'plugins' in full:
+            target = full.setdefault('plugins', {})
+            for name in old_plugins.keys() - wanted_plugins.keys():
+                if name in target:
+                    if isinstance(target[name], dict) and set(target[name]) <= {'enabled'}:
+                        del target[name]
+                    elif isinstance(target[name], dict):
+                        target[name].pop('enabled', None)
+            for name, entry in wanted_plugins.items():
+                if name in old_plugins and same(old_plugins[name], entry):
+                    continue
+                if isinstance(target.get(name), dict):
+                    target[name]['enabled'] = entry['enabled']
+                else:
+                    target[name] = {'enabled': entry['enabled']}
+            if not target and not had_plugins:
+                full.pop('plugins', None)
+        return (json.dumps(full, indent=2, ensure_ascii=False) + '\n').encode()
     document = tomlkit.parse(before.decode())
     def update(node, original, wanted):
         for key in original.keys() - wanted.keys():

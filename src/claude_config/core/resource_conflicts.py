@@ -85,11 +85,11 @@ class ResourceConflicts:
         state = old['native']
         result, incoming, issues = {}, {}, []
         if 'registration' in state:
-            from .registrations import mcp_definition, hook_definition
+            from .registrations import mcp_definition, mcp_target, hook_definition
             registration = state['registration']
             path, doc = self.r.registrations.document(Path(registration['path']))
             if registration['kind'] == 'mcp':
-                key = 'mcpServers' if self.manager.agent == 'claude-code' else 'mcp_servers'
+                wanted_path, key = mcp_target(self.manager)
                 entries = mapping(doc.get(key, {}), 'native MCP entries')
                 actual = entries.get(registration['name'])
                 require(actual is None or isinstance(actual, dict), 'Native MCP entry has an invalid type')
@@ -99,8 +99,6 @@ class ResourceConflicts:
                 self.native_details[ref] = {'local': actual, 'incoming': desired}
                 if name != registration['name'] and name in entries:
                     issues.append('unmanaged_mcp_collision')
-                from .registrations import claude_user_config
-                wanted_path = claude_user_config(self.manager.entry['binding']) if self.manager.agent == 'claude-code' else self.manager.native_path
                 if Path(registration['path']).resolve() != wanted_path.resolve():
                     issues.append('registration_binding_changed')
             else:
@@ -193,6 +191,33 @@ class ResourceConflicts:
             incoming['plugin'] = {'image': item['rendered_fingerprint'], 'options': item['package'].selection.get('options', {})}
             if not result['plugin']['installed'] or not result['plugin']['marketplace'] or any(result['plugin'][key] != receipt[key] for key in ('version', 'image')):
                 issues.append('plugin_version_or_image_unknown')
+        if 'antigravity_plugin' in state:
+            plugin_state = state['antigravity_plugin']
+            _, doc = self.r.registrations.document(self.manager.native_path)
+            plugins_map = mapping(doc.get('plugins', {}), 'antigravity plugins')
+            entry = plugins_map.get(plugin_state['dir'])
+            require(entry is None or isinstance(entry, dict), 'Antigravity plugin config entry has an invalid type')
+            config_enabled = entry.get('enabled') if entry is not None else None
+            require(config_enabled is None or type(config_enabled) is bool, 'Antigravity plugin enabled has an invalid type')
+            manifest_path = Path(plugin_state['root']) / plugin_state['entry']
+            manifest_data, manifest_snap = snapshot_read(manifest_path)
+            self.manager.sources[manifest_path] = manifest_snap
+            manifest = parse_json(manifest_data) if manifest_snap['exists'] else {}
+            manifest_disabled = manifest.get('disabled') if type(manifest.get('disabled')) is bool else None
+            actual_plugin = {
+                'installed': manifest_snap['exists'],
+                'dir': plugin_state['dir'],
+                'entry': plugin_state['entry'],
+                'config_enabled': config_enabled,
+            }
+            if isinstance(manifest.get('version'), str) and manifest['version']:
+                actual_plugin['version'] = manifest['version']
+            if manifest_disabled is not None:
+                actual_plugin['manifest_disabled'] = manifest_disabled
+            result['antigravity_plugin'] = actual_plugin
+            incoming['antigravity_plugin'] = {'image': item['rendered_fingerprint'], 'options': item['package'].selection.get('options', {})}
+            if not manifest_snap['exists']:
+                issues.append('plugin_version_or_image_unknown')
         return result, incoming, issues
 
     def inspect(self, ref, item, packages):
@@ -245,11 +270,24 @@ class ResourceConflicts:
         if 'plugin' in state:
             baseline_native['plugin'] = {'installed': True, 'version': state['plugin']['version'], 'image': state['plugin']['image'],
                                          'enabled': state['plugin']['enabled'], 'marketplace': True}
+        if 'antigravity_plugin' in state:
+            plugin_state = state['antigravity_plugin']
+            baseline_ag = {
+                'installed': True,
+                'dir': plugin_state['dir'],
+                'entry': plugin_state['entry'],
+                'config_enabled': plugin_state.get('config_enabled'),
+            }
+            if 'version' in plugin_state:
+                baseline_ag['version'] = plugin_state['version']
+            if 'manifest_disabled' in plugin_state:
+                baseline_ag['manifest_disabled'] = plugin_state['manifest_disabled']
+            baseline_native['antigravity_plugin'] = baseline_ag
         drift = bool(differences) or native != baseline_native
         if not drift and not issues:
             return False
-        executable = Path(self.manager.entry['binding']['executable']).resolve()
-        runtimes = [executable]
+        executable = self.manager.entry['binding'].get('executable')
+        runtimes = [Path(executable).resolve()] if executable else []
         app = self.manager.machine.get('apps', {}).get('codex-app') if self.manager.agent == 'codex' else None
         if app and app['binding'].get('backend'):
             runtimes.append(Path(app['binding']['backend']).resolve())
@@ -368,7 +406,8 @@ class ResourceConflicts:
             if registration:
                 doc = self.r.registrations.documents[Path(registration['path'])]['value']
                 if registration['kind'] == 'mcp':
-                    key = 'mcpServers' if self.manager.agent == 'claude-code' else 'mcp_servers'
+                    from .registrations import mcp_target
+                    _, key = mcp_target(self.manager)
                     value = doc[key][registration['name']]
                 else:
                     value = {'groups': [], 'context': {group['event']: [fingerprint(row) for row in doc['hooks'][group['event']]]

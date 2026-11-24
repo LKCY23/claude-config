@@ -8,9 +8,9 @@ import tomlkit
 from .bindings import Bindings
 from .catalog import CatalogResolver
 from .merge import fingerprint, same
-from .native import parse_json, parse_yaml, snapshot_read
+from .native import parse_json, parse_json_or_empty, parse_yaml, snapshot_read
 from .native_plugins import PluginOperation, VERSION, marketplace_name
-from .registrations import MCP_OPTIONS, mcp_definition, hook_definition, claude_user_config
+from .registrations import MCP_OPTIONS, mcp_definition, mcp_target, hook_definition, claude_user_config
 from .resources import END, START, frontmatter, render_package, tree_digest
 from .resource_references import instruction_body
 from .agent_options import definition_options
@@ -125,10 +125,10 @@ class ResourceExport:
         agent = self.manager.agent
         item = self.options_item(package, package.selection.get('options', {}))
         name, expected = mcp_definition(item, agent)
-        path = claude_user_config(self.manager.entry['binding']) if agent == 'claude-code' else self.manager.native_path
+        path, key = mcp_target(self.manager)
         content, _ = self.read(path)
-        document = parse_json(content) if agent == 'claude-code' else self.native
-        entries = document.get('mcpServers' if agent == 'claude-code' else 'mcp_servers', {})
+        document = parse_json_or_empty(content) if agent == 'antigravity' else parse_json(content) if agent == 'claude-code' else self.native
+        entries = document.get(key, {})
         require(isinstance(entries, dict), 'Native MCP inventory must be an object')
         if name not in entries:
             self.decision(package.ref, 'preserve_missing', 'Native MCP declaration is absent; logical source and options are retained')
@@ -145,6 +145,25 @@ class ResourceExport:
     def plugin(self, package):
         agent = self.manager.agent
         item = self.options_item(package, package.selection.get('options', {}))
+        if agent == 'antigravity':
+            require(package.entry in ('plugin.json', '.antigravity-plugin/plugin.json'), 'Antigravity plugin export needs its complete native manifest')
+            manifest = parse_json(item['files'][package.entry])
+            name = manifest.get('name')
+            require(isinstance(name, str) and bool(name), 'Antigravity plugin native identity is not fixed')
+            owned = self.state.get('resources', {}).get(package.ref, {}).get('native', {}).get('antigravity_plugin')
+            if owned:
+                require(owned['dir'] == name, 'Native plugin directory differs from the adopted identity')
+            root = self.manager.native_path.parent.resolve() / 'plugins' / name
+            if not root.exists():
+                self.decision(package.ref, 'preserve_missing', 'Selected native plugin is not installed; no inventory selection is inferred')
+                return None
+            actual, modes = self.tree(root)
+            require(package.entry in actual, 'Installed Antigravity plugin has no manifest')
+            require(tree_digest(actual, modes) == item['rendered_fingerprint'], 'Native plugin differs from the fixed catalog content')
+            values = self.native.get('plugins', {}).get(name, {})
+            require(isinstance(values, dict), 'Antigravity plugin config entry must be an object')
+            require('enabled' not in values or type(values['enabled']) is bool, 'Explicit plugin enabled must be Boolean')
+            return {'enabled': values['enabled']} if 'enabled' in values else {}
         entry = '.claude-plugin/plugin.json' if agent == 'claude-code' else '.codex-plugin/plugin.json'
         require(package.entry == entry, 'Plugin export needs its complete native manifest')
         manifest = parse_json(item['files'][entry])
@@ -272,6 +291,8 @@ class ResourceExport:
             package = self.packages[ref]
             try:
                 kind = package.item['kind']
+                if self.manager.agent == 'antigravity':
+                    require(kind in ('skill', 'mcp', 'plugin'), 'Antigravity export is only supported for skill, mcp, and plugin in Phase B')
                 options = self.skill(package) if kind == 'skill' else self.mcp(package) if kind == 'mcp' else self.plugin(package) if kind == 'plugin' else self.hook(package) if kind == 'hook' else self.static(package)
                 if options is not None:
                     self.incoming.setdefault('resources', {}).setdefault(package.group, {})[ref] = {'options': options}

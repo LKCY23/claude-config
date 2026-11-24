@@ -95,7 +95,7 @@ def adopt_baseline(manager, alias, commit, checkout, release_record, source_map=
                        'reason': 'Exact previous and selected repository, commit and catalog path match the explicit source map'})
     impacts, guards = [], []
     directories = set()
-    for agent in ('claude-code', 'codex'):
+    for agent in ('claude-code', 'codex', 'antigravity'):
         directory = manager.root / 'profiles/agents' / agent
         directories.add(directory)
         for path in profile_yaml_files(directory):

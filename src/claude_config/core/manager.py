@@ -103,8 +103,27 @@ class ProfileManager:
         checks = []
         self._validate_policies(profile, run_policy, resources_selected)
         if self.agent == 'antigravity':
-            checks.append({'name': 'antigravity_phase_a', 'status': 'passed',
-                           'reason': 'Antigravity Phase A read-only mode; native writes and runtime probes are skipped'})
+            binding = self.entry['binding']
+            checked = []
+            if 'executable' in binding:
+                actual = Path(binding['executable']).resolve()
+                expected = file_fingerprint(actual)
+                if not expected['exists']:
+                    checks.append({'name': 'native_capability', 'status': 'blocked', 'code': 'capability_unknown',
+                                   'executable': binding['executable'], 'reason': 'Bound Antigravity executable does not exist'})
+                else:
+                    self.sources[actual] = expected
+                    checked.append('executable')
+            if 'application' in binding:
+                if not Path(binding['application']).exists():
+                    checks.append({'name': 'native_capability', 'status': 'blocked', 'code': 'capability_unknown',
+                                   'application': binding['application'], 'reason': 'Bound Antigravity application does not exist'})
+                else:
+                    checked.append('application')
+            if checked and not any(row['status'] == 'blocked' for row in checks):
+                checks.append({'name': 'antigravity_binding', 'status': 'passed',
+                               'level': 'documented-config-interface',
+                               'reason': 'Antigravity Phase B targets managed skills, plugins, and global mcp_config.json'})
             return checks
         if settings or resources_selected and any(profile.get('resources', {}).values()):
             executables = [self.entry['binding']['executable']]
@@ -166,7 +185,8 @@ class ProfileManager:
             changed = {change.owner.removeprefix('resource:') for change in changes
                        if change.owner.startswith('resource:') and not FilePlan._unchanged(change, file_fingerprint(change.path))}
             changed.update(ref for ref in resources.processed
-                           if resources.records[ref]['native'].get('skill_control') != resources.previous.get(ref, {}).get('native', {}).get('skill_control'))
+                           if resources.records[ref]['native'].get('skill_control') != resources.previous.get(ref, {}).get('native', {}).get('skill_control')
+                           or resources.records[ref]['native'].get('antigravity_plugin') != resources.previous.get(ref, {}).get('native', {}).get('antigravity_plugin'))
             if resources.plugins.operation is not None:
                 changed.update(item['ref'] for item in resources.plugins.operation.plugins)
             report['activation'] = [{'resource': ref, 'mode': modes[resources.rendered[ref]['package'].item['kind']],
@@ -193,8 +213,7 @@ class ProfileManager:
         index = next((i for i, change in enumerate(changes) if change.owner in ('managed-baseline', 'machine-binding')), len(changes))
         return FilePlan(changes, sources=self.sources, scopes=[str(self.native_path.resolve())], report=report,
                         directories=resources.directories if resources is not None else (), native_operations=native, native_index=index,
-                        guards=guards, prepare=prepare,
-                        read_only_reason='phase_a_read_only' if self.agent == 'antigravity' else None)
+                        guards=guards, prepare=prepare)
 
     def plan(self, *, profile=None, run_policy=None, resolutions=None, adopt_plugins=None, replace_plugins=None, prepare=True, selection=None, profile_value=None, plugin_lock_value=None):
         _, chosen, _, _, name = self._profile(profile)
@@ -239,7 +258,7 @@ class ProfileManager:
         self.last_resources = resources
         resource_failed = False
         try:
-            resources.prepare(deploy=self.agent != 'antigravity',
+            resources.prepare(deploy=True,
                               resource_refs=None if selection.full else requested_refs,
                               binding_scope=None if selection.full else requested_fields)
             require(set(self.adopt_plugins) | set(self.replace_plugins) <= resources.selected_refs,
@@ -317,33 +336,30 @@ class ProfileManager:
             except SchemaError as exc:
                 result_valid = False
                 checks.append({'name': 'result_validation', 'status': 'blocked', 'code': 'invalid_native_result', 'reason': str(exc)})
-        if self.agent == 'antigravity':
-            changes = []
-        else:
-            if (settings or resources.registrations.main_roots or resources.registrations.main_fields) and result_valid:
-                def valid_native(data):
-                    value = parse_native(self.agent, data)
-                    validate_settings(self.agent, projection(value, managed_paths), generated=generated)
-                    validate_native_result(self.agent, value, settings)
-                changes.append(FileChange(self.native_path, render_native(self.agent, original, result), 'agent-settings', valid_native, expected))
-            if (settings or state or resources.records or getattr(resources, 'binding_fields', set())) and result_valid:
-                new_state = {'schema_version': 1, 'kind': 'profile-managed-state', 'agent_type': self.agent,
-                             'native_path': str(self.native_path.resolve()), 'profile': name,
-                             'managed': managed if selection.full else update_leaves(state.get('managed', {}), managed),
-                             'declared': settings if selection.full else update_leaves(state.get('declared', {}), settings)}
-                if resources.records:
-                    new_state['resources'] = resources.records
-                bindings = chosen.get('bindings', {}) if selection.full else {
-                    **state.get('bindings', {}), **{key: value for key, value in chosen.get('bindings', {}).items()
-                                                   if key in getattr(resources, 'binding_fields', set())}}
-                if bindings:
-                    new_state['bindings'] = bindings
-                content = (json.dumps(new_state, indent=2, ensure_ascii=False) + '\n').encode()
-                changes.append(FileChange(self.state_path, content, 'managed-baseline', lambda data: self._validate_state(parse_json(data)), state_expected))
-            if profile and profile != self.entry['profile'] and result_valid:
-                changes.append(self.machine_profiles.switch('agents', self.agent, name))
-            if not resource_failed:
-                changes = resources.changes + changes
+        if (settings or resources.registrations.main_roots or resources.registrations.main_fields) and result_valid:
+            def valid_native(data):
+                value = parse_native(self.agent, data)
+                validate_settings(self.agent, projection(value, managed_paths), generated=generated)
+                validate_native_result(self.agent, value, settings)
+            changes.append(FileChange(self.native_path, render_native(self.agent, original, result), 'agent-settings', valid_native, expected))
+        if (settings or state or resources.records or getattr(resources, 'binding_fields', set())) and result_valid:
+            new_state = {'schema_version': 1, 'kind': 'profile-managed-state', 'agent_type': self.agent,
+                         'native_path': str(self.native_path.resolve()), 'profile': name,
+                         'managed': managed if selection.full else update_leaves(state.get('managed', {}), managed),
+                         'declared': settings if selection.full else update_leaves(state.get('declared', {}), settings)}
+            if resources.records:
+                new_state['resources'] = resources.records
+            bindings = chosen.get('bindings', {}) if selection.full else {
+                **state.get('bindings', {}), **{key: value for key, value in chosen.get('bindings', {}).items()
+                                               if key in getattr(resources, 'binding_fields', set())}}
+            if bindings:
+                new_state['bindings'] = bindings
+            content = (json.dumps(new_state, indent=2, ensure_ascii=False) + '\n').encode()
+            changes.append(FileChange(self.state_path, content, 'managed-baseline', lambda data: self._validate_state(parse_json(data)), state_expected))
+        if profile and profile != self.entry['profile'] and result_valid:
+            changes.append(self.machine_profiles.switch('agents', self.agent, name))
+        if not resource_failed:
+            changes = resources.changes + changes
         for change in changes:
             require(not any(change.path.resolve().is_relative_to(root) for root in resources.resolver.repositories), 'Write target overlaps a fixed source repository')
         effective_fields = set(scope)
@@ -389,8 +405,7 @@ class ProfileManager:
                     raise PlanStale('Resource review binding changed')
         return FilePlan(changes, sources=self.sources, scopes=[str(self.native_path.resolve())],
                         report=report, directories=resources.directories,
-                        guards=[binding_guard, *resources.resolver.guards, *resources.binder.guards],
-                        read_only_reason='phase_a_read_only' if self.agent == 'antigravity' else None)
+                        guards=[binding_guard, *resources.resolver.guards, *resources.binder.guards])
 
     def export(self, selectors, *, profile=None, run_policy=None, resource_refs=()):
         require(bool(selectors or resource_refs), 'Export requires explicitly selected fields or resource references')

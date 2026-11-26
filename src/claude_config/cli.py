@@ -1,6 +1,20 @@
 """Installed command dispatch; help/version do not load profiles or dependencies."""
+import difflib
+import json
+import re
 import sys
 from . import __version__
+
+_PROFILE_COMMANDS = (
+    'plan', 'validate', 'apply', 'export', 'switch', 'rollback',
+    'adopt-baseline', 'review-conflicts', 'reconcile-run', 'retire-skills',
+)
+_ALL_COMMANDS = (
+    'status', 'sync', 'resolve', 'baseline', 'report',
+    'init', 'doctor', 'plugin', 'runs', 'app-profile',
+    'fetch-baseline', 'cutover', 'migration',
+    *_PROFILE_COMMANDS,
+)
 
 HELP = """usage: claude-config COMMAND [OPTIONS]
 
@@ -24,12 +38,52 @@ HELP = """usage: claude-config COMMAND [OPTIONS]
   cutover    多客户端配置统一切换与恢复（不安装工具代码）
   migration  旧配置盘点与转换候选
 
+常用示例：
+  claude-config status
+  claude-config sync
+  claude-config resolve --agent codex
+  claude-config baseline sync --write
+  claude-config report last
+
 --machine 默认 ~/.claude-config-tool/machine.yaml；不搜索当前目录。
 --format auto|text|tui|json；默认输出简洁可读文本，交互树形查看请用 --format tui 或 claude-config report。
 --verbose 显示完整保留决策与细粒度输出。
 claude-config COMMAND --help 查看参数。
 --version 显示版本。工具安装/升级/卸载由 uv tool 管理。
 """
+
+
+def _wants_json(args):
+    mode = 'auto'
+    for index, item in enumerate(args):
+        candidate = (
+            item.partition('=')[2]
+            if item.startswith('--format=')
+            else args[index + 1]
+            if item == '--format' and index + 1 < len(args)
+            else None
+        )
+        if candidate in ('auto', 'json', 'text', 'tui'):
+            mode = candidate
+    return mode == 'json'
+
+
+def _unknown_command(command, rest):
+    safe_label = command if re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_-]{0,31}', command) else '<command>'
+    suggestions = difflib.get_close_matches(command.lower(), _ALL_COMMANDS, n=3, cutoff=0.6)
+    hint = f"（你是否想输入：{'、'.join(suggestions)}）" if suggestions else ''
+    reason = f'未知子命令：{safe_label}{hint}；请运行 claude-config --help 查看全部命令。'
+    if _wants_json(rest):
+        err = {
+            'schema_version': 1,
+            'operation': 'cli',
+            'ready': False,
+            'error': {'code': 'unknown_command', 'reason': reason, 'exit_code': 2},
+        }
+        print(json.dumps(err, ensure_ascii=False, indent=2))
+    else:
+        print(f'错误：{reason}', file=sys.stderr)
+    return 2
 
 
 def main(argv=None):
@@ -77,11 +131,15 @@ def main(argv=None):
     if command == 'fetch-baseline':
         from .fetch_baseline import main as run
         return with_progress(run, argv[1:])
-    from .profile import main as run
-    return run(argv)
+    if command in _PROFILE_COMMANDS:
+        from .profile import main as run
+        return run(argv)
+    return _unknown_command(command, argv[1:])
 
 
 def with_progress(run, argv):
+    if '-h' in argv or '--help' in argv:
+        return run(argv)
     from .core.execution_context import progress_output, progress
     with progress_output(sys.stderr):
         progress('检查输入并准备操作')

@@ -19,6 +19,8 @@ def option_kind(agent, group, path):
             return None
         return 'array' if path[0] in ('enabled_tools', 'disabled_tools') else 'object' if path[0] == 'tools' else 'scalar'
     if group == 'hooks':
+        if agent == 'antigravity':
+            return 'bool' if path == ('enabled',) else 'scalar' if path == ('timeout',) else None
         return 'scalar' if path in (('timeout',), ('async',), ('statusMessage',)) else None
     if group == 'agents':
         from .agent_options import option_keys

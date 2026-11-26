@@ -14,7 +14,7 @@ from .bindings import Bindings
 from .catalog import CatalogResolver
 from .merge import fingerprint
 from .native import parse_json, parse_yaml, put, snapshot_read
-from .registrations import HOOK_OPTIONS, MCP_OPTIONS, Registrations, validate_registration
+from .registrations import ANTIGRAVITY_HOOK_OPTIONS, HOOK_OPTIONS, MCP_OPTIONS, Registrations, validate_registration
 from .native_plugins import PluginPlanner, validate_receipt
 from .resource_options import merge_options
 from .skill_controls import invocation_controls, register_skill_control, validate_skill_control
@@ -25,6 +25,8 @@ from .schema import NAME, REF, RESOURCE_KINDS, SchemaError, closed, mapping, poi
 from .transaction import FileChange, file_fingerprint
 
 START, END = '<!-- claude-config:begin -->', '<!-- claude-config:end -->'
+ANTIGRAVITY_RULE_TRIGGERS = ('always_on', 'model_decision', 'glob', 'manual')
+ANTIGRAVITY_RULE_MAX_BYTES = 24000
 
 
 def tree_digest(files, modes):
@@ -64,11 +66,9 @@ def check_execpolicy(executable, files, entry):
 
 def render_package(package, agent, options=None):
     kind = package.item['kind']
-    if agent == 'antigravity':
-        require(kind in ('plugin', 'skill', 'mcp'), 'Antigravity resource kind is not supported in Phase B: ' + kind)
     options = package.selection.get('options', {}) if options is None else options
     allowed = {'plugin': ('enabled',), 'skill': ('control',), 'mcp': (*MCP_OPTIONS[agent], 'entry'),
-               'hook': HOOK_OPTIONS if package.item['compatibility'][agent]['mode'] != 'status-line' else (),
+               'hook': ANTIGRAVITY_HOOK_OPTIONS if agent == 'antigravity' else (HOOK_OPTIONS if package.item['compatibility'][agent]['mode'] != 'status-line' else ()),
                'instruction': (), 'rule': (), 'agent': ('model', 'model_reasoning_effort') if agent == 'codex' else ('model',)}[kind]
     closed(options, allowed, (), 'resource options ' + package.ref)
     if kind == 'plugin' and 'enabled' in options:
@@ -94,6 +94,8 @@ def render_package(package, agent, options=None):
         require(all(isinstance(meta.get(key), str) and meta[key] for key in ('name', 'description')), 'Skill requires name and description')
         identity = meta['name']
         control = options.get('control', {})
+        require(not (agent == 'antigravity' and control),
+                'Antigravity does not support per-skill controls; use Plugin enabled or retire-skills')
         allowed_control = () if agent == 'antigravity' else ('allow_implicit_invocation', 'enabled') if agent == 'codex' else ('enabled', 'disable-model-invocation', 'user-invocable')
         closed(control, allowed_control, (), 'native skill control')
         require(all(type(value) is bool for value in control.values()), 'Skill controls must be Boolean')
@@ -109,11 +111,22 @@ def render_package(package, agent, options=None):
             data.setdefault('policy', {}).update(invocation)
             files[relative] = yaml.safe_dump(data, sort_keys=False, allow_unicode=True).encode()
     elif kind == 'agent':
-        if agent == 'claude-code':
-            require(Path(package.entry).suffix == '.md', 'Claude agent requires Markdown')
+        if agent in ('claude-code', 'antigravity'):
+            require(Path(package.entry).suffix == '.md', ('Claude' if agent == 'claude-code' else 'Antigravity') + ' agent requires Markdown')
             meta, body, _ = frontmatter(files[package.entry])
             require(all(isinstance(meta.get(key), str) and meta[key] for key in ('name', 'description')), 'Agent requires name and description')
-            require(not meta.get('mcpServers') and not meta.get('hooks'), 'Agent-local MCP/Hook adapter is not connected yet')
+            if agent == 'antigravity':
+                require('mcpServers' not in meta and 'hooks' not in meta and 'skills' not in meta,
+                        'Agent-local MCP/Hook/Skill adapter is not connected yet')
+                if 'subagent' in meta:
+                    require(type(meta['subagent']) is bool, 'Antigravity agent subagent must be Boolean')
+                if 'mainAgent' in meta:
+                    require(type(meta['mainAgent']) is bool, 'Antigravity agent mainAgent must be Boolean')
+                if 'tools' in meta:
+                    require(isinstance(meta['tools'], list) and all(isinstance(tool, str) and bool(tool) for tool in meta['tools']),
+                            'Antigravity agent tools must be nonempty strings')
+            else:
+                require(not meta.get('mcpServers') and not meta.get('hooks'), 'Agent-local MCP/Hook adapter is not connected yet')
             no_secrets(meta)
             identity = meta['name']
             for key, value in options.items():
@@ -136,7 +149,7 @@ def render_package(package, agent, options=None):
                 files[package.entry] = tomlkit.dumps(document).encode()
         definition_options(agent, files[package.entry])
     elif kind == 'rule':
-        suffix = '.md' if agent == 'claude-code' else '.rules'
+        suffix = '.md' if agent in ('claude-code', 'antigravity') else '.rules'
         require(Path(package.entry).suffix == suffix, 'Rule entry has the wrong native format')
         text = files[package.entry].decode()
         if agent == 'claude-code' and text.startswith('---'):
@@ -144,9 +157,31 @@ def render_package(package, agent, options=None):
             no_secrets(meta)
             if 'paths' in meta:
                 require(isinstance(meta['paths'], list) and all(isinstance(path, str) for path in meta['paths']), 'Rule paths must be native glob strings')
+        elif agent == 'antigravity':
+            meta, _, _ = frontmatter(files[package.entry])
+            no_secrets(meta)
+            closed(meta, ('trigger', 'description', 'globs'), ('trigger',), 'Antigravity rule frontmatter')
+            require(isinstance(meta['trigger'], str) and meta['trigger'] in ANTIGRAVITY_RULE_TRIGGERS,
+                    'Invalid Antigravity rule trigger')
+            if 'description' in meta:
+                require(isinstance(meta['description'], str) and bool(meta['description']),
+                        'Antigravity rule description must be a nonempty string')
+            if meta['trigger'] == 'model_decision':
+                require('description' in meta, 'Antigravity model_decision rule requires description')
+            if 'globs' in meta:
+                globs = meta['globs']
+                valid_globs = (isinstance(globs, str) and bool(globs)) or (
+                    isinstance(globs, list) and bool(globs) and all(isinstance(item, str) and bool(item) for item in globs)
+                )
+                require(valid_globs, 'Antigravity rule globs must be a nonempty string or list of strings')
+            if meta['trigger'] == 'glob':
+                require('globs' in meta, 'Antigravity glob rule requires globs')
     elif kind == 'instruction':
         content = files[package.entry].decode()
         require(START not in content and END not in content, 'Instruction body contains reserved ownership markers')
+        if agent == 'antigravity':
+            require(re.match(r'\A---\r?\n.*?\r?\n---(?:\r?\n|$)', content, re.S) is None,
+                    'Antigravity global instruction AGENTS.md must not contain YAML frontmatter')
     references = package_references(files, package.entry, native_imports=kind == 'instruction' and agent == 'claude-code',
                                     sibling_files=package.sibling_files if kind == 'skill' else frozenset())
     require(isinstance(identity, str) and NAME.fullmatch(identity), 'Unsafe native resource identity')
@@ -409,10 +444,18 @@ class ResourcePlan:
             self._decision(ref, ['reference_layout'],
                            {'cache': self.previous[owner]['cache'], 'block_sha256': hashlib.sha256(before.encode()).hexdigest()} if before else None,
                            {'cache': str(item['cache']), 'entry': item['package'].entry,
-                            'mode': 'claude-native-import' if self.manager.agent == 'claude-code' else 'codex-local-links',
+                            'mode': 'claude-native-import' if self.manager.agent == 'claude-code' else 'antigravity-local-links' if self.manager.agent == 'antigravity' else 'codex-local-links',
                             'reference_count': item['references']['count'], 'block_sha256': hashlib.sha256(block.encode()).hexdigest()},
                            'unchanged' if before == block else 'replace_reference_layout' if before else 'add',
-                           'Preserve fixed package bytes; bind Claude imports or relocate Codex entry links to that package, without expanding or merging the body')
+                           'Preserve fixed package bytes; bind Claude imports or relocate Codex/Antigravity entry links to that package, without expanding or merging the body')
+        if self.manager.agent == 'antigravity' and len(result.encode('utf-8')) > ANTIGRAVITY_RULE_MAX_BYTES:
+            self.checks.append({
+                'name': 'antigravity_rule_size',
+                'ref': ref,
+                'status': 'warning',
+                'code': 'rule_size_exceeds_24kb',
+                'reason': 'Antigravity truncates instruction/rule files exceeding 24,000 bytes',
+            })
         self.changes.append(FileChange(path, current if result == text else result.encode(), 'resource:' + ref,
                                       lambda data: require(data.decode().count(START) == data.decode().count(END) == 1, 'Invalid resulting instruction block'), expected))
 
@@ -430,7 +473,7 @@ class ResourcePlan:
             obsolete = [Path(path) for path in previous['files'] if Path(path).is_relative_to(old)]
             self.directories.add(old)
         else:
-            extension = '.md' if self.manager.agent == 'claude-code' else '.toml' if kind == 'agent' else '.rules'
+            extension = '.md' if self.manager.agent in ('claude-code', 'antigravity') else '.toml' if kind == 'agent' else '.rules'
             obsolete = [self._target(self.manager.native_path.parent, ('agents' if kind == 'agent' else 'rules') + '/' + previous['native']['identity'] + extension)]
         for path in obsolete:
             expected = previous['files'].get(str(path))
@@ -619,7 +662,15 @@ class ResourcePlan:
                     valid = check_execpolicy(executable, item['files'], package.entry)
                     self.checks.append({'name': 'native_rule_syntax', 'ref': ref, 'status': 'passed' if valid else 'blocked',
                                         'code': 'native_rule_rejected', 'reason': 'Native parser checks policy syntax without executing a command', 'level': 'native-parser'})
-                extension = '.md' if self.manager.agent == 'claude-code' else '.toml' if kind == 'agent' else '.rules'
+                elif kind == 'rule' and self.manager.agent == 'antigravity' and len(item['files'][package.entry]) > ANTIGRAVITY_RULE_MAX_BYTES:
+                    self.checks.append({
+                        'name': 'antigravity_rule_size',
+                        'ref': ref,
+                        'status': 'warning',
+                        'code': 'rule_size_exceeds_24kb',
+                        'reason': 'Antigravity truncates instruction/rule files exceeding 24,000 bytes',
+                    })
+                extension = '.md' if self.manager.agent in ('claude-code', 'antigravity') else '.toml' if kind == 'agent' else '.rules'
                 folder = 'agents' if kind == 'agent' else 'rules'
                 native = self._target(self.manager.native_path.parent, folder + '/' + item['identity'] + extension)
                 self._write(ref, native, item['files'][package.entry], 0o600)

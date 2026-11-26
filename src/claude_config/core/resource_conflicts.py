@@ -73,8 +73,9 @@ class ResourceConflicts:
         require('registration' in review, 'Prior native registration body is unavailable; cannot resolve this drift')
         value = parse_json(self.load(review['registration']))
         registration = old['native']['registration']
-        if registration['kind'] == 'mcp':
-            require(fingerprint(value) == registration['sha256'], 'MCP baseline differs from its recorded digest')
+        if registration['kind'] == 'mcp' or 'name' in registration:
+            require(fingerprint(value) == registration['sha256'],
+                    ('MCP' if registration['kind'] == 'mcp' else 'Hook') + ' baseline differs from its recorded digest')
         else:
             require([{'event': row['event'], 'sha256': fingerprint(row['body'])} for row in value['groups']] == registration['groups'],
                     'Hook baseline differs from its recorded groups')
@@ -85,7 +86,7 @@ class ResourceConflicts:
         state = old['native']
         result, incoming, issues = {}, {}, []
         if 'registration' in state:
-            from .registrations import mcp_definition, mcp_target, hook_definition
+            from .registrations import antigravity_hook_definition, mcp_definition, mcp_target, hook_definition
             registration = state['registration']
             path, doc = self.r.registrations.document(Path(registration['path']))
             if registration['kind'] == 'mcp':
@@ -99,6 +100,18 @@ class ResourceConflicts:
                 self.native_details[ref] = {'local': actual, 'incoming': desired}
                 if name != registration['name'] and name in entries:
                     issues.append('unmanaged_mcp_collision')
+                if Path(registration['path']).resolve() != wanted_path.resolve():
+                    issues.append('registration_binding_changed')
+            elif 'name' in registration:
+                wanted_path = self.manager.native_path.parent / 'hooks.json'
+                actual = doc.get(registration['name'])
+                require(actual is None or isinstance(actual, dict), 'Native Antigravity Hook entry has an invalid type')
+                result['hooks'] = {'exists': actual is not None, 'sha256': fingerprint(actual) if actual is not None else None}
+                name, desired = antigravity_hook_definition(item)
+                incoming['hooks'] = {'name': name, 'sha256': fingerprint(desired)}
+                self.native_details[ref] = {'local': actual, 'incoming': desired}
+                if name != registration['name'] and name in doc:
+                    issues.append('unmanaged_hook_collision')
                 if Path(registration['path']).resolve() != wanted_path.resolve():
                     issues.append('registration_binding_changed')
             else:
@@ -261,7 +274,7 @@ class ResourceConflicts:
         registration = state.get('registration')
         if registration:
             baseline_native['mcp' if registration['kind'] == 'mcp' else 'hooks'] = (
-                {'exists': True, 'sha256': registration['sha256']} if registration['kind'] == 'mcp' else
+                {'exists': True, 'sha256': registration['sha256']} if registration['kind'] == 'mcp' or 'name' in registration else
                 [{'event': group['event'], 'exists': True, 'sha256': group['sha256']} for group in registration['groups']])
         if 'skill_control' in state:
             baseline_native['skill_control'] = {'exists': True, 'sha256': fingerprint(state['skill_control']['entry'])}
@@ -409,6 +422,8 @@ class ResourceConflicts:
                     from .registrations import mcp_target
                     _, key = mcp_target(self.manager)
                     value = doc[key][registration['name']]
+                elif 'name' in registration:
+                    value = doc[registration['name']]
                 else:
                     value = {'groups': [], 'context': {group['event']: [fingerprint(row) for row in doc['hooks'][group['event']]]
                                                      for group in registration['groups']}}

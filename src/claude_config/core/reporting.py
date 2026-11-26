@@ -56,7 +56,10 @@ LABELS.update(catalogs='资源目录', catalog_roots='本机来源目录', repo=
 LABELS.update(antigravity_discovery='Antigravity 只读盘点', antigravity_binding='Antigravity 绑定检查',
               antigravity_plugin_package='Antigravity 插件包', duplicate_plugin_name='插件名称冲突',
               plugin_dir_name_collision='插件目录与名称冲突', skill_plugin_overlap='技能与插件技能重名',
-              mcp_server_collision='全局与插件 MCP 重名', phase_a_read_only='Phase A 只读保护')
+              agent_plugin_overlap='子代理与插件子代理重名', mcp_server_collision='全局与插件 MCP 重名',
+              antigravity_hooks_config='Antigravity Hooks 配置', antigravity_hooks_unreadable='Antigravity Hooks 无法读取',
+              antigravity_rule_size='Antigravity 规则体积上限', dual_global_instruction_files='全局指令双文件并存',
+              native_hook_definition='Hook 定义检查', phase_a_read_only='Phase A 只读保护')
 POLICY_LABELS.update({'exact-framework-release': '按已核对的框架版本更新',
                       'identical-immutable-snapshot': '合并相同的恢复副本', 'exact-profile-data': '使用已校验的 Profile',
                       'one-time-format-migration': '迁移到新版格式'})

@@ -39,7 +39,6 @@ class Cutover:
         self.state_root = state_directory(self.machine, config_dir=spec['data_target'])
         self.native_path, self.entry = Path(spec['machine_target']), {}
         self.agents = {agent: ProfileManager(self.machine_path, agent, probe=agent_probe, state_root=self.state_root) for agent in self.machine['agents']}
-        require('antigravity' not in self.agents, 'unsupported_antigravity_cutover: Cutover is not supported for Antigravity in Phase B')
         self.apps = {app: AppProfileManager(self.machine_path, app, probe=app_probe, state_root=self.state_root) for app in self.machine['apps']}
         require(len({manager.native_path.parent.resolve() for manager in self.agents.values()}) == len(self.agents), 'Different Agents cannot share a plugin configuration root')
         self.recovery_scopes = sorted({str(self.native_path.resolve()), str(Path(spec['data_target']).resolve()),
@@ -52,6 +51,7 @@ class Cutover:
     def check_native_operation(self, operation):
         manager = self.agents.get(operation.agent)
         require(manager is not None and operation.root == manager.native_path.parent.resolve()
+                and 'executable' in manager.entry['binding']
                 and operation.definition['executable'] == str(Path(manager.entry['binding']['executable']).resolve()), 'Native recovery belongs to another cutover binding')
         if operation.agent == 'claude-code':
             from .registrations import claude_user_config
@@ -187,7 +187,7 @@ class Cutover:
                                         'plan_id': fingerprint(machine)}, prepare=False)
         plans = [boot]
         for agent, manager in self.agents.items():
-            progress('检查 ' + {'claude-code': 'Claude Code', 'codex': 'Codex'}[agent] + ' 配置与资源')
+            progress('检查 ' + {'claude-code': 'Claude Code', 'codex': 'Codex', 'antigravity': 'Antigravity'}[agent] + ' 配置与资源')
             plans.append(manager.plan(adopt_plugins=self.spec.get('adopt_plugins', {}).get(agent),
                                       replace_plugins=self.spec.get('replace_plugins', {}).get(agent), prepare=False))
         for app, manager in self.apps.items():

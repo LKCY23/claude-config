@@ -38,6 +38,9 @@ EVENTS = {
     'antigravity': frozenset(('SessionStart', 'PreToolUse', 'PostToolUse', 'PreInvocation', 'PostInvocation', 'Stop')),
 }
 HOOK_OPTIONS = ('timeout', 'async', 'statusMessage')
+ANTIGRAVITY_HOOK_OPTIONS = ('enabled', 'timeout')
+ANTIGRAVITY_GROUPED_HOOK_EVENTS = frozenset(('PreToolUse', 'PostToolUse'))
+ANTIGRAVITY_FLAT_HOOK_EVENTS = frozenset(('SessionStart', 'PreInvocation', 'PostInvocation', 'Stop'))
 SENSITIVE = re.compile(r'(?:token|password|secret|authorization|api[-_]?key)', re.I)
 
 
@@ -67,6 +70,10 @@ def validate_registration(value):
         require(set(value) == {'path', 'kind', 'name', 'sha256'}, 'Invalid MCP state shape')
         require(isinstance(value['name'], str) and NAME.fullmatch(value['name']), 'Invalid managed MCP name')
         require(isinstance(value['sha256'], str) and re.fullmatch(r'[0-9a-f]{64}', value['sha256']), 'Invalid MCP state fingerprint')
+    elif 'name' in value:
+        require(set(value) == {'path', 'kind', 'name', 'sha256'}, 'Invalid Antigravity Hook state shape')
+        require(isinstance(value['name'], str) and NAME.fullmatch(value['name']), 'Invalid managed Antigravity Hook name')
+        require(isinstance(value['sha256'], str) and re.fullmatch(r'[0-9a-f]{64}', value['sha256']), 'Invalid Hook state fingerprint')
     else:
         require(set(value) == {'path', 'kind', 'groups'} and isinstance(value['groups'], list), 'Invalid Hook state shape')
         seen = set()
@@ -264,6 +271,94 @@ def hook_definition(item, agent):
     return result
 
 
+def antigravity_hook_timeouts(entry):
+    """Collect handler timeout values and total handler count from one named hook entry."""
+    timeouts = []
+    total = 0
+    for event, value in entry.items():
+        if event == 'enabled':
+            continue
+        if event in ANTIGRAVITY_GROUPED_HOOK_EVENTS:
+            if not isinstance(value, list):
+                continue
+            for group in value:
+                if isinstance(group, dict) and isinstance(group.get('hooks'), list):
+                    for handler in group['hooks']:
+                        total += 1
+                        if isinstance(handler, dict) and 'timeout' in handler:
+                            timeouts.append(handler['timeout'])
+        elif event in ANTIGRAVITY_FLAT_HOOK_EVENTS and isinstance(value, list):
+            for handler in value:
+                total += 1
+                if isinstance(handler, dict) and 'timeout' in handler:
+                    timeouts.append(handler['timeout'])
+    return timeouts, total
+
+
+def _apply_antigravity_hook_timeout(entry, timeout):
+    for event, value in entry.items():
+        if event in ANTIGRAVITY_GROUPED_HOOK_EVENTS:
+            for group in value:
+                for handler in group['hooks']:
+                    handler['timeout'] = timeout
+        elif event in ANTIGRAVITY_FLAT_HOOK_EVENTS:
+            for handler in value:
+                handler['timeout'] = timeout
+
+
+def antigravity_hook_definition(item):
+    template = Templates(item)
+    value = parse_json(item['files'][item['package'].entry])
+    closed(value, ('name', 'enabled', *EVENTS['antigravity']), ('name',), 'Antigravity Hook resource template')
+    name = value['name']
+    require(isinstance(name, str) and bool(NAME.fullmatch(name)), 'Invalid Antigravity Hook native name')
+    events = [event for event in value if event in EVENTS['antigravity']]
+    require(bool(events), 'Antigravity Hook template must declare at least one event')
+    options = item['package'].selection.get('options', {})
+    closed(options, ANTIGRAVITY_HOOK_OPTIONS, (), 'Antigravity Hook options')
+    if 'enabled' in options:
+        require(type(options['enabled']) is bool, 'Antigravity Hook enabled must be Boolean')
+    if 'timeout' in options:
+        require(type(options['timeout']) is int and options['timeout'] > 0, 'Antigravity Hook timeout must be a positive integer')
+
+    def render_handler(raw):
+        closed(raw, ('type', 'command', 'timeout'), ('command',), 'Antigravity Hook handler')
+        kind = raw.get('type', 'command')
+        require(kind == 'command', 'Only command Hook handlers are supported in Antigravity')
+        rendered = {'type': 'command', 'command': template.command(raw['command'])}
+        timeout = options['timeout'] if 'timeout' in options else raw.get('timeout')
+        if timeout is not None:
+            require(type(timeout) is int and timeout > 0, 'Antigravity Hook timeout must be a positive integer')
+            rendered['timeout'] = timeout
+        return rendered
+
+    entry = {}
+    if 'enabled' in options:
+        entry['enabled'] = options['enabled']
+    elif 'enabled' in value:
+        require(type(value['enabled']) is bool, 'Antigravity Hook enabled must be Boolean')
+        entry['enabled'] = value['enabled']
+    for event in events:
+        raw_rows = value[event]
+        if event in ANTIGRAVITY_GROUPED_HOOK_EVENTS:
+            require(isinstance(raw_rows, list) and bool(raw_rows), 'Antigravity grouped Hook event requires matcher groups')
+            groups = []
+            for group in raw_rows:
+                closed(group, ('matcher', 'hooks'), ('hooks',), 'Antigravity Hook matcher group')
+                rendered_group = {}
+                if 'matcher' in group:
+                    string(group['matcher'], 'Hook matcher', empty=True)
+                    rendered_group['matcher'] = group['matcher']
+                require(isinstance(group['hooks'], list) and bool(group['hooks']), 'Antigravity Hook group needs handlers')
+                rendered_group['hooks'] = [render_handler(handler) for handler in group['hooks']]
+                groups.append(rendered_group)
+            entry[event] = groups
+        else:
+            require(isinstance(raw_rows, list) and bool(raw_rows), 'Antigravity flat Hook event requires handlers')
+            entry[event] = [render_handler(handler) for handler in raw_rows]
+    return name, entry
+
+
 class Registrations:
     def __init__(self, resources, native, original):
         self.resources = resources
@@ -278,7 +373,7 @@ class Registrations:
         require(not path.is_symlink(), 'Native registration file cannot be a symlink')
         path = self.resources._target(path.parent, path.name)
         if path not in self.documents:
-            parser = parse_json_or_empty if self.manager.agent == 'antigravity' and path.name == 'mcp_config.json' else parse_json
+            parser = parse_json_or_empty if self.manager.agent == 'antigravity' and path.name in ('mcp_config.json', 'hooks.json') else parse_json
             value, content, expected = self.manager._read(path, parser)
             self.documents[path] = {'value': value, 'original': content, 'expected': expected}
         return path, self.documents[path]['value']
@@ -333,8 +428,69 @@ class Registrations:
         if path == self.main_path:
             self.main_roots.add(key)
 
+    def _add_antigravity_hooks(self, ref, item):
+        name, hook_entry = antigravity_hook_definition(item)
+        path, document = self.document(self.manager.native_path.parent / 'hooks.json')
+        old = self.resources.previous.get(ref, {}).get('native', {}).get('registration')
+        if old is not None and old['path'] != str(path):
+            self._blocked(ref, 'registration_binding_changed', 'Native registration file binding changed; review explicit relocation and ownership before applying')
+            return
+        owned = old is not None and old['path'] == str(path)
+        if owned:
+            require(old['kind'] == 'hook' and 'name' in old, 'Registration changed kind')
+            if (old['name'] not in document or fingerprint(document[old['name']]) != old['sha256']) and ref not in self.resources.conflicts.restore:
+                self._blocked(ref, 'hook_drift', 'Managed Antigravity Hook entry was externally changed or removed',
+                              {'sha256': fingerprint(document[old['name']])} if old['name'] in document else None,
+                              {'sha256': fingerprint(hook_entry)})
+                return
+        if name in document and (not owned or old['name'] != name):
+            self._blocked(ref, 'unmanaged_hook_collision', 'Native Antigravity Hook name already exists outside this resource ownership',
+                          {'sha256': fingerprint(document[name])}, {'sha256': fingerprint(hook_entry)})
+            return
+        current_doc = (self.resources.conflicts.baseline_registration(ref) if ref in self.resources.conflicts.restore else document[old['name']]) if owned else {}
+        if current_doc:
+            require(isinstance(current_doc, dict), 'Native Antigravity Hook entry must be an object')
+        selection_opts = item['package'].selection.get('options', {})
+        incoming_opts = {}
+        if 'enabled' in selection_opts:
+            incoming_opts['enabled'] = hook_entry['enabled']
+        in_timeouts, in_total = antigravity_hook_timeouts(hook_entry)
+        if 'timeout' in selection_opts or (in_timeouts and len(in_timeouts) == in_total and len(set(in_timeouts)) == 1):
+            incoming_opts['timeout'] = in_timeouts[0]
+        current_opts = {}
+        if 'enabled' in current_doc and type(current_doc['enabled']) is bool:
+            current_opts['enabled'] = current_doc['enabled']
+        cur_timeouts, cur_total = antigravity_hook_timeouts(current_doc) if current_doc else ([], 0)
+        if cur_timeouts:
+            if len(cur_timeouts) != cur_total or len(set(cur_timeouts)) != 1:
+                if 'timeout' not in incoming_opts and not in_timeouts:
+                    self._blocked(ref, 'hook_options_ambiguous', 'Changed Hook layout cannot preserve differing handler timeouts; select explicit options and replan')
+                    return
+            else:
+                current_opts['timeout'] = cur_timeouts[0]
+        merged = merge_options(self.resources, ref, incoming_opts, current_opts, report_prefix=(str(path), name))
+        if 'enabled' in merged:
+            hook_entry['enabled'] = merged['enabled']
+        if 'timeout' in merged:
+            _apply_antigravity_hook_timeout(hook_entry, merged['timeout'])
+        before = {'sha256': fingerprint(document[name])} if name in document else None
+        document[name] = hook_entry
+        if owned and old['name'] != name:
+            document.pop(old['name'], None)
+            self.resources._decision(ref, ['registration', old['name']], {'sha256': old['sha256']}, None,
+                                     'retire_previous_native_identity', 'Resource rename removes only the previous unchanged owned entry')
+        after = {'sha256': fingerprint(hook_entry)}
+        self.resources._decision(ref, ['registration', name], before, after, 'unchanged' if before == after else 'replace_entry' if before else 'add',
+                                 'One resource owns this native Hook entry; other entries are retained')
+        self.resources.records[ref]['native']['registration'] = {'path': str(path), 'kind': 'hook', 'name': name, **after}
+        self.resources.checks.append({'name': 'native_hook_definition', 'ref': ref, 'status': 'passed', 'level': 'documented-config-interface',
+                                     'reason': 'Closed native event/group/command schema; handlers are not executed'})
+
     def add_hooks(self, ref, item):
         agent = self.manager.agent
+        if agent == 'antigravity':
+            self._add_antigravity_hooks(ref, item)
+            return
         wanted = hook_definition(item, agent)
         path = self.manager.native_path if agent == 'claude-code' else self.manager.native_path.parent / 'hooks.json'
         path, document = self.document(path)
@@ -432,7 +588,7 @@ class Registrations:
             if path == self.main_path:
                 continue
             original = document['original']
-            parser = parse_json_or_empty if self.manager.agent == 'antigravity' and path.name == 'mcp_config.json' else parse_json
+            parser = parse_json_or_empty if self.manager.agent == 'antigravity' and path.name in ('mcp_config.json', 'hooks.json') else parse_json
             content = original if same(parser(original), document['value']) else (json.dumps(document['value'], indent=2, ensure_ascii=False) + '\n').encode()
             changes.append(FileChange(path, content, 'native-resource-registrations', parser, document['expected']))
         return changes

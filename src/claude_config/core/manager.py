@@ -123,7 +123,7 @@ class ProfileManager:
             if checked and not any(row['status'] == 'blocked' for row in checks):
                 checks.append({'name': 'antigravity_binding', 'status': 'passed',
                                'level': 'documented-config-interface',
-                               'reason': 'Antigravity Phase B targets managed skills, plugins, and global mcp_config.json'})
+                               'reason': 'Antigravity targets managed skills, plugins, global mcp_config.json, instructions, rules, agents, and hooks.json'})
             return checks
         if settings or resources_selected and any(profile.get('resources', {}).values()):
             executables = [self.entry['binding']['executable']]

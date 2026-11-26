@@ -523,21 +523,7 @@ class CollisionBlockersAndFailClosedTests(AntigravityPhaseBFixture):
             ProfileManager(self.machine_path, 'antigravity').plan()
         del self.profile['settings']
 
-        # Unsupported resource kinds (hook, instruction, rule, agent) and skill.control
-        for kind, entry, files in (
-            ('instruction', 'GEMINI.md', {'GEMINI.md': '# Hello\n'}),
-            ('rule', 'r.md', {'r.md': 'rule\n'}),
-            ('agent', 'a.md', {'a.md': '---\nname: a\ndescription: d\n---\n'}),
-            ('hook', 'hooks.json', {'hooks.json': json.dumps({'hooks': {}})}),
-        ):
-            self.profile['resources'] = {}
-            self.catalog['resources'] = {}
-            self.add_resource('bad-' + kind, kind, files, entry)
-            self.commit_catalog('bad-' + kind)
-            rep = ProfileManager(self.machine_path, 'antigravity').plan().report
-            self.assertFalse(rep['ready'])
-
-        # Skill control options rejected
+        # Skill control options remain rejected for Antigravity
         self.profile['resources'] = {}
         self.catalog['resources'] = {}
         self.add_resource('sk', 'skill', {'SKILL.md': '---\nname: sk\ndescription: d\n---\n'}, 'SKILL.md',
@@ -545,17 +531,6 @@ class CollisionBlockersAndFailClosedTests(AntigravityPhaseBFixture):
         self.commit_catalog('bad-skill-opt')
         rep = ProfileManager(self.machine_path, 'antigravity').plan().report
         self.assertFalse(rep['ready'])
-
-        # Cutover rejected
-        spec_path = self.root / 'cutover.yaml'
-        spec_path.write_text(yaml.safe_dump({
-            'schema_version': 2,
-            'machine': str(self.machine_path),
-            'machine_target': str(self.root / 'new-machine.yaml'),
-            'data_target': str(self.root / 'new-data'),
-        }))
-        with self.assertRaisesRegex(SchemaError, 'unsupported_antigravity_cutover'):
-            Cutover(spec_path)
 
         # Symlink escape in mcp_config.json rejected
         outside = self.root / 'outside.json'

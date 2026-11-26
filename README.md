@@ -1,6 +1,6 @@
 # claude-config
 
-当前工作分支开发 **0.8.0.dev2**：[统一插件管理入口](references/plugin-management.md)，支持 `plugin install/upgrade/enable/disable/list/status`、Profile 级版本锁定和统一恢复。`plugin --write` 可直接执行，计划 ID 为可选的审核约束。下方 0.7.0 安装说明仍指向已发布版本。
+当前版本 **0.8.0**：[统一插件管理入口](references/plugin-management.md)，支持 `plugin install/upgrade/enable/disable/list/status`、Profile 级版本锁定、Antigravity Phase A/B 及统一恢复。`plugin --write` 可直接执行，计划 ID 为可选的审核约束。下方 0.7.0 安装说明仍指向先前已发布版本。
 
 > 2026-10-28 S9：新增 Claude Desktop 4.29.0 偏好接口审计与包内语言目录适配；Mac mini macOS 27.2 上定向回归、真实源码合成偏好验证及真实 Machine 只读 plan 通过。未升级已安装工具或写入日常偏好。见[实现记录](docs/implementation-20261028-s9.md)。
 

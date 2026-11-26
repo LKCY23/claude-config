@@ -10,7 +10,7 @@ from claude_config.core.cutover import Cutover
 from claude_config.core.recovery import rollback_plan
 from claude_config.core.reporting import build_report, fallback_state_root, save_report
 from claude_config.core.schema import SchemaError
-from claude_config.core.transaction import PlanStale
+from claude_config.core.transaction import PlanStale, plan_id_matches
 from claude_config.core.execution_context import progress, progress_output
 
 
@@ -33,7 +33,7 @@ def _main(argv):
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--run')
     parser.add_argument('--write', action='store_true')
-    parser.add_argument('--expect-plan-id')
+    parser.add_argument('--expect-plan-id', '--plan-id', dest='expect_plan_id')
     parser.add_argument('--format', choices=('auto', 'text', 'tui', 'json'), default='auto')
     parser.add_argument('--verbose', action='store_true', help='显示完整保留决策与细粒度输出')
     args = parser.parse_args(argv)
@@ -47,7 +47,7 @@ def _main(argv):
         manager = Cutover(args.spec)
         plan = rollback_plan(manager, args.run) if args.operation == 'rollback' else manager.plan()
         raw = plan.report
-        if args.expect_plan_id and raw['plan_id'] != args.expect_plan_id:
+        if args.expect_plan_id and not plan_id_matches(raw['plan_id'], args.expect_plan_id):
             raise PlanStale('Reviewed cutover has changed')
         if (args.operation == 'apply' or args.write) and raw['ready']:
             started = True

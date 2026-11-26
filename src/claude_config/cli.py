@@ -5,7 +5,7 @@ from . import __version__
 HELP = """usage: claude-config COMMAND [OPTIONS]
 
 配置操作（明确选择 --agent 或 --app）：
-  plan  validate  apply  export  switch  rollback
+  plan  validate  apply  resolve  export  switch  rollback
   adopt-baseline  review-conflicts  reconcile-run  retire-skills
 本机设置：
   init       初始化/迁移 Machine 和明确指定的 Skill 入口，默认预览
@@ -47,6 +47,9 @@ def main(argv=None):
         return run(argv[1:])
     if command == 'report':
         from .report_cmd import main as run
+        return run(argv[1:])
+    if command == 'resolve':
+        from .resolve import main as run
         return run(argv[1:])
     if command in ('init', 'doctor'):
         from .setup import main as run

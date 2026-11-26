@@ -602,10 +602,26 @@ def report_sections(report, *, compact=False):
                              ['原因：' + reason_label(blocker.get('reason') or LABELS.get(blocker.get('code'), blocker.get('code', '必要检查未通过')))], True))
     for error in report['errors']:
         detail = error.get('detail')
-        if detail and not isinstance(detail, str):
-            detail = json.dumps(detail, ensure_ascii=False, sort_keys=True)
-        sections.append(('错误：' + error['code'], ['阶段：' + error.get('phase', '未知'), '原因：' + error['reason'] +
-                         ('\n检查详情：' + detail if detail else '')], True))
+        body = ['阶段：' + error.get('phase', '未知'), '原因：' + error['reason']]
+        if error.get('code') == 'plan_stale' and isinstance(detail, dict) and (detail.get('phase') == 'expect_plan_id' or 'differences' in detail):
+            exp = detail.get('expected_plan_id') or detail.get('expected')
+            act = detail.get('actual_plan_id') or detail.get('actual')
+            if isinstance(exp, str) and exp:
+                body.append(f'预期计划 ID：{exp[:12]}')
+            if isinstance(act, str) and act:
+                body.append(f'当前计划 ID：{act[:12]}')
+            if detail.get('path'):
+                body.append(f"变更路径：{detail['path']}")
+            diffs = detail.get('differences')
+            if diffs:
+                body.append('具体变化：')
+                body.extend(f'  - {item}' for item in diffs)
+            elif exp and act and not detail.get('path'):
+                body.append('未在本地历史报告中找到对应预览记录；请重新生成预览计划。')
+        elif detail:
+            detail_text = detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False, sort_keys=True)
+            body[-1] = body[-1] + '\n检查详情：' + detail_text
+        sections.append(('错误：' + error['code'], body, True))
     selected = {identifier for row in report['changes'] for identifier in row['decision_ids']}
     selected |= {identifier for row in report['conflicts'] for identifier in row.get('decision_ids', [])}
     other = [row for row in report['decisions'] if row['id'] not in selected]
@@ -638,6 +654,67 @@ def scope_labels(report):
     return labels
 
 
+def explain_plan_stale(state_root, expected_plan_id, current_report):
+    """Compare current preview against the matching historical report without leaking secrets."""
+    token = str(expected_plan_id).strip().lower()
+    reports_dir = Path(state_root) / 'reports'
+    previous = None
+    if reports_dir.is_dir() and re.fullmatch(r'[0-9a-f]{8,64}', token):
+        files = [p for p in reports_dir.glob('*.json') if p.is_file() and not p.is_symlink()]
+        files.sort(key=lambda item: (item.stat().st_mtime_ns, item.name), reverse=True)
+        for path in files[:50]:
+            try:
+                loaded = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError, UnicodeError):
+                continue
+            if isinstance(loaded, dict) and isinstance(loaded.get('plan_id'), str):
+                if loaded['plan_id'].lower().startswith(token):
+                    previous = loaded
+                    break
+    result = {
+        'expected_plan_id': str(expected_plan_id),
+        'actual_plan_id': current_report.get('plan_id'),
+        'previous_report_id': previous.get('report_id') if previous else None,
+        'differences': [],
+    }
+    if previous is None:
+        return result
+    diffs = []
+    old_target = (previous.get('targets') or [{}])[0]
+    new_target = (current_report.get('targets') or [{}])[0]
+    if old_target.get('profile') != new_target.get('profile'):
+        diffs.append(f"Profile 已变更：{old_target.get('profile') or '未指定'} → {new_target.get('profile') or '未指定'}")
+    old_vals = (previous.get('fingerprints') or {}).get('values') or {}
+    new_vals = (current_report.get('fingerprints') or {}).get('values') or {}
+    if old_vals.get('source') != new_vals.get('source'):
+        diffs.append('配置库声明（Profile / 资源来源）已变化')
+    if old_vals.get('target') != new_vals.get('target'):
+        diffs.append('本机原生配置已变化')
+    old_paths = {tuple(row.get('path', [])) for row in previous.get('changes', [])}
+    new_paths = {tuple(row.get('path', [])) for row in current_report.get('changes', [])}
+    if old_paths != new_paths:
+        added = [path_label(list(p)) for p in sorted(new_paths - old_paths)[:3]]
+        removed = [path_label(list(p)) for p in sorted(old_paths - new_paths)[:3]]
+        if added:
+            diffs.append('新增变更项：' + '、'.join(added))
+        if removed:
+            diffs.append('已移除变更项：' + '、'.join(removed))
+    elif len(previous.get('changes', [])) != len(current_report.get('changes', [])):
+        diffs.append(f"待更新项数量：{len(previous.get('changes', []))} → {len(current_report.get('changes', []))}")
+    old_conf = (previous.get('summary') or {}).get('unresolved_conflicts', 0)
+    new_conf = (current_report.get('summary') or {}).get('unresolved_conflicts', 0)
+    if old_conf != new_conf:
+        diffs.append(f'未解决冲突数：{old_conf} → {new_conf}')
+    old_inv = (previous.get('resource_inventory') or {}).get('ownership_fingerprint')
+    new_inv = (current_report.get('resource_inventory') or {}).get('ownership_fingerprint')
+    if old_inv != new_inv:
+        diffs.append('本机技能/资源归属状态已变化')
+    if not diffs:
+        diffs.append('来源快照、本机文件状态或处理策略已变化')
+    result['differences'] = diffs
+    return result
+
+
 def next_steps_lines(report):
     target = (report.get('targets') or [{}])[0]
     stats = report['summary']
@@ -658,6 +735,7 @@ def next_steps_lines(report):
         lines.append(f'下一步：核对本机 machine.yaml 与仓库 machines/{machine_id}.yaml 的绑定集合，使其保持一致。')
     if stats.get('unresolved_conflicts', 0) > 0 and target.get('agent_type'):
         agent = target['agent_type']
+        quoted_agent = shlex.quote(agent)
         settings_ptrs = []
         has_resource_conflict = False
         for row in report.get('conflicts', []):
@@ -671,12 +749,14 @@ def next_steps_lines(report):
         for ptr in list(dict.fromkeys(settings_ptrs))[:3]:
             quoted_ptr = shlex.quote(ptr)
             lines.append(
-                f'下一步解决设置冲突（{ptr}）：采用配置库值可加 --field-policy {quoted_ptr}=source_wins；'
-                f'保留本机值可加 --field-policy {quoted_ptr}=keep_target；'
-                f'或回写配置库 claude-config export --agent {shlex.quote(agent)} --field {quoted_ptr} --write'
+                f'下一步解决设置冲突（{ptr}）：运行 claude-config resolve --agent {quoted_agent}'
+                f'（或单行：claude-config resolve --agent {quoted_agent} --choose {quoted_ptr}=source_wins --write / keep_target / export）'
             )
         if has_resource_conflict:
-            lines.append(f'下一步解决资源冲突：运行 claude-config review-conflicts --agent {shlex.quote(agent)} 查看明细与处理方案')
+            lines.append(
+                f'下一步解决资源冲突：运行 claude-config resolve --agent {quoted_agent} '
+                f'或 claude-config review-conflicts --agent {quoted_agent}'
+            )
     if (report.get('operation') == 'plan' and report.get('ready') and report.get('preview_only', True)
             and stats.get('changes', 0) > 0 and report.get('plan_id') and target_flag):
         requested = (report.get('deployment_scope') or {}).get('requested') or {}
@@ -690,7 +770,8 @@ def next_steps_lines(report):
         elif requested.get('scope') and requested['scope'] != 'all':
             selectors.append(f"--scope {shlex.quote(requested['scope'])}")
         selector_text = (' ' + ' '.join(selectors)) if selectors else ''
-        lines.append(f"下一步执行：claude-config apply {target_flag}{selector_text} --expect-plan-id {report['plan_id']}")
+        short_id = report['plan_id'][:12]
+        lines.append(f"下一步执行：claude-config apply {target_flag}{selector_text} --expect-plan-id {short_id}")
     return lines
 
 

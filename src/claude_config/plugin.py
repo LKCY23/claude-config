@@ -7,7 +7,7 @@ from .core.manager import ProfileManager
 from .core.plugin_manager import PluginManager
 from .core.schema import SchemaError, require
 from .core.source_transport import DEFAULT_GIT_TRANSPORT, GIT_TRANSPORTS
-from .core.transaction import PlanStale, UnfinishedRun
+from .core.transaction import PlanStale, UnfinishedRun, plan_id_matches
 from .core.report_viewer import show_report, terminal_color_enabled, terminal_interactive
 from .core.reporting import build_report, encode_json, exit_code, render_text, save_report
 
@@ -78,7 +78,8 @@ def main(argv=None):
         execution = parser.add_mutually_exclusive_group()
         execution.add_argument('--dry-run', action='store_true')
         execution.add_argument('--write', action='store_true', help='Generate, validate and execute a fresh plan; no manual plan ID needed')
-        parser.add_argument('--expect-plan-id', help='Optional: require an exact previously reviewed plan ID')
+        parser.add_argument('--expect-plan-id', '--plan-id', dest='expect_plan_id',
+                            help='Optional: require a reviewed plan ID (full or 8+ char prefix)')
         parser.add_argument('--format', choices=('auto', 'text', 'tui', 'json'), default='auto')
         parser.add_argument('--verbose', action='store_true', help='显示完整保留决策与细粒度输出')
         args = parser.parse_args(argv)
@@ -108,7 +109,7 @@ def main(argv=None):
             plan = service.plan(args.action, args.plugin, version=args.version, commit=args.commit,
                                 enable=args.enable, disabled=args.disabled, bindings=bindings)
             report = plan.report
-            if args.expect_plan_id and args.expect_plan_id != report['plan_id']:
+            if args.expect_plan_id and not plan_id_matches(report['plan_id'], args.expect_plan_id, strict_format=False):
                 raise PlanStale('Plugin plan changed; preview again')
             interactive = sys.stdin.isatty() and sys.stdout.isatty() and args.format != 'json'
             execute = args.write

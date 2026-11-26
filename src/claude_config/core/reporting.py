@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import uuid
 
 from .merge import redact, same
@@ -668,16 +669,28 @@ def next_steps_lines(report):
             else:
                 has_resource_conflict = True
         for ptr in list(dict.fromkeys(settings_ptrs))[:3]:
+            quoted_ptr = shlex.quote(ptr)
             lines.append(
-                f'下一步解决设置冲突（{ptr}）：采用配置库值可加 --field-policy {ptr}=source_wins；'
-                f'保留本机值可加 --field-policy {ptr}=keep_target；'
-                f'或回写配置库 claude-config export --agent {agent} --field {ptr} --write'
+                f'下一步解决设置冲突（{ptr}）：采用配置库值可加 --field-policy {quoted_ptr}=source_wins；'
+                f'保留本机值可加 --field-policy {quoted_ptr}=keep_target；'
+                f'或回写配置库 claude-config export --agent {shlex.quote(agent)} --field {quoted_ptr} --write'
             )
         if has_resource_conflict:
-            lines.append(f'下一步解决资源冲突：运行 claude-config review-conflicts --agent {agent} 查看明细与处理方案')
+            lines.append(f'下一步解决资源冲突：运行 claude-config review-conflicts --agent {shlex.quote(agent)} 查看明细与处理方案')
     if (report.get('operation') == 'plan' and report.get('ready') and report.get('preview_only', True)
             and stats.get('changes', 0) > 0 and report.get('plan_id') and target_flag):
-        lines.append(f"下一步执行：claude-config apply {target_flag} --expect-plan-id {report['plan_id']}")
+        requested = (report.get('deployment_scope') or {}).get('requested') or {}
+        selectors = []
+        if requested.get('resources'):
+            selectors.extend(f"--resource {shlex.quote(item)}" for item in requested['resources'])
+        elif requested.get('resource_groups'):
+            selectors.extend(f"--resource-group {shlex.quote(item)}" for item in requested['resource_groups'])
+        elif requested.get('fields'):
+            selectors.extend(f"--field {shlex.quote(item)}" for item in requested['fields'])
+        elif requested.get('scope') and requested['scope'] != 'all':
+            selectors.append(f"--scope {shlex.quote(requested['scope'])}")
+        selector_text = (' ' + ' '.join(selectors)) if selectors else ''
+        lines.append(f"下一步执行：claude-config apply {target_flag}{selector_text} --expect-plan-id {report['plan_id']}")
     return lines
 
 

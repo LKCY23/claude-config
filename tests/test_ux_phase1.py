@@ -284,6 +284,27 @@ class Phase1ReportingAndFormatTests(unittest.TestCase):
         legacy_report['summary'].pop('logical_changes', None)
         self.assertIn('1 个资源包（展开 4 项），1 项设置', render_text(legacy_report))
 
+        # Scoped plan preserves selectors in next_steps_lines
+        scoped_raw = MergePlan({'settings': {'model': 'new'}}, {'settings': {'model': 'old'}}, source={}, destination={}).report()
+        scoped_report = build_report(scoped_raw, operation='plan', context={'agent_type': 'codex'})
+        scoped_report['plan_id'] = 'b' * 64
+        scoped_report['deployment_scope'] = {
+            'requested': {'scope': 'all', 'resources': ['foo@cat'], 'resource_groups': [], 'fields': []},
+            'expanded': {'resources': [], 'fields': []},
+        }
+        self.assertIn(
+            '下一步执行：claude-config apply --agent codex --resource foo@cat --expect-plan-id ' + ('b' * 64),
+            render_text(scoped_report),
+        )
+        scoped_report['deployment_scope'] = {
+            'requested': {'scope': 'settings', 'resources': [], 'resource_groups': [], 'fields': []},
+            'expanded': {'resources': [], 'fields': []},
+        }
+        self.assertIn(
+            '下一步执行：claude-config apply --agent codex --scope settings --expect-plan-id ' + ('b' * 64),
+            render_text(scoped_report),
+        )
+
     def test_terminal_color_and_report_cmd_subcommand(self):
         tty, pipe = unittest.mock.Mock(), unittest.mock.Mock()
         tty.isatty.return_value = True
@@ -319,6 +340,38 @@ class Phase1ReportingAndFormatTests(unittest.TestCase):
                 code = cli_entry.main(['report', '../../etc/passwd', '--state-dir', str(state), '--format', 'json'])
             self.assertEqual(code, 2)
             self.assertEqual(json.loads(out_bad.getvalue())['errors'][0]['code'], 'invalid_arguments')
+
+            # Historical blocked/error report still returns exit code 0 when viewed successfully
+            blocked = build_report(
+                {'checks': [{'name': 'test', 'status': 'blocked', 'reason': 'blocked_demo'}]},
+                operation='plan',
+                context={'agent_type': 'codex'},
+            )
+            save_report(blocked, state)
+            out_blocked = io.StringIO()
+            with redirect_stdout(out_blocked):
+                code = cli_entry.main(['report', 'last', '--state-dir', str(state), '--format', 'text'])
+            self.assertEqual(code, 0)
+            self.assertIn('blocked_demo', out_blocked.getvalue())
+
+            # Malformed JSON object lacking required report keys fails safely with code=2
+            bad_json = Path(tmp) / 'malformed.json'
+            bad_json.write_text(json.dumps({'schema_version': 1, 'operation': 'plan'}), encoding='utf-8')
+            out_malformed = io.StringIO()
+            with patch('claude_config.report_cmd.fallback_state_root', return_value=Path(tmp) / 'fb'), redirect_stdout(out_malformed):
+                code = cli_entry.main(['report', str(bad_json), '--format', 'json'])
+            self.assertEqual(code, 2)
+            malformed_err = json.loads(out_malformed.getvalue())['errors'][0]
+            self.assertEqual(malformed_err['code'], 'report_load_failed')
+
+            invalid_json = Path(tmp) / 'broken.json'
+            invalid_json.write_text('{SECRET_RAW_DATA', encoding='utf-8')
+            out_invalid = io.StringIO()
+            with patch('claude_config.report_cmd.fallback_state_root', return_value=Path(tmp) / 'fb'), redirect_stdout(out_invalid):
+                code = cli_entry.main(['report', str(invalid_json), '--format', 'json'])
+            self.assertEqual(code, 2)
+            self.assertEqual(json.loads(out_invalid.getvalue())['errors'][0]['code'], 'report_load_failed')
+            self.assertNotIn('SECRET_RAW_DATA', out_invalid.getvalue())
 
 
 if __name__ == '__main__':

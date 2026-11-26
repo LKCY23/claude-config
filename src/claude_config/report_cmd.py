@@ -2,6 +2,7 @@
 from pathlib import Path
 import re
 import sys
+import yaml
 
 from .core.native import parse_json, parse_yaml, snapshot_read
 from .core.report_viewer import show_report, terminal_color_enabled, terminal_interactive
@@ -54,17 +55,40 @@ def _resolve_report_file(target, state_root):
     raise UsageError('报告目标应为 last、8-32 位十六进制报告 ID，或明确存在的 .json 文件路径。')
 
 
+_REQUIRED_REPORT_KEYS = {
+    'schema_version', 'operation', 'targets', 'summary', 'execution',
+    'checks', 'decisions', 'changes', 'conflicts', 'blockers',
+    'scope', 'artifacts', 'recovery', 'status',
+}
+
+
+def _validate_loaded_report(report):
+    require(isinstance(report, dict) and _REQUIRED_REPORT_KEYS <= set(report),
+            '指定文件不是有效的 claude-config 报告格式。')
+    require(isinstance(report['targets'], list) and len(report['targets']) > 0 and isinstance(report['targets'][0], dict),
+            '报告缺少有效的 targets 字段。')
+    require(isinstance(report['summary'], dict) and isinstance(report['summary'].get('checks'), dict),
+            '报告缺少有效的 summary 字段。')
+    require(isinstance(report['execution'], dict) and 'started' in report['execution'],
+            '报告缺少有效的 execution 字段。')
+    require(isinstance(report['scope'], dict) and 'selected' in report['scope'] and 'note' in report['scope'],
+            '报告缺少有效的 scope 字段。')
+    require(isinstance(report['artifacts'], dict) and 'saved' in report['artifacts'],
+            '报告缺少有效的 artifacts 字段。')
+    require(isinstance(report['recovery'], dict), '报告缺少有效的 recovery 字段。')
+
+
 def _emit_loaded_report(report, mode, *, verbose=False):
     if mode == 'json':
         print(encode_json(report))
-        return exit_code(report)
+        return 0
     launch_tui = mode == 'tui' or (mode == 'auto' and terminal_interactive('tui'))
     viewed = False
     if launch_tui and terminal_interactive('tui'):
         viewed = show_report(report)
     color = (mode == 'auto' and not viewed and terminal_color_enabled('auto'))
     print(render_text(report, brief=viewed, verbose=verbose, color=color))
-    return exit_code(report)
+    return 0
 
 
 def main(argv=None):
@@ -83,12 +107,13 @@ def main(argv=None):
         path = _resolve_report_file(args.target, state_root)
         raw, _ = snapshot_read(path)
         report = parse_json(raw)
-        require(isinstance(report, dict) and 'schema_version' in report and 'operation' in report,
-                '指定文件不是有效的 claude-config 报告格式。')
+        _validate_loaded_report(report)
         return _emit_loaded_report(report, args.format, verbose=args.verbose)
-    except (UsageError, SchemaError, ValueError, OSError) as exc:
+    except (UsageError, SchemaError, ValueError, OSError, yaml.YAMLError) as exc:
         code = 'invalid_arguments' if isinstance(exc, UsageError) else 'report_load_failed'
-        error = {'code': code, 'phase': 'report', 'reason': str(exc), 'exit_code': 2}
+        reason = (str(exc) if isinstance(exc, (UsageError, SchemaError))
+                  else '无法读取或解析报告文件；请检查文件路径、权限及 JSON 格式。')
+        error = {'code': code, 'phase': 'report', 'reason': reason, 'exit_code': 2}
         err_report = build_report({}, operation='report', error=error)
         save_report(err_report, fallback_state_root())
         if mode == 'json':

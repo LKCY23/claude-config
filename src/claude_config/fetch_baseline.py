@@ -11,7 +11,7 @@ import subprocess
 from types import SimpleNamespace
 
 from .profile import ReportParser, UsageError, output_report, report_format, report_verbose
-from .core.baseline import baseline_group, catalog_target, validate_record
+from .core.baseline import baseline_group, catalog_target, default_agent_for_machine, validate_record
 from .core.catalog import CatalogResolver, git, verify_git
 from .core.catalog_schema import NAME, validate_catalog
 from .core.execution_context import progress
@@ -216,7 +216,8 @@ def _fetch_one(manager, alias, release, source_map, catalogs, commit, report, al
 def main(argv):
     parser = ReportParser(prog='claude-config fetch-baseline', description=__doc__)
     parser.add_argument('--machine', type=Path, default=Path.home() / '.claude-config-tool/machine.yaml')
-    parser.add_argument('--agent', required=True, choices=('claude-code', 'codex', 'antigravity'))
+    parser.add_argument('--agent', choices=('claude-code', 'codex', 'antigravity'), default=None,
+                        help='可选；省略时自动选择 machine.yaml 中第一个已绑定 Agent')
     parser.add_argument('--catalog', required=True)
     parser.add_argument('--release', required=True)
     parser.add_argument('--source-map', type=Path)
@@ -228,7 +229,9 @@ def main(argv):
     state = fallback_state_root()
     try:
         args = parser.parse_args(argv)
-        manager = ProfileManager(args.machine.expanduser().absolute(), args.agent)
+        machine_path = args.machine.expanduser().absolute()
+        agent = args.agent or default_agent_for_machine(machine_path)
+        manager = ProfileManager(machine_path, agent)
         state = manager.state_root
         started = True
         raw = fetch(manager, args.catalog, args.release, args.source_map, report=raw,

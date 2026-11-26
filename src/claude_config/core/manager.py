@@ -21,10 +21,10 @@ from .deployment_scope import DeploymentScope, update_leaves
 
 
 class ProfileManager:
-    def __init__(self, machine_file, agent, probe=None, *, state_root=None):
+    def __init__(self, machine_file, agent, probe=None, *, state_root=None, machine_strict=True):
         require(agent in ('claude-code', 'codex', 'antigravity'), 'Explicit agent_type is required')
         self.machine_path = Path(machine_file).absolute()
-        self.machine_profiles = MachineProfiles(self.machine_path)
+        self.machine_profiles = MachineProfiles(self.machine_path, strict=machine_strict)
         self.local_machine = self.machine_profiles.local
         self.machine = self.machine_profiles.effective
         require(agent in self.machine['agents'], 'Machine has no binding for ' + agent)

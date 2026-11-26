@@ -4,8 +4,14 @@ from . import __version__
 
 HELP = """usage: claude-config COMMAND [OPTIONS]
 
+日常工作流（建议优先使用）：
+  status     只读全局看板：检查基线缓存、各端同步状态与未解决冲突
+  sync       一键同步：对齐基线并更新所有就绪的 Agent 与 App 配置
+  resolve    交互式解决冲突（支持 --choose 快速非交互选择）
+  baseline   基线管理（baseline status / sync / adopt）
+  report     查看最近或指定报告（默认在终端以可展开树打开）
 配置操作（明确选择 --agent 或 --app）：
-  plan  validate  apply  resolve  export  switch  rollback
+  plan  validate  apply  export  switch  rollback
   adopt-baseline  review-conflicts  reconcile-run  retire-skills
 本机设置：
   init       初始化/迁移 Machine 和明确指定的 Skill 入口，默认预览
@@ -13,7 +19,6 @@ HELP = """usage: claude-config COMMAND [OPTIONS]
 专项操作：
   plugin     插件 install/upgrade/enable/disable/list/status；统一预览及部署
   runs       只读查看执行状态；--run ID 核对当前文件与恢复证据
-  report     查看最近或指定报告（默认在终端以可展开树打开）
   app-profile  查看 App 声明 schema/inspect，预览并受控保存五字段声明
   fetch-baseline  获取明确发布的固定来源，不采用或部署配置
   cutover    多客户端配置统一切换与恢复（不安装工具代码）
@@ -48,6 +53,15 @@ def main(argv=None):
     if command == 'report':
         from .report_cmd import main as run
         return run(argv[1:])
+    if command == 'status':
+        from .status_cmd import main as run
+        return with_progress(run, argv[1:])
+    if command == 'sync':
+        from .sync_cmd import main as run
+        return with_progress(run, argv[1:])
+    if command == 'baseline':
+        from .baseline_cmd import main as run
+        return with_progress(run, argv[1:])
     if command == 'resolve':
         from .resolve import main as run
         return run(argv[1:])

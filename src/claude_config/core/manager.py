@@ -257,6 +257,8 @@ class ProfileManager:
         resources = ResourcePlan(self, state, chosen, native, original, run_policy, resource_resolutions, partial=not selection.full)
         self.last_resources = resources
         resource_failed = False
+        from .execution_context import progress
+        progress(f'解析 {self.agent} 资源目录与原生配置')
         try:
             resources.prepare(deploy=True,
                               resource_refs=None if selection.full else requested_refs,
@@ -299,6 +301,7 @@ class ProfileManager:
         selected_paths_ = [path for path, _ in leaves(settings)]
         baseline = {'settings': state['managed'] if selection.full else projection(state['managed'], selected_paths_)} if state else None
         previous = {'settings': state['declared'] if selection.full else projection(state['declared'], selected_paths_)} if state else None
+        progress(f'生成 {self.agent} 合并计划与检查')
         merge = MergePlan({'settings': settings}, {'settings': native if selection.full else projection(native, selected_paths_)},
                           source={'kind': 'profile', 'file': name}, destination={'kind': 'native-config', 'file': str(self.native_path)},
                           scope=scope, profile_policy=chosen.get('merge_policy'), run_policy=run_policy,

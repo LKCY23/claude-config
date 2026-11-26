@@ -134,7 +134,7 @@ class StyledTmuxTests(unittest.TestCase):
                               + 'from claude_config.profile import output_report\nfrom claude_config.core.reporting import save_report\n'
                               + f'r=json.loads(Path({str(root / "report.json")!r}).read_text())\n'
                               + f'save_report(r, {str(root / "state")!r})\n'
-                              + 'code=output_report(r,"auto")\n'
+                              + 'code=output_report(r,"tui")\n'
                               + f'Path({str(root / "done.tmp")!r}).write_text(str(code))\n'
                               + f'Path({str(root / "done.tmp")!r}).replace({str(root / "done")!r})\n'
                               + 'time.sleep(10)\n')

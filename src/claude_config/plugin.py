@@ -2,12 +2,13 @@
 from pathlib import Path
 import sys
 
-from .profile import ReportParser, UsageError, report_format
+from .profile import ReportParser, UsageError, report_format, report_verbose
 from .core.manager import ProfileManager
 from .core.plugin_manager import PluginManager
 from .core.schema import SchemaError, require
 from .core.source_transport import DEFAULT_GIT_TRANSPORT, GIT_TRANSPORTS
 from .core.transaction import PlanStale, UnfinishedRun
+from .core.report_viewer import show_report, terminal_color_enabled, terminal_interactive
 from .core.reporting import build_report, encode_json, exit_code, render_text, save_report
 
 
@@ -39,14 +40,22 @@ def summary(report):
                      for row in report.get('plugins', [])) or '当前 Profile 未选择插件。'
 
 
-def emit(report, mode):
-    print(encode_json(report) if mode == 'json' else summary(report) + '\n\n' + render_text(report))
+def emit(report, mode, *, verbose=False):
+    if mode == 'json':
+        print(encode_json(report))
+        return exit_code(report)
+    viewed = False
+    if mode == 'tui' and report['artifacts']['saved'] and terminal_interactive(mode):
+        viewed = show_report(report)
+    color = False if (mode != 'auto' or viewed) else terminal_color_enabled(mode)
+    print(summary(report) + '\n\n' + render_text(report, brief=viewed, verbose=verbose, color=color))
     return exit_code(report)
 
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     mode = report_format(argv)
+    verbose = report_verbose(argv)
     manager = plan = service = None
     report, error = {}, None
     started = False
@@ -70,7 +79,8 @@ def main(argv=None):
         execution.add_argument('--dry-run', action='store_true')
         execution.add_argument('--write', action='store_true', help='Generate, validate and execute a fresh plan; no manual plan ID needed')
         parser.add_argument('--expect-plan-id', help='Optional: require an exact previously reviewed plan ID')
-        parser.add_argument('--format', choices=('auto', 'text', 'json'), default='auto')
+        parser.add_argument('--format', choices=('auto', 'text', 'tui', 'json'), default='auto')
+        parser.add_argument('--verbose', action='store_true', help='显示完整保留决策与细粒度输出')
         args = parser.parse_args(argv)
         if args.action == 'remove' and args.agent != 'antigravity':
             raise UsageError('remove is currently supported for --agent antigravity only')
@@ -134,4 +144,4 @@ def main(argv=None):
     # private report and source cache; only the checked executor changes installs.
     if operation not in ('plugin-list', 'plugin-status') and manager is not None:
         save_report(report, manager.state_root)
-    return emit(report, mode)
+    return emit(report, mode, verbose=verbose)

@@ -10,10 +10,11 @@ import shutil
 import subprocess
 from types import SimpleNamespace
 
-from .profile import ReportParser, UsageError, output_report, report_format
+from .profile import ReportParser, UsageError, output_report, report_format, report_verbose
 from .core.baseline import baseline_group, catalog_target, validate_record
 from .core.catalog import CatalogResolver, git, verify_git
 from .core.catalog_schema import NAME, validate_catalog
+from .core.execution_context import progress
 from .core.manager import ProfileManager
 from .core.native import parse_json, parse_yaml, snapshot_read
 from .core.reporting import build_report, fallback_state_root, save_report, _private_path
@@ -114,6 +115,7 @@ def _fetch_one(manager, alias, release, source_map, catalogs, commit, report, al
     mapping = manager._read(Path(source_map).absolute(), parse_yaml)[0] if source_map else None
     target = catalog_target(catalogs['catalogs'][alias], alias, commit, mapping)
     state = {'release_access': 'gh'} if access_state is None else access_state
+    progress(f'获取 Release 记录 ({release[:17]}...)')
     with _capture_access_state(state):
         record_bytes = release_record(target['repo'], commit, alias)
     report['source_retrieval'] = {'git_transport': git_transport, **state}
@@ -132,6 +134,7 @@ def _fetch_one(manager, alias, release, source_map, catalogs, commit, report, al
         results.append({'path': str(root), 'owner': 'prepared-source', 'action': 'fetch',
                         'status': 'applied' if changed else 'unchanged'})
 
+    progress(f"拉取主目录仓库 {target['repo']}@{commit[:8]} ({git_transport})")
     prepare(checkout, target['repo'], commit)
     file = within(checkout, target['path']) / 'catalog.json'
     catalog_bytes = snapshot_read(file)[0]
@@ -184,9 +187,11 @@ def _fetch_one(manager, alias, release, source_map, catalogs, commit, report, al
                                 'Selected submodule differs from its declared Git pin')
                     key = str(root), source['repo'], source['commit']
                     if key not in prepared:
+                        progress(f"准备外部资源源 ({len(prepared) + 1}): {source['repo']}@{source['commit'][:8]}")
                         prepare(root, source['repo'], source['commit'])
                         prepared.add(key)
                 queue.extend(item['requires'].get('resources', []))
+            progress(f'校验受影响 Profile 与依赖完整性 ({agent})')
             resolver.resolve(profile, selected=selected, source_only=True)
             impacts.append({'profile': path.relative_to(manager.root).as_posix(), 'resources': sorted(selected)})
     directory = _private_path(manager.state_root / 'releases' / target['repo'].replace('/', '--') / release)
@@ -217,7 +222,8 @@ def main(argv):
     parser.add_argument('--source-map', type=Path)
     parser.add_argument('--git-transport', choices=GIT_TRANSPORTS, default=DEFAULT_GIT_TRANSPORT,
                         help='Git transport for preparing fixed commits (default: gh-https)')
-    parser.add_argument('--format', choices=('auto', 'text', 'json'), default='auto')
+    parser.add_argument('--format', choices=('auto', 'text', 'tui', 'json'), default='auto')
+    parser.add_argument('--verbose', action='store_true', help='显示完整保留决策与细粒度输出')
     manager, error, raw, started = None, None, {}, False
     state = fallback_state_root()
     try:
@@ -235,4 +241,4 @@ def main(argv):
                           context={'target_label': '固定资源基线获取', 'machine_id': manager.machine['machine_id'] if manager else None},
                           error=error)
     save_report(report, state)
-    return output_report(report, report_format(argv))
+    return output_report(report, report_format(argv), verbose=report_verbose(argv))

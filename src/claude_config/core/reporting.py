@@ -204,6 +204,23 @@ def _recovery(raw, results, error):
             'remaining': unresolved if error else []}
 
 
+def _logical_changes(changes):
+    packages = set()
+    settings = 0
+    other = 0
+    for row in changes:
+        path = row.get('path', [])
+        if path[:1] == ['settings'] or (path[:1] == ['clients'] and len(path) >= 3 and path[2] == 'settings'):
+            settings += 1
+        elif path[:1] == ['resources'] and len(path) >= 3:
+            packages.add((path[1], path[2]))
+        elif path[:1] == ['clients'] and len(path) >= 5 and path[2] == 'resources':
+            packages.add((path[1], path[3], path[4]))
+        else:
+            other += 1
+    return {'packages': len(packages), 'settings': settings, 'other': other, 'files': len(changes)}
+
+
 def build_report(raw, *, operation, preview_only=True, manager=None, context=None,
                  error=None, execution_started=False, report_id=None):
     """Normalize already-safe planning evidence without changing plan identity."""
@@ -305,7 +322,8 @@ def build_report(raw, *, operation, preview_only=True, manager=None, context=Non
     report['summary'] = {
         'checks': {key: sum(row.get('status') == key for row in checks)
                    for key in ('passed', 'blocked', 'failed', 'warning', 'not_verified', 'skipped')},
-        'changes': len(changes), 'conflicts': len(conflicts), 'blockers': len(blockers),
+        'changes': len(changes), 'logical_changes': _logical_changes(changes),
+        'conflicts': len(conflicts), 'blockers': len(blockers),
         'unresolved_conflicts': sum(row.get('status', 'unresolved') in ('unresolved', 'source_update_required') for row in conflicts),
         'resolved_conflicts': sum(row.get('status', '').startswith('resolved_') for row in conflicts),
         'applied': sum(row['status'] == 'applied' for row in results),
@@ -619,10 +637,78 @@ def scope_labels(report):
     return labels
 
 
+def next_steps_lines(report):
+    target = (report.get('targets') or [{}])[0]
+    stats = report['summary']
+    errors = report.get('errors', [])
+    target_flag = (
+        f"--agent {target['agent_type']}" if target.get('agent_type')
+        else f"--app {target['app']}" if target.get('app')
+        else None
+    )
+    lines = []
+    if any(row.get('code') == 'plan_stale' for row in errors) and target_flag:
+        lines.append(f'下一步：重新运行 claude-config plan {target_flag} 获取最新 plan_id 后再执行。')
+        return lines
+    if (report.get('operation') == 'doctor'
+            and any(row.get('name') == 'machine_profile_selection' and row.get('status') == 'failed'
+                    for row in report.get('checks', []))):
+        machine_id = target.get('machine_id') or '<machine_id>'
+        lines.append(f'下一步：核对本机 machine.yaml 与仓库 machines/{machine_id}.yaml 的绑定集合，使其保持一致。')
+    if stats.get('unresolved_conflicts', 0) > 0 and target.get('agent_type'):
+        agent = target['agent_type']
+        settings_ptrs = []
+        has_resource_conflict = False
+        for row in report.get('conflicts', []):
+            if row.get('status', 'unresolved') not in ('unresolved', 'source_update_required'):
+                continue
+            path = row.get('path', [])
+            if path[:1] == ['settings']:
+                settings_ptrs.append('/' + '/'.join(path))
+            else:
+                has_resource_conflict = True
+        for ptr in list(dict.fromkeys(settings_ptrs))[:3]:
+            lines.append(
+                f'下一步解决设置冲突（{ptr}）：采用配置库值可加 --field-policy {ptr}=source_wins；'
+                f'保留本机值可加 --field-policy {ptr}=keep_target；'
+                f'或回写配置库 claude-config export --agent {agent} --field {ptr} --write'
+            )
+        if has_resource_conflict:
+            lines.append(f'下一步解决资源冲突：运行 claude-config review-conflicts --agent {agent} 查看明细与处理方案')
+    if (report.get('operation') == 'plan' and report.get('ready') and report.get('preview_only', True)
+            and stats.get('changes', 0) > 0 and report.get('plan_id') and target_flag):
+        lines.append(f"下一步执行：claude-config apply {target_flag} --expect-plan-id {report['plan_id']}")
+    return lines
+
+
+def _style_line(text, role, *, color=False):
+    safe = clean_text(text)
+    if not color or 'NO_COLOR' in os.environ or not role:
+        return safe
+    code = {
+        'title': '1;36',
+        'heading': '1;36',
+        'success': '32',
+        'warning': '33',
+        'error': '1;31',
+        'hint': '36',
+    }.get(role)
+    if not code:
+        return safe
+    return '\n'.join(f'\x1b[{code}m{part}\x1b[0m' if part else '' for part in safe.split('\n'))
+
+
 def overview_lines(report):
     target = report['targets'][0]
     stats = report['summary']
     counts = stats['checks']
+    early_failure = (
+        bool(report.get('errors'))
+        and not report['execution']['started']
+        and sum(counts.values()) == 0
+        and stats['changes'] == 0
+        and stats['conflicts'] == 0
+    )
     lines = ['claude-config ' + report['operation'],
              '配置检查与操作报告 · ' + ('仅预览' if report['preview_only'] else '执行'),
              '对象：' + LABELS.get(target.get('agent_type') or target.get('app'), target.get('agent_type') or target.get('app') or target.get('label') or '未确定') +
@@ -648,17 +734,35 @@ def overview_lines(report):
         lines.append('Profile 文件：' + target['profile_file'])
     if target.get('profile_selection_file'):
         lines.append('机器的 Profile 选择：' + target['profile_selection_file'])
-    lines += [f"检查：{counts['passed']} 项通过，{counts['blocked'] + counts['failed']} 项不通过，{counts['warning']} 项警告，{counts['not_verified'] + counts['skipped']} 项未验证或未检查。",
-              f"{'计划差异' if report['execution']['started'] else '待更新'}：{stats['changes']} 项；{stats['unresolved_conflicts']} 处未解决冲突，{stats['resolved_conflicts']} 处已处理冲突，{stats['blockers']} 项阻断。"]
+    if not early_failure:
+        logical = stats.get('logical_changes') or _logical_changes(report.get('changes', []))
+        packages = logical.get('packages', 0)
+        settings_count = logical.get('settings', 0)
+        other_count = logical.get('other', 0)
+        prefix_label = '计划差异' if report['execution']['started'] else '待更新'
+        if packages > 0:
+            parts = [f'{packages} 个资源包（展开 {stats["changes"]} 项）']
+            if settings_count:
+                parts.append(f'{settings_count} 项设置')
+            if other_count:
+                parts.append(f'{other_count} 项其他')
+            change_line = f"{prefix_label}：{'，'.join(parts)}；{stats['unresolved_conflicts']} 处未解决冲突，{stats['resolved_conflicts']} 处已处理冲突，{stats['blockers']} 项阻断。"
+        else:
+            change_line = f"{prefix_label}：{stats['changes']} 项；{stats['unresolved_conflicts']} 处未解决冲突，{stats['resolved_conflicts']} 处已处理冲突，{stats['blockers']} 项阻断。"
+        lines += [
+            f"检查：{counts['passed']} 项通过，{counts['blocked'] + counts['failed']} 项不通过，{counts['warning']} 项警告，{counts['not_verified'] + counts['skipped']} 项未验证或未检查。",
+            change_line,
+        ]
     for row in report['decisions']:
         if row.get('path') in (['settings', 'model'], ['settings', 'effortLevel'], ['settings', 'model_reasoning_effort'], ['settings', 'language']):
             lines.append(path_label(row['path'][1:]) + '：' + value_label(row, 'before') + ' → ' + value_label(row, 'after'))
-    scope = scope_labels(report)
-    if len(scope) > 4:
-        lines += ['检查范围：', *('  ' + label for label in scope)]
-    else:
-        lines.append('检查范围：' + ('、'.join(scope) or '尚未生成选定配置的检查计划'))
-    lines.append(report['scope']['note'])
+    if not early_failure:
+        scope = scope_labels(report)
+        if len(scope) > 4:
+            lines += ['检查范围：', *('  ' + label for label in scope)]
+        else:
+            lines.append('检查范围：' + ('、'.join(scope) or '尚未生成选定配置的检查计划'))
+        lines.append(report['scope']['note'])
     deployment = report.get('deployment_scope')
     if deployment:
         requested = deployment['requested']
@@ -683,34 +787,59 @@ def overview_lines(report):
     return lines
 
 
-def render_text(report, *, brief=False):
-    lines = overview_lines(report)
+def render_text(report, *, brief=False, verbose=False, color=False):
+    overview = overview_lines(report)
     outcome = outcome_lines(report)
-    lines.insert(2, outcome[0])
+    outcome_role = 'error' if report['status'] in ('error', 'blocked') else 'warning' if report['summary']['checks']['warning'] > 0 else 'success'
+    rows = [(overview[0], 'title'), (overview[1], 'heading'), (outcome[0], outcome_role)]
+    rows.extend((line, None) for line in overview[2:])
+    conflict_titles = {row['id'] + '  ' + path_label(row.get('path', [])) for row in report.get('conflicts', [])}
+    blocker_titles = {row['id'] + '  检查未通过：' + path_label(row.get('path', [])) for row in report.get('blockers', []) if not row.get('conflict_ids')}
     for title, body, expanded in report_sections(report, compact=True):
         if brief and not expanded and title != '逐项检查记录':
             continue
         if title == '其他处理决策（合并、保留和无变化）':
-            other = [row for row in report['decisions'] if row['action'] in ('preserve', 'residual', 'object_merge')]
-            if other:
-                lines += ['', title]
-                for row in other:
-                    if row['action'] == 'preserve' and not row.get('incoming_exists', 'incoming' in row):
-                        lines.append(f"  {row['id']}  {path_label(row.get('path', []))}：保留本机值 {value_label(row, 'after', compact=True)}；" +
-                                     reason_label(row.get('reason')) + '；' +
-                                     ORIGIN_LABELS.get(row.get('policy_origin'), row.get('policy_origin', '未指定')))
-                        continue
-                    lines.append(f"  {row['id']}  {path_label(row.get('path', []))}：{ACTION_LABELS.get(row['action'], row['action'])}；" +
-                                 POLICY_LABELS.get(row.get('policy'), row.get('policy', '未指定')) + '；' + ORIGIN_LABELS.get(row.get('policy_origin'), row.get('policy_origin', '未指定')))
-                    if row['action'] != 'object_merge':
-                        lines += ['    ' + line for line in decision_lines(row, compact=True)]
+            preserve_rows = [row for row in report['decisions'] if row['action'] in ('preserve', 'residual')]
+            merge_rows = [row for row in report['decisions'] if row['action'] == 'object_merge']
+            other = [*preserve_rows, *merge_rows] if verbose else preserve_rows
+            if not other:
+                continue
+            rows += [('', None), (title, 'heading')]
+            if not verbose and len(preserve_rows) > 3:
+                rows.append((f'  已省略 {len(preserve_rows)} 项保留本机值决策；添加 --verbose 查看明细。', None))
+                continue
+            for row in other:
+                if row['action'] == 'preserve' and not row.get('incoming_exists', 'incoming' in row):
+                    rows.append((
+                        f"  {row['id']}  {path_label(row.get('path', []))}：保留本机值 {value_label(row, 'after', compact=True)}；" +
+                        reason_label(row.get('reason')) + '；' +
+                        ORIGIN_LABELS.get(row.get('policy_origin'), row.get('policy_origin', '未指定')),
+                        None,
+                    ))
+                    continue
+                rows.append((
+                    f"  {row['id']}  {path_label(row.get('path', []))}：{ACTION_LABELS.get(row['action'], row['action'])}；" +
+                    POLICY_LABELS.get(row.get('policy'), row.get('policy', '未指定')) + '；' + ORIGIN_LABELS.get(row.get('policy_origin'), row.get('policy_origin', '未指定')),
+                    None,
+                ))
+                if row['action'] != 'object_merge':
+                    rows += [('    ' + line, None) for line in decision_lines(row, compact=True)]
             continue
         if title == '逐项检查记录':
             exceptional = [row for row in report['checks'] if row['status'] != 'passed'
                            and (not brief or row['status'] in ('warning', 'blocked', 'failed'))]
             if exceptional:
-                lines += ['', '需注意的检查', *check_lines(exceptional)]
+                has_bad = any(row['status'] in ('blocked', 'failed') for row in exceptional)
+                rows += [('', None), ('需注意的检查', 'error' if has_bad else 'warning')]
+                rows += [(line, None) for line in check_lines(exceptional)]
             continue
-        lines += ['', title, *('  ' + line for line in body if not (title.startswith('文件变更：') and line.startswith('文件与变更范围：')))]
-    lines += ['', *outcome[1:]]
-    return clean_text('\n'.join(lines))
+        title_role = 'error' if (title.startswith('错误：') or title in conflict_titles or title in blocker_titles) else 'heading'
+        rows += [('', None), (title, title_role)]
+        rows += [('  ' + line, None) for line in body if not (title.startswith('文件变更：') and line.startswith('文件与变更范围：'))]
+    hints = next_steps_lines(report)
+    if hints:
+        rows.append(('', None))
+        rows.extend((line, 'hint') for line in hints)
+    rows.append(('', None))
+    rows.extend((line, None) for line in outcome[1:])
+    return '\n'.join(_style_line(line, role, color=color) for line, role in rows)

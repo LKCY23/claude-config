@@ -5,7 +5,7 @@ import errno
 import sys
 sys.dont_write_bytecode = True
 
-from claude_config.profile import ReportParser, UsageError, output_report, report_format
+from claude_config.profile import ReportParser, UsageError, output_report, report_format, report_verbose
 from claude_config.core.cutover import Cutover
 from claude_config.core.recovery import rollback_plan
 from claude_config.core.reporting import build_report, fallback_state_root, save_report
@@ -23,7 +23,7 @@ def main(argv=None):
         report = build_report({}, operation='unknown', error={'code': 'invalid_arguments', 'phase': 'arguments', 'reason': str(exc), 'exit_code': 2})
         save_report(report, fallback_state_root())
         mode = report_format(argv)
-        return output_report(report, mode)
+        return output_report(report, mode, verbose=report_verbose(argv))
 
 
 def _main(argv):
@@ -34,7 +34,8 @@ def _main(argv):
     parser.add_argument('--run')
     parser.add_argument('--write', action='store_true')
     parser.add_argument('--expect-plan-id')
-    parser.add_argument('--format', choices=('auto', 'json', 'text'), default='auto')
+    parser.add_argument('--format', choices=('auto', 'text', 'tui', 'json'), default='auto')
+    parser.add_argument('--verbose', action='store_true', help='显示完整保留决策与细粒度输出')
     args = parser.parse_args(argv)
     manager, plan, error, started = None, None, None, False
     try:
@@ -70,7 +71,7 @@ def _main(argv):
                           manager=manager, context={'machine_file': str(args.spec) if args.spec else None, 'target_label': '多客户端配置'},
                           error=error, execution_started=started)
     save_report(report, manager.state_root if manager else args.state_dir or fallback_state_root())
-    return output_report(report, args.format)
+    return output_report(report, args.format, verbose=args.verbose)
 
 
 if __name__ == '__main__':

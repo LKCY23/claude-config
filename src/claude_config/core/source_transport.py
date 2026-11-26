@@ -26,6 +26,23 @@ _SSH_ERROR_MARKERS = (
     'host key verification',
     'could not read from remote repository',
 )
+_SSH_DROP_MARKERS = (
+    'connection closed',
+    'connection reset',
+    'kex_exchange_identification',
+    'banner exchange',
+    'broken pipe',
+)
+_NETWORK_ERROR_MARKERS = (
+    'could not resolve',
+    'timed out',
+    'failed to connect',
+    'network is unreachable',
+    'connection reset',
+    'connection closed',
+    'ssl_error',
+    'unexpected eof',
+)
 
 
 def validate_git_transport(transport):
@@ -42,18 +59,29 @@ def git_remote_url(repo, transport=DEFAULT_GIT_TRANSPORT):
     return f'https://github.com/{repo}.git'
 
 
-def classify_command_error(stderr_text):
+def classify_command_error(stderr_text, *, context=None):
     """Map native git/gh stderr to safe, credential-free SchemaError diagnostics."""
     diagnostic = (stderr_text or '').lower()
+    repo = (context or {}).get('repo')
+    transport = (context or {}).get('transport')
+    prefix = f'[{repo}] ' if isinstance(repo, str) and repo else ''
     if any(marker in diagnostic for marker in _AUTH_ERROR_MARKERS):
-        return SchemaError('GitHub 凭据当前不可用或被拒绝；检查当前执行环境的登录和钥匙串可访问性，不能仅据此认定 token 过期。')
+        return SchemaError(prefix + 'GitHub 凭据当前不可用或被拒绝；检查当前执行环境的登录和钥匙串可访问性，不能仅据此认定 token 过期。')
+    if any(marker in diagnostic for marker in _SSH_DROP_MARKERS) and (
+        transport == 'ssh' or 'port 22' in diagnostic or 'ssh' in diagnostic or 'git@' in diagnostic
+    ):
+        return SchemaError(
+            prefix + 'SSH 拉取失败：连接被对端或代理断开（常见于代理拦截 22 端口）；可改用 --git-transport gh-https 或配置 github.com 走 ssh.github.com:443；未修改配置选择。'
+        )
     if any(marker in diagnostic for marker in _SSH_ERROR_MARKERS):
-        return SchemaError('SSH 拉取失败：请检查本机 GitHub SSH Key、ssh-agent 或 ~/.ssh/config；未修改配置选择。')
+        return SchemaError(prefix + 'SSH 拉取失败：请检查本机 GitHub SSH Key、ssh-agent 或 ~/.ssh/config；未修改配置选择。')
     if '403' in diagnostic or '404' in diagnostic or 'repository not found' in diagnostic:
-        return SchemaError('GitHub 拒绝访问或找不到明确来源；核对仓库、Release 和当前账号权限。')
-    if any(text in diagnostic for text in ('could not resolve', 'timed out', 'failed to connect', 'network is unreachable')):
-        return SchemaError('获取固定来源时网络不可达或超时；已保留准备好的来源，未采用配置。')
-    return SchemaError('获取失败：检查 GitHub 访问权限、网络及 Git/gh 配置；未修改配置选择。')
+        return SchemaError(prefix + 'GitHub 拒绝访问或找不到明确来源；核对仓库、Release 和当前账号权限。')
+    if any(text in diagnostic for text in _NETWORK_ERROR_MARKERS):
+        return SchemaError(prefix + '获取固定来源时网络不可达、连接断开或超时；已保留准备好的来源，未采用配置。')
+    if transport == 'ssh':
+        return SchemaError(prefix + 'SSH 获取失败：检查 GitHub 访问权限、代理/网络及 SSH 配置；可尝试 --git-transport gh-https；未修改配置选择。')
+    return SchemaError(prefix + '获取失败：检查 GitHub 访问权限、网络及 Git/gh 配置；未修改配置选择。')
 
 
 def _is_auth_unavailable(exc):
@@ -106,7 +134,17 @@ def prepare_git(root, repo, commit, *, git_transport=DEFAULT_GIT_TRANSPORT, runn
             common.append('credential.helper=!gh auth git-credential')
         else:
             extra_env = {'GIT_SSH_COMMAND': os.environ.get('GIT_SSH_COMMAND') or 'ssh -o BatchMode=yes'}
-        _invoke_runner(runner, [*common, 'fetch', '--quiet', '--depth=1', 'origin', commit], extra_env=extra_env)
+        try:
+            _invoke_runner(runner, [*common, 'fetch', '--quiet', '--depth=1', 'origin', commit], extra_env=extra_env)
+        except SchemaError as exc:
+            message = str(exc)
+            if git_transport == 'ssh' and '获取失败：' in message and '--git-transport gh-https' not in message:
+                message += '（可尝试改用 --git-transport gh-https）'
+            if repo not in message and git_transport not in message:
+                raise SchemaError(f'[{repo} ({git_transport})] {message}') from exc
+            if message != str(exc):
+                raise SchemaError(message) from exc
+            raise
         _invoke_runner(runner, [*common, 'checkout', '--quiet', '--detach', 'FETCH_HEAD'])
         verify_git(Path(stage), repo, commit)
         if root.exists():

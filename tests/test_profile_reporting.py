@@ -298,8 +298,16 @@ class ReportCliTests(unittest.TestCase):
         self.assertFalse(self.fixture.manager().state_path.exists())
 
     def test_interactive_quit_leaves_static_summary_and_never_reexecutes(self):
-        with patch('claude_config.profile.terminal_interactive', return_value=True), patch('claude_config.profile.show_report', return_value=True) as viewer:
-            code, output = self.invoke(self.args)
+        with patch('claude_config.profile.terminal_interactive', return_value=True), \
+             patch('claude_config.profile.show_report', return_value=True) as viewer:
+            code, auto_output = self.invoke(self.args)
+        self.assertEqual(code, 0)
+        viewer.assert_not_called()
+        self.assertIn('完整 JSON：', auto_output)
+
+        with patch('claude_config.profile.terminal_interactive', return_value=True), \
+             patch('claude_config.profile.show_report', return_value=True) as viewer:
+            code, output = self.invoke(self.args + ['--format', 'tui'])
         self.assertEqual(code, 0)
         viewer.assert_called_once()
         self.assertIn('完整 JSON：', output)
@@ -376,7 +384,7 @@ class TmuxReportTests(unittest.TestCase):
                               + 'p=MergePlan({"settings":{"model":"new"}}, {"settings":{"model":"old"}}, source={}, destination={})\n'
                               + 'r=build_report(p.report(), operation="plan", context={"agent_type":"codex"})\n'
                               + f'save_report(r, {str(root / "state")!r})\n'
-                              + 'code=output_report(r,"auto")\n'
+                              + 'code=output_report(r,"tui")\n'
                               + f'Path({str(root / "done.tmp")!r}).write_text(str(code))\n'
                               + f'Path({str(root / "done.tmp")!r}).replace({str(root / "done")!r})\n'
                               + 'time.sleep(10)\n')

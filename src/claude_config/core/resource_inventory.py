@@ -107,6 +107,24 @@ def _antigravity_skill_name(skill_md, fallback):
     return fallback
 
 
+def _antigravity_plugin_mcp_candidates(entry_dir, manifest):
+    candidates = [entry_dir / 'mcp_config.json', entry_dir / '.antigravity-plugin' / 'mcp_config.json']
+    declared = manifest.get('mcpServers') if isinstance(manifest, dict) else None
+    if isinstance(declared, str) and declared and not Path(declared).is_absolute() and '\\' not in declared:
+        resolved_root = entry_dir.resolve()
+        candidate = (entry_dir / declared).resolve()
+        if candidate.is_relative_to(resolved_root):
+            candidates.append(entry_dir / declared)
+    seen = set()
+    ordered = []
+    for path in candidates:
+        key = str(path.resolve()) if path.exists() and not path.is_symlink() else str(path)
+        if key not in seen:
+            seen.add(key)
+            ordered.append(path)
+    return ordered
+
+
 def _antigravity_mcp_servers(path, checks, subject):
     try:
         raw, expected = snapshot_read(path)
@@ -123,6 +141,22 @@ def _antigravity_mcp_servers(path, checks, subject):
                        'subject': subject, 'reason': 'Antigravity mcpServers must be an object'})
         return []
     return sorted(name for name in servers if isinstance(name, str) and name)
+
+
+def _antigravity_markdown_name(path, fallback):
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+            return fallback
+        text = snapshot_read(path)[0].decode()
+        match = re.match(r'\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)', text, re.S)
+        if match:
+            meta = parse_yaml(match[1].encode())
+            name = meta.get('name')
+            if isinstance(name, str) and name:
+                return name
+    except (OSError, ValueError, UnicodeError):
+        pass
+    return fallback
 
 
 def inspect_antigravity(config_root):
@@ -185,8 +219,26 @@ def inspect_antigravity(config_root):
                         skill_name = _antigravity_skill_name(skill_md, sub.name)
                         plugin_skills.append({'dir': sub.name, 'name': skill_name, 'path': str(skill_md)})
 
-            plugin_mcp = _antigravity_mcp_servers(entry_dir / 'mcp_config.json', checks, 'plugin:' + entry_dir.name)
+            plugin_agents = []
+            plugin_agents_dir = entry_dir / 'agents'
+            if plugin_agents_dir.is_dir() and not plugin_agents_dir.is_symlink():
+                for sub in sorted(plugin_agents_dir.iterdir(), key=lambda p: p.name):
+                    if not sub.is_symlink() and sub.is_file() and sub.suffix == '.md':
+                        agent_name = _antigravity_markdown_name(sub, sub.stem)
+                        plugin_agents.append({'file': sub.name, 'name': agent_name})
+
+            plugin_mcp = []
+            seen_mcp = set()
+            for mcp_candidate in _antigravity_plugin_mcp_candidates(entry_dir, manifest):
+                for srv in _antigravity_mcp_servers(mcp_candidate, checks, 'plugin:' + entry_dir.name):
+                    if srv not in seen_mcp:
+                        seen_mcp.add(srv)
+                        plugin_mcp.append(srv)
+            plugin_mcp.sort()
             has_hooks = (entry_dir / 'hooks.json').is_file() and not (entry_dir / 'hooks.json').is_symlink()
+            plugin_rules_dir = entry_dir / 'rules'
+            has_rules = (plugin_rules_dir.is_dir() and not plugin_rules_dir.is_symlink()
+                         and any(p.is_file() and not p.is_symlink() and p.suffix == '.md' for p in plugin_rules_dir.iterdir()))
             plugins.append({
                 'dir': entry_dir.name,
                 'name': effective_name,
@@ -199,8 +251,11 @@ def inspect_antigravity(config_root):
                 'enabled': enabled,
                 'skills': [s['name'] for s in plugin_skills],
                 'skill_entries': plugin_skills,
+                'agents': [a['name'] for a in plugin_agents],
+                'agent_entries': plugin_agents,
                 'mcp_servers': plugin_mcp,
                 'has_hooks': has_hooks,
+                'has_rules': has_rules,
             })
 
     standalone_skills = []
@@ -217,10 +272,57 @@ def inspect_antigravity(config_root):
                     'entry': skill_entry(skill_md),
                 })
 
+    standalone_instructions = []
+    for inst_name in ('AGENTS.md', 'GEMINI.md'):
+        inst_path = root / inst_name
+        if inst_path.is_file() and not inst_path.is_symlink():
+            size = inst_path.stat().st_size
+            standalone_instructions.append({'file': inst_name, 'size_bytes': size, 'over_24kb': size > 24000})
+    if len(standalone_instructions) > 1:
+        checks.append({
+            'name': 'dual_global_instruction_files',
+            'status': 'warning',
+            'code': 'dual_global_instruction_files',
+            'reason': 'Both AGENTS.md and GEMINI.md exist in Antigravity config_root; verify rule precedence',
+        })
+
+    standalone_rules = []
+    rules_dir = root / 'rules'
+    if rules_dir.is_dir() and not rules_dir.is_symlink():
+        for rule_file in sorted(rules_dir.iterdir(), key=lambda p: p.name):
+            if not rule_file.is_symlink() and rule_file.is_file() and rule_file.suffix == '.md':
+                size = rule_file.stat().st_size
+                standalone_rules.append({'file': rule_file.name, 'name': rule_file.stem, 'size_bytes': size, 'over_24kb': size > 24000})
+
+    standalone_agents = []
+    agents_dir = root / 'agents'
+    if agents_dir.is_dir() and not agents_dir.is_symlink():
+        for agent_file in sorted(agents_dir.iterdir(), key=lambda p: p.name):
+            if not agent_file.is_symlink() and agent_file.is_file() and agent_file.suffix == '.md':
+                agent_name = _antigravity_markdown_name(agent_file, agent_file.stem)
+                standalone_agents.append({'file': agent_file.name, 'name': agent_name})
+
+    global_hooks = []
+    hooks_path = root / 'hooks.json'
+    try:
+        raw_hooks, hooks_expected = snapshot_read(hooks_path)
+        if hooks_expected['exists']:
+            hooks_doc = parse_json_or_empty(raw_hooks)
+            for hook_name, hook_entry in sorted(hooks_doc.items()):
+                if not isinstance(hook_entry, dict):
+                    raise ValueError('Antigravity hooks.json entries must be objects')
+                global_hooks.append({
+                    'name': hook_name,
+                    'enabled': hook_entry['enabled'] if type(hook_entry.get('enabled')) is bool else True,
+                })
+    except (OSError, ValueError) as exc:
+        checks.append({'name': 'antigravity_hooks_config', 'status': 'blocked', 'code': 'antigravity_hooks_unreadable',
+                       'reason': f'Cannot read Antigravity hooks.json ({type(exc).__name__})'})
+
     global_mcp = _antigravity_mcp_servers(root / 'mcp_config.json', checks, 'global')
 
     # Collision & hygiene checks
-    checks.extend(_antigravity_collision_checks(plugins, standalone_skills, global_mcp))
+    checks.extend(_antigravity_collision_checks(plugins, standalone_skills, global_mcp, standalone_agents))
 
     if not any(row['status'] in ('blocked', 'failed') for row in checks):
         checks.append({'name': 'antigravity_discovery', 'status': 'passed',
@@ -232,6 +334,10 @@ def inspect_antigravity(config_root):
         'plugins_enabled': plugins_enabled,
         'plugins': plugins,
         'skills': standalone_skills,
+        'instructions': standalone_instructions,
+        'rules': standalone_rules,
+        'agents': standalone_agents,
+        'hooks': global_hooks,
         'mcp_servers': global_mcp,
         'checks': checks,
     }
@@ -240,12 +346,16 @@ def inspect_antigravity(config_root):
         'plugins_enabled': plugins_enabled,
         'plugins': plugins,
         'skills': standalone_skills,
+        'instructions': standalone_instructions,
+        'rules': standalone_rules,
+        'agents': standalone_agents,
+        'hooks': global_hooks,
         'mcp_servers': global_mcp,
     })
     return payload
 
 
-def _antigravity_collision_checks(plugins, standalone_skills, global_mcp):
+def _antigravity_collision_checks(plugins, standalone_skills, global_mcp, standalone_agents=()):
     checks = []
     by_name = {}
     by_dir = {p['dir']: p for p in plugins}
@@ -290,6 +400,20 @@ def _antigravity_collision_checks(plugins, standalone_skills, global_mcp):
                         'reason': f"Standalone skill '{standalone['dir']}' overlaps plugin '{plugin['dir']}' skill '{ps['dir']}'",
                     })
 
+    for standalone in standalone_agents:
+        for plugin in plugins:
+            for pa in plugin.get('agent_entries', []):
+                if standalone['name'] == pa['name']:
+                    checks.append({
+                        'name': 'agent_plugin_overlap',
+                        'status': 'blocked',
+                        'code': 'agent_plugin_overlap',
+                        'agent': standalone['name'],
+                        'plugin_dir': plugin['dir'],
+                        'plugin_agent': pa['name'],
+                        'reason': f"Standalone agent '{standalone['name']}' overlaps plugin '{plugin['dir']}' agent '{pa['name']}'",
+                    })
+
     global_mcp_set = set(global_mcp)
     for plugin in plugins:
         for server_name in sorted(global_mcp_set & set(plugin['mcp_servers'])):
@@ -309,6 +433,7 @@ def inspect_antigravity_plan(ag_inventory, rendered, previous):
     plugins_by_dir = {p['dir']: dict(p) for p in ag_inventory['plugins']}
     planned_plugins = []
     skills_by_dir = {s['dir']: dict(s) for s in ag_inventory['skills']}
+    agents_by_name = {a['name']: dict(a) for a in ag_inventory.get('agents', [])}
     global_mcp = set(ag_inventory['mcp_servers'])
     for ref, item in sorted(rendered.items()):
         kind = item['package'].item['kind']
@@ -319,6 +444,7 @@ def inspect_antigravity_plan(ag_inventory, rendered, previous):
             manifest_name = raw_name if isinstance(raw_name, str) and raw_name else None
             effective_name = manifest_name or plugin_dir
             plugin_skills = []
+            plugin_agents = []
             for rel, content in sorted(item['files'].items()):
                 parts = Path(rel).parts
                 if len(parts) == 3 and parts[0] == 'skills' and parts[2] == 'SKILL.md':
@@ -332,21 +458,45 @@ def inspect_antigravity_plan(ag_inventory, rendered, previous):
                         except ValueError:
                             pass
                     plugin_skills.append({'dir': sub_name, 'name': skill_name, 'path': rel})
+                elif len(parts) == 2 and parts[0] == 'agents' and parts[1].endswith('.md'):
+                    agent_name = Path(parts[1]).stem
+                    match = re.match(r'\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)', content.decode(errors='replace'), re.S)
+                    if match:
+                        try:
+                            meta = parse_yaml(match[1].encode())
+                            if isinstance(meta.get('name'), str) and meta['name']:
+                                agent_name = meta['name']
+                        except ValueError:
+                            pass
+                    plugin_agents.append({'file': parts[1], 'name': agent_name})
+            mcp_candidates = ['mcp_config.json', '.antigravity-plugin/mcp_config.json']
+            declared_mcp = manifest.get('mcpServers')
+            if isinstance(declared_mcp, str) and declared_mcp:
+                norm_mcp = declared_mcp[2:] if declared_mcp.startswith('./') else declared_mcp
+                if norm_mcp not in mcp_candidates:
+                    mcp_candidates.append(norm_mcp)
+            seen_mcp = set()
             plugin_mcp = []
-            if 'mcp_config.json' in item['files']:
-                try:
-                    doc = parse_json_or_empty(item['files']['mcp_config.json'])
-                    servers = doc.get('mcpServers', {})
-                    if isinstance(servers, dict):
-                        plugin_mcp = sorted(name for name in servers if isinstance(name, str) and name)
-                except ValueError:
-                    pass
+            for candidate in mcp_candidates:
+                if candidate in item['files']:
+                    try:
+                        doc = parse_json_or_empty(item['files'][candidate])
+                        servers = doc.get('mcpServers', {})
+                        if isinstance(servers, dict):
+                            for srv in servers:
+                                if isinstance(srv, str) and srv and srv not in seen_mcp:
+                                    seen_mcp.add(srv)
+                                    plugin_mcp.append(srv)
+                    except ValueError:
+                        pass
+            plugin_mcp.sort()
             planned = {
                 'dir': plugin_dir,
                 'name': effective_name,
                 'manifest_name': manifest_name,
                 'dir_name_mismatch': manifest_name is not None and manifest_name != plugin_dir,
                 'skill_entries': plugin_skills,
+                'agent_entries': plugin_agents,
                 'mcp_servers': plugin_mcp,
             }
             old_dir = previous.get(ref, {}).get('native', {}).get('antigravity_plugin', {}).get('dir')
@@ -357,34 +507,91 @@ def inspect_antigravity_plan(ag_inventory, rendered, previous):
         elif kind == 'skill':
             identity = item['identity']
             skills_by_dir.setdefault(identity, {'dir': identity, 'name': identity, 'path': str(identity)})
+        elif kind == 'agent':
+            identity = item['identity']
+            agents_by_name.setdefault(identity, {'file': identity + '.md', 'name': identity})
         elif kind == 'mcp':
             name, _ = mcp_definition(item, 'antigravity')
             global_mcp.add(name)
-    checks = _antigravity_collision_checks(list(plugins_by_dir.values()) + planned_plugins, list(skills_by_dir.values()), sorted(global_mcp))
+    checks = _antigravity_collision_checks(
+        list(plugins_by_dir.values()) + planned_plugins,
+        list(skills_by_dir.values()),
+        sorted(global_mcp),
+        list(agents_by_name.values()),
+    )
+    has_planned_instruction = any(item['package'].item['kind'] == 'instruction' for item in rendered.values())
+    has_gemini_md = any(row['file'] == 'GEMINI.md' for row in ag_inventory.get('instructions', []))
+    already_warned_dual = any(row.get('code') == 'dual_global_instruction_files' for row in ag_inventory['checks'])
+    if has_planned_instruction and has_gemini_md and not already_warned_dual:
+        checks.append({
+            'name': 'dual_global_instruction_files',
+            'status': 'warning',
+            'code': 'dual_global_instruction_files',
+            'reason': 'Both AGENTS.md and GEMINI.md exist in Antigravity config_root; verify rule precedence',
+        })
     def key(row):
         return (row.get('code'), row.get('plugin_name'), tuple(row.get('directories', ())),
-                row.get('skill'), row.get('plugin_dir'), row.get('plugin_skill'), row.get('server'))
+                row.get('skill'), row.get('agent'), row.get('plugin_dir'),
+                row.get('plugin_skill'), row.get('plugin_agent'), row.get('server'))
     seen = {key(row) for row in ag_inventory['checks'] if row['status'] == 'blocked'}
     return [row for row in checks if key(row) not in seen]
 
 
-def _antigravity_guard_fingerprint(ag_inventory, rendered):
-    from .registrations import mcp_definition
+def _antigravity_guard_fingerprint(ag_inventory, rendered, previous=None):
+    from .registrations import antigravity_hook_definition, mcp_definition
+    previous = previous or {}
     masked_plugins = set()
     masked_skills = set()
     masked_mcp = set()
-    for item in rendered.values():
+    masked_agents = set()
+    masked_rules = set()
+    masked_hooks = set()
+    masked_instructions = set()
+    for ref, item in rendered.items():
         kind = item['package'].item['kind']
+        old_native = previous.get(ref, {}).get('native', {})
         if kind == 'plugin':
             masked_plugins.add(item['identity'])
+            old_dir = old_native.get('antigravity_plugin', {}).get('dir')
+            if old_dir:
+                masked_plugins.add(old_dir)
         elif kind == 'skill':
             masked_skills.add(item['identity'])
+            if old_native.get('identity'):
+                masked_skills.add(old_native['identity'])
         elif kind == 'mcp':
             masked_mcp.add(mcp_definition(item, 'antigravity')[0])
+            old_name = old_native.get('registration', {}).get('name')
+            if old_name:
+                masked_mcp.add(old_name)
+        elif kind == 'agent':
+            masked_agents.add(item['identity'])
+            if old_native.get('identity'):
+                masked_agents.add(old_native['identity'])
+        elif kind == 'rule':
+            masked_rules.add(item['identity'] + '.md')
+            if old_native.get('identity'):
+                masked_rules.add(old_native['identity'] + '.md')
+        elif kind == 'instruction':
+            masked_instructions.add('AGENTS.md')
+        elif kind == 'hook':
+            try:
+                hook_name = antigravity_hook_definition(item)[0]
+            except ValueError:
+                hook_name = parse_json(item['files'][item['package'].entry]).get('name')
+            if isinstance(hook_name, str) and hook_name:
+                masked_hooks.add(hook_name)
+            old_name = old_native.get('registration', {}).get('name')
+            if old_name:
+                masked_hooks.add(old_name)
     return fingerprint({
         'plugins_enabled': {k: v for k, v in ag_inventory['plugins_enabled'].items() if k not in masked_plugins},
         'plugins': [p for p in ag_inventory['plugins'] if p['dir'] not in masked_plugins],
         'skills': [s for s in ag_inventory['skills'] if s['dir'] not in masked_skills],
+        'instructions': [i for i in ag_inventory.get('instructions', []) if i['file'] not in masked_instructions],
+        'rules': [r for r in ag_inventory.get('rules', []) if r['file'] not in masked_rules],
+        'agents': [a for a in ag_inventory.get('agents', []) if a['name'] not in masked_agents],
+        'hooks': [h for h in ag_inventory.get('hooks', []) if h['name'] not in masked_hooks],
         'mcp_servers': [m for m in ag_inventory['mcp_servers'] if m not in masked_mcp],
     })
 
@@ -466,13 +673,13 @@ def inspect_skills(manager, previous, rendered, native, *, selected_refs=None):
         ag_inventory = inspect_antigravity(manager.native_path.parent)
         checks.extend(ag_inventory['checks'])
         checks.extend(inspect_antigravity_plan(ag_inventory, rendered, previous))
-        ag_guard_fp = _antigravity_guard_fingerprint(ag_inventory, rendered)
+        ag_guard_fp = _antigravity_guard_fingerprint(ag_inventory, rendered, previous)
     def guard():
         if external_claims(cc_root, manager.agent, identities) != claims:
             raise PlanStale('External skill ownership changed after planning')
         if any(skill_entry(path) != expected for path, expected in legacy_snapshots.items()):
             raise PlanStale('Legacy skill entry changed after planning')
-        if ag_inventory is not None and _antigravity_guard_fingerprint(inspect_antigravity(manager.native_path.parent), rendered) != ag_guard_fp:
+        if ag_inventory is not None and _antigravity_guard_fingerprint(inspect_antigravity(manager.native_path.parent), rendered, previous) != ag_guard_fp:
             raise PlanStale('Antigravity native discovery changed after planning')
     result = {'agent_type': manager.agent, 'skills': rows, 'external_manager_status': claims['status'],
               'ownership_fingerprint': fingerprint({'claims': claims, 'antigravity': ag_inventory['fingerprint']}) if ag_inventory is not None else fingerprint(claims),

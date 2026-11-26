@@ -9,6 +9,9 @@ from .resource_options import merge_options
 from .schema import require
 
 
+ANTIGRAVITY_AGENT_MODELS = ('inherit', 'flash_lite', 'flash', 'pro')
+
+
 def option_keys(agent):
     return ('model', 'model_reasoning_effort') if agent == 'codex' else ('model',)
 
@@ -20,6 +23,9 @@ def definition_options(agent, content):
     require(all(isinstance(value, str) and value for value in options.values()), 'Agent model/reasoning options must be nonempty strings')
     if agent == 'codex':
         validate_settings(agent, options)
+    elif agent == 'antigravity' and 'model' in options:
+        require(options['model'] in ANTIGRAVITY_AGENT_MODELS,
+                'Antigravity agent model must be one of inherit, flash_lite, flash, pro')
     return options
 
 

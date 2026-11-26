@@ -411,7 +411,8 @@ class AntigravityDiscoveryAndGuardTests(AntigravityPhaseAFixture):
         self.assertEqual(self.snapshot_tree(self.ag_config), before)
         self.assertFalse((self.state / 'runs').exists())
 
-        # Cutover with antigravity remains intentionally deferred/blocked in Phase B
+        # Cutover with antigravity runs read-only plan cleanly with zero writes
+        (self.data / 'catalogs.yaml').write_text(yaml.safe_dump({'schema_version': 1, 'catalogs': {}}))
         spec_path = self.root / 'cutover.yaml'
         spec_path.write_text(yaml.safe_dump({
             'schema_version': 2,
@@ -419,8 +420,11 @@ class AntigravityDiscoveryAndGuardTests(AntigravityPhaseAFixture):
             'machine_target': str(self.root / 'new-machine.yaml'),
             'data_target': str(self.root / 'new-data'),
         }))
-        with self.assertRaisesRegex(SchemaError, 'unsupported_antigravity_cutover'):
-            Cutover(spec_path)
+        cutover_plan = Cutover(spec_path).plan()
+        self.assertTrue(cutover_plan.report['ready'], cutover_plan.report['blockers'])
+        self.assertEqual(self.snapshot_tree(self.ag_config), before)
+        self.assertFalse((self.root / 'new-data').exists())
+        self.assertFalse((self.state / 'runs').exists())
 
 
 if __name__ == '__main__':

@@ -94,8 +94,8 @@ def instruction_body(item, agent):
         path = str(item['cache'] / entry)
         require(not any(c in path for c in '\0\r\n\\`"'), 'Instruction path cannot be represented as a native import')
         return '@' + path.replace(' ', '\\ ')
-    if agent == 'codex':
-        require(not IMPORT.search(prose(text)), 'Codex has no native Claude-style instruction import adapter')
+    if agent in ('codex', 'antigravity'):
+        require(not IMPORT.search(prose(text)), agent + ' has no native Claude-style instruction import adapter')
         for start, end, target, fragment in reversed(refs['links'].get(entry, [])):
             path = str(item['cache'] / target)
             require(not any(c in path for c in '\0\r\n<>'), 'Instruction link cannot represent the deployed path')

@@ -218,7 +218,7 @@ class ResourceExport:
                 require(tree_digest(files, modes) == item['rendered_fingerprint'], 'Instruction package or referenced file differs from the fixed source')
             return {}
         folder = 'agents' if kind == 'agent' else 'rules'
-        suffix = '.md' if agent == 'claude-code' else '.toml' if kind == 'agent' else '.rules'
+        suffix = '.md' if agent in ('claude-code', 'antigravity') else '.toml' if kind == 'agent' else '.rules'
         path = self.manager.native_path.parent / folder / (item['identity'] + suffix)
         data, exists = self.read(path)
         if not exists:
@@ -232,6 +232,55 @@ class ResourceExport:
         return options
 
     def hook(self, package):
+        if self.manager.agent == 'antigravity':
+            from .registrations import (ANTIGRAVITY_FLAT_HOOK_EVENTS, ANTIGRAVITY_GROUPED_HOOK_EVENTS,
+                                        antigravity_hook_definition, antigravity_hook_timeouts)
+            item = self.options_item(package, package.selection.get('options', {}))
+            name, expected = antigravity_hook_definition(item)
+            path = self.manager.native_path.parent / 'hooks.json'
+            content, _ = self.read(path)
+            document = parse_json_or_empty(content)
+            if name not in document:
+                self.decision(package.ref, 'preserve_missing', 'Managed Antigravity Hook is absent; declaration retained')
+                return None
+            actual = document[name]
+            require(isinstance(actual, dict), 'Native Antigravity Hook entry must be an object')
+            def body(entry):
+                stripped = {}
+                for key, value in entry.items():
+                    if key == 'enabled':
+                        continue
+                    if key in ANTIGRAVITY_GROUPED_HOOK_EVENTS:
+                        require(isinstance(value, list), 'Invalid Antigravity Hook group list')
+                        stripped[key] = [
+                            {**group, 'hooks': [{hk: hv for hk, hv in h.items() if hk != 'timeout'} for h in group['hooks']]}
+                            if isinstance(group, dict) and isinstance(group.get('hooks'), list) else group
+                            for group in value
+                        ]
+                    elif key in ANTIGRAVITY_FLAT_HOOK_EVENTS:
+                        require(isinstance(value, list), 'Invalid Antigravity Hook handler list')
+                        stripped[key] = [
+                            {hk: hv for hk, hv in h.items() if hk != 'timeout'} if isinstance(h, dict) else h
+                            for h in value
+                        ]
+                    else:
+                        stripped[key] = value
+                return stripped
+            require(body(actual) == body(expected), 'Antigravity Hook definition or logical commands differ from the fixed source')
+            files, modes = self.tree(item['cache'])
+            require(tree_digest(files, modes) == item['rendered_fingerprint'], 'Hook script package differs from the fixed source')
+            options = {}
+            if 'enabled' in actual:
+                require(type(actual['enabled']) is bool, 'Antigravity Hook enabled must be Boolean')
+                options['enabled'] = actual['enabled']
+            timeouts, total_handlers = antigravity_hook_timeouts(actual)
+            if timeouts:
+                require(len(timeouts) == total_handlers and len(set(timeouts)) == 1
+                        and type(timeouts[0]) is int and timeouts[0] > 0,
+                        'Per-handler Hook timeouts cannot be represented by a uniform resource option')
+                options['timeout'] = timeouts[0]
+            antigravity_hook_definition(self.options_item(package, options))
+            return options
         require(package.item['compatibility'][self.manager.agent]['mode'] != 'status-line', 'Status-line resource is exported through its registered command binding field')
         item = self.options_item(package, package.selection.get('options', {}))
         wanted = hook_definition(item, self.manager.agent)
@@ -291,8 +340,6 @@ class ResourceExport:
             package = self.packages[ref]
             try:
                 kind = package.item['kind']
-                if self.manager.agent == 'antigravity':
-                    require(kind in ('skill', 'mcp', 'plugin'), 'Antigravity export is only supported for skill, mcp, and plugin in Phase B')
                 options = self.skill(package) if kind == 'skill' else self.mcp(package) if kind == 'mcp' else self.plugin(package) if kind == 'plugin' else self.hook(package) if kind == 'hook' else self.static(package)
                 if options is not None:
                     self.incoming.setdefault('resources', {}).setdefault(package.group, {})[ref] = {'options': options}

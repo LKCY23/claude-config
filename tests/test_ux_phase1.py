@@ -373,6 +373,31 @@ class Phase1ReportingAndFormatTests(unittest.TestCase):
             self.assertEqual(json.loads(out_invalid.getvalue())['errors'][0]['code'], 'report_load_failed')
             self.assertNotIn('SECRET_RAW_DATA', out_invalid.getvalue())
 
+            # Missing nested summary counters (e.g., summary.checks: {}) fail cleanly before render_text
+            partial_checks = json.loads(json.dumps(blocked))
+            partial_checks['summary']['checks'] = {}
+            partial_checks_path = Path(tmp) / 'partial_checks.json'
+            partial_checks_path.write_text(json.dumps(partial_checks), encoding='utf-8')
+            for fmt in ('json', 'text'):
+                out_pc = io.StringIO()
+                with patch('claude_config.report_cmd.fallback_state_root', return_value=Path(tmp) / 'fb'), redirect_stdout(out_pc):
+                    code = cli_entry.main(['report', str(partial_checks_path), '--format', fmt])
+                self.assertEqual(code, 2)
+                if fmt == 'json':
+                    self.assertEqual(json.loads(out_pc.getvalue())['errors'][0]['code'], 'report_load_failed')
+                else:
+                    self.assertIn('summary.checks', out_pc.getvalue())
+
+            missing_changes = json.loads(json.dumps(blocked))
+            missing_changes['summary'].pop('changes', None)
+            missing_changes_path = Path(tmp) / 'missing_changes.json'
+            missing_changes_path.write_text(json.dumps(missing_changes), encoding='utf-8')
+            out_mc = io.StringIO()
+            with patch('claude_config.report_cmd.fallback_state_root', return_value=Path(tmp) / 'fb'), redirect_stdout(out_mc):
+                code = cli_entry.main(['report', str(missing_changes_path), '--format', 'text'])
+            self.assertEqual(code, 2)
+            self.assertIn('summary', out_mc.getvalue())
+
 
 if __name__ == '__main__':
     unittest.main()

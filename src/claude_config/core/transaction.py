@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import uuid
 import signal
@@ -27,6 +28,17 @@ class PlanStale(RuntimeError):
         super().__init__(message)
         self.detail = {'phase': phase, 'path': str(path) if path is not None else None,
                        'expected': expected, 'actual': actual}
+
+
+def plan_id_matches(actual, expected, *, strict_format=True):
+    """Match an exact 64-char plan_id or an 8+ char lowercase/uppercase hex prefix."""
+    token = str(expected).strip().lower()
+    if not re.fullmatch(r'[0-9a-f]{8,64}', token):
+        if strict_format:
+            from .schema import SchemaError
+            raise SchemaError('计划 ID 必须为 8 至 64 位十六进制字符。')
+        return False
+    return isinstance(actual, str) and actual.lower().startswith(token)
 
 
 class UnfinishedRun(RuntimeError):

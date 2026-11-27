@@ -14,12 +14,12 @@ from claude_config.core.manager import ProfileManager
 from claude_config.core.app_manager import AppProfileManager
 from claude_config.core.native import parse_json, snapshot_read
 from claude_config.core.schema import SchemaError
-from claude_config.core.transaction import PlanStale, UnfinishedRun
+from claude_config.core.transaction import PlanStale, UnfinishedRun, plan_id_matches
 from claude_config.core.execution_context import progress_output, progress
 from claude_config.core.journal import unfinished
 from claude_config.core.recovery import rollback_plan
 from claude_config.core.baseline import adopt_baseline
-from claude_config.core.reporting import build_report, encode_json, exit_code, fallback_state_root, render_text, save_report
+from claude_config.core.reporting import build_report, encode_json, exit_code, explain_plan_stale, fallback_state_root, render_text, save_report
 from claude_config.core.report_viewer import show_report, terminal_color_enabled, terminal_interactive
 
 
@@ -170,7 +170,8 @@ def _main(argv):
     parser.add_argument('--policy', choices=('source_wins', 'keep_target', 'fail_if_different'))
     parser.add_argument('--field-policy', action='append', default=[], metavar='POINTER=POLICY')
     parser.add_argument('--resolutions', type=Path, help='Fingerprint-scoped drift resolutions JSON')
-    parser.add_argument('--expect-plan-id', help='Block if fresh plan differs from reviewed preview')
+    parser.add_argument('--expect-plan-id', '--plan-id', dest='expect_plan_id',
+                        help='Block if fresh plan differs from reviewed preview (full or 8+ char prefix)')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--write', action='store_true', help='Execute export, rollback, baseline selection, private review, run reconciliation or skill retirement; all preview by default')
     parser.add_argument('--format', choices=('auto', 'text', 'tui', 'json'), default='auto', help='auto: readable terminal text; tui: expandable tree viewer; text: plain static text; json: machine output')
@@ -280,8 +281,19 @@ def _main(argv):
             plan = manager.plan(profile=args.profile, run_policy=policy, resolutions=resolutions, selection=selection, **extra)
         report = plan.report
         report['mode'] = args.operation
-        if args.expect_plan_id and report['plan_id'] != args.expect_plan_id:
-            raise PlanStale('Reviewed plan has changed; generate a new preview')
+        if args.expect_plan_id and not plan_id_matches(report['plan_id'], args.expect_plan_id):
+            preview_snapshot = build_report(
+                report,
+                operation=args.operation,
+                preview_only=True,
+                manager=manager,
+                context={'machine_file': str(args.machine.absolute()), 'agent_type': args.agent,
+                         'app': args.app, 'profile': args.profile},
+            )
+            stale_detail = explain_plan_stale(manager.state_root, args.expect_plan_id, preview_snapshot)
+            stale = PlanStale('Reviewed plan has changed; generate a new preview', phase='expect_plan_id')
+            stale.detail.update(stale_detail)
+            raise stale
         report['preview_only'] = preview_only
         if write and not args.dry_run and report['ready']:
             phase = 'execution'

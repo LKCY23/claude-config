@@ -15,7 +15,7 @@ from .core.native import parse_json, parse_yaml, snapshot_read
 from .core.recovery import rollback_plan
 from .core.reporting import build_report, fallback_state_root, save_report
 from .core.schema import SchemaError, require, state_directory, validate_machine
-from .core.transaction import FileChange, FilePlan, PlanStale, file_fingerprint
+from .core.transaction import FileChange, FilePlan, PlanStale, file_fingerprint, plan_id_matches
 
 OLD_RUNTIME = ('python', 'framework_source', 'framework_commit')
 
@@ -276,7 +276,7 @@ def main(argv):
         parser.add_argument('--skill', action='append', default=[], metavar='AGENT=SKILL.md')
         parser.add_argument('--retire-script-install', action='store_true')
         parser.add_argument('--write', action='store_true')
-        parser.add_argument('--expect-plan-id')
+        parser.add_argument('--expect-plan-id', '--plan-id', dest='expect_plan_id')
         parser.add_argument('--run', help='恢复一次 init 的运行 ID；需使用相同 Machine 和 Skill 目标')
     plan = manager = None
     raw, error, started = {}, None, False
@@ -293,7 +293,7 @@ def main(argv):
             state = manager.state_root
             plan = rollback_plan(manager, args.run) if args.run else manager.plan()
             raw = plan.report
-            if args.expect_plan_id and args.expect_plan_id != raw['plan_id']:
+            if args.expect_plan_id and not plan_id_matches(raw['plan_id'], args.expect_plan_id):
                 raise PlanStale('计划已变化，请重新预览')
             if args.write and raw['ready']:
                 started = True

@@ -19,7 +19,7 @@ from .merge import MISSING, fingerprint, get
 from .native import parse_json, parse_native, parse_yaml, projection, put, snapshot_read
 from .resources import tree_digest
 from .schema import require, validate_catalogs, validate_machine, validate_profile, within
-from .transaction import file_fingerprint
+from .transaction import file_fingerprint, plan_id_matches
 
 
 def encoded(value):
@@ -336,5 +336,5 @@ class Conversion:
 
 def conversion(data_root, output_root, catalog_roots, *, write=False, executables=None, applications=None, app_profiles=None, expect_plan_id=None):
     candidate = Conversion(data_root, output_root, catalog_roots, executables=executables, applications=applications, app_profiles=app_profiles).build()
-    require(expect_plan_id is None or expect_plan_id == candidate.report['plan_id'], 'Conversion preview changed; review the new plan')
+    require(expect_plan_id is None or plan_id_matches(candidate.report['plan_id'], expect_plan_id), 'Conversion preview changed; review the new plan')
     return candidate.write() if write else candidate.report

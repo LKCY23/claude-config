@@ -41,10 +41,10 @@ class Phase1ArgumentDiagnosticsTests(unittest.TestCase):
 
     def test_unknown_option_suggests_expect_plan_id_without_leaking_values(self):
         code, stdout_text, saved = self._run_cli(
-            ['apply', '--agent', 'codex', '--plan-id=SECRET_PLAN_VAL', '--format', 'text']
+            ['apply', '--agent', 'codex', '--expect-planid=SECRET_PLAN_VAL', '--format', 'text']
         )
         self.assertEqual(code, 2)
-        self.assertIn('--plan-id', stdout_text)
+        self.assertIn('--expect-planid', stdout_text)
         self.assertIn('--expect-plan-id', stdout_text)
         self.assertNotIn('SECRET_PLAN_VAL', stdout_text)
         self.assertNotIn('SECRET_PLAN_VAL', saved)
@@ -225,7 +225,7 @@ class Phase1ReportingAndFormatTests(unittest.TestCase):
         concise = render_text(report, verbose=False)
         self.assertIn('2 个资源包（展开 9 项），1 项设置', concise)
         self.assertIn('已省略 5 项保留本机值决策；添加 --verbose 查看明细。', concise)
-        self.assertIn('下一步执行：claude-config apply --agent codex --expect-plan-id ' + ('a' * 64), concise)
+        self.assertIn('下一步执行：claude-config apply --agent codex --expect-plan-id ' + ('a' * 12), concise)
         self.assertNotIn('\x1b[', concise)
 
         detailed = render_text(report, verbose=True)
@@ -262,8 +262,8 @@ class Phase1ReportingAndFormatTests(unittest.TestCase):
         report = build_report(raw, operation='plan', context={'agent_type': 'codex'})
         text = render_text(report)
         self.assertIn('下一步解决设置冲突（/settings/model）', text)
-        self.assertIn('--field-policy /settings/model=source_wins', text)
-        self.assertIn('claude-config export --agent codex --field /settings/model --write', text)
+        self.assertIn('claude-config resolve --agent codex', text)
+        self.assertIn('--choose /settings/model=source_wins', text)
 
         stale = build_report(
             {'checks': [{'name': 'native', 'status': 'passed'}]},
@@ -293,7 +293,7 @@ class Phase1ReportingAndFormatTests(unittest.TestCase):
             'expanded': {'resources': [], 'fields': []},
         }
         self.assertIn(
-            '下一步执行：claude-config apply --agent codex --resource foo@cat --expect-plan-id ' + ('b' * 64),
+            '下一步执行：claude-config apply --agent codex --resource foo@cat --expect-plan-id ' + ('b' * 12),
             render_text(scoped_report),
         )
         scoped_report['deployment_scope'] = {
@@ -301,7 +301,7 @@ class Phase1ReportingAndFormatTests(unittest.TestCase):
             'expanded': {'resources': [], 'fields': []},
         }
         self.assertIn(
-            '下一步执行：claude-config apply --agent codex --scope settings --expect-plan-id ' + ('b' * 64),
+            '下一步执行：claude-config apply --agent codex --scope settings --expect-plan-id ' + ('b' * 12),
             render_text(scoped_report),
         )
 

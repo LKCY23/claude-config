@@ -9,6 +9,14 @@ Command: `{command}`
 Machine: `{machine}`
 Use `--agent {agent}` for this client's Agent settings and resources. Use `--app codex-app` or `--app claude-desktop` for application preferences.
 
+## Daily workflows
+
+- Inspect read-only status across baselines, agents, and apps: `{command} status`
+- Sync aligned baselines and ready targets (preview with `--dry-run`, apply non-interactively with `--yes`, filter with `--agent NAME` or `--skip-baseline`): `{command} sync`
+- Resolve deployment drift/conflicts interactively (`--choose POINTER=ACTION` for non-interactive runs): `{command} resolve --agent {agent}`
+- Inspect or sync catalog baselines in one step (`baseline status`, `baseline sync --write`, `baseline adopt <sha>`): `{command} baseline status`
+- View the latest or a specific saved report (`--plan-id` also accepts an 8–64 char hex prefix alias for `--expect-plan-id`): `{command} report last`
+
 ## Choose the sync scope
 
 Scoped deployment requires claude-config 0.7.0+. Check `--version`; inspect subcommand `--help` for complete arguments.

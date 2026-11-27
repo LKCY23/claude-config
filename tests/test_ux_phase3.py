@@ -183,6 +183,40 @@ class Phase3BaselineTests(_BaselineMixin, ResourceFixture):
         machine = yaml.safe_load(self.machine_path.read_text())
         self.assertIn(self.commit, machine['catalog_roots']['test'])
 
+    def test_baseline_status_and_global_status_flag_dirty_checkout(self):
+        self._prepare_second_baseline()
+        # Keep HEAD aligned with catalogs.yaml (self.old), but add an untracked file in the checkout.
+        (self.old_checkout / 'untracked.txt').write_text('dirty\n')
+
+        out_b_json = io.StringIO()
+        with redirect_stdout(out_b_json):
+            code = cli_entry.main(['baseline', 'status', '--machine', str(self.machine_path), '--format', 'json'])
+        self.assertEqual(code, 0, out_b_json.getvalue())
+        b_rep = json.loads(out_b_json.getvalue())
+        self.assertFalse(b_rep['aligned'])
+        self.assertEqual(b_rep['groups'][0]['status'], 'dirty_cache')
+        self.assertTrue(b_rep['groups'][0]['needs_sync'])
+
+        out_b_text = io.StringIO()
+        with redirect_stdout(out_b_text):
+            code = cli_entry.main(['baseline', 'status', '--machine', str(self.machine_path), '--format', 'text'])
+        self.assertEqual(code, 0)
+        self.assertIn('未提交/未跟踪改动', out_b_text.getvalue())
+
+        out_s_json = io.StringIO()
+        with redirect_stdout(out_s_json):
+            code = cli_entry.main(['status', '--machine', str(self.machine_path), '--format', 'json'])
+        self.assertEqual(code, 0, out_s_json.getvalue())
+        s_rep = json.loads(out_s_json.getvalue())
+        self.assertFalse(s_rep['baselines']['aligned'])
+        self.assertEqual(s_rep['baselines']['groups'][0]['status'], 'dirty_cache')
+
+        out_s_text = io.StringIO()
+        with redirect_stdout(out_s_text):
+            code = cli_entry.main(['status', '--machine', str(self.machine_path), '--format', 'text'])
+        self.assertEqual(code, 0)
+        self.assertIn('未提交改动', out_s_text.getvalue())
+
 
 class Phase3StatusTests(unittest.TestCase):
     def _state_snapshot(self, root):

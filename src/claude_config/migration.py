@@ -3,7 +3,7 @@
 from pathlib import Path
 import sys
 
-from claude_config.profile import ReportParser, UsageError, output_report, report_format
+from claude_config.profile import ReportParser, UsageError, output_report, report_format, report_verbose
 from claude_config.core.migration_inventory import inventory
 from claude_config.core.migration_convert import conversion
 from claude_config.core.native import parse_yaml
@@ -13,11 +13,13 @@ from claude_config.core.reporting import build_report, fallback_state_root, save
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     mode = report_format(argv)
+    verbose = report_verbose(argv)
     parser = ReportParser(description=__doc__)
     parser.add_argument('operation', choices=('inventory', 'convert'))
     parser.add_argument('--data-dir', type=Path, required=True)
     parser.add_argument('--state-dir', type=Path)
-    parser.add_argument('--format', choices=('auto', 'text', 'json'), default='auto')
+    parser.add_argument('--format', choices=('auto', 'text', 'tui', 'json'), default='auto')
+    parser.add_argument('--verbose', action='store_true', help='显示完整保留决策与细粒度输出')
     parser.add_argument('--legacy-machine', type=Path)
     parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--write', action='store_true')
@@ -28,7 +30,7 @@ def main(argv=None):
     except UsageError as exc:
         report = build_report({}, operation='migration-inventory', error={'code': 'invalid_arguments', 'phase': 'arguments', 'reason': str(exc), 'exit_code': 2})
         save_report(report, fallback_state_root())
-        return output_report(report, mode)
+        return output_report(report, mode, verbose=verbose)
     error = None
     try:
         if args.operation == 'convert':
@@ -58,7 +60,7 @@ def main(argv=None):
     else:
         report['scope']['note'] = '只读取旧声明及其本地引用；尚未生成新版数据，也未部署或接管原生配置。'
     save_report(report, args.state_dir or fallback_state_root())
-    return output_report(report, args.format)
+    return output_report(report, args.format, verbose=args.verbose)
 
 
 if __name__ == '__main__':

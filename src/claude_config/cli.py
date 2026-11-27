@@ -13,13 +13,15 @@ HELP = """usage: claude-config COMMAND [OPTIONS]
 专项操作：
   plugin     插件 install/upgrade/enable/disable/list/status；统一预览及部署
   runs       只读查看执行状态；--run ID 核对当前文件与恢复证据
+  report     查看最近或指定报告（默认在终端以可展开树打开）
   app-profile  查看 App 声明 schema/inspect，预览并受控保存五字段声明
   fetch-baseline  获取明确发布的固定来源，不采用或部署配置
   cutover    多客户端配置统一切换与恢复（不安装工具代码）
   migration  旧配置盘点与转换候选
 
 --machine 默认 ~/.claude-config-tool/machine.yaml；不搜索当前目录。
---format auto|text|json；交互终端默认可展开，管道默认静态文字。
+--format auto|text|tui|json；默认输出简洁可读文本，交互树形查看请用 --format tui 或 claude-config report。
+--verbose 显示完整保留决策与细粒度输出。
 claude-config COMMAND --help 查看参数。
 --version 显示版本。工具安装/升级/卸载由 uv tool 管理。
 """
@@ -42,6 +44,9 @@ def main(argv=None):
         return run(argv[1:])
     if command == 'runs':
         from .runs import main as run
+        return run(argv[1:])
+    if command == 'report':
+        from .report_cmd import main as run
         return run(argv[1:])
     if command in ('init', 'doctor'):
         from .setup import main as run

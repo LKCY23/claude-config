@@ -10,7 +10,7 @@ from .transaction import FileChange
 
 
 class MachineProfiles:
-    def __init__(self, path, value=None, expected=None):
+    def __init__(self, path, value=None, expected=None, *, strict=True):
         self.path = Path(path).absolute()
         if value is None:
             raw, expected = snapshot_read(self.path)
@@ -21,6 +21,7 @@ class MachineProfiles:
         self.effective = deepcopy(self.local)
         self.selection_path = None
         self.selection = None
+        self.mismatches = []
         if 'profile_selection' not in self.local:
             return
         name = self.local['profile_selection']
@@ -34,11 +35,37 @@ class MachineProfiles:
         self.sources[self.selection_path] = pin
         self.effective.pop('profile_selection')
         for group in ('agents', 'apps'):
-            require(set(self.selection[group]) == set(self.local[group]),
-                    'Repository selections and local runtime bindings differ: ' + group)
-            for name, profile in self.selection[group].items():
-                self.effective[group][name]['profile'] = profile
-        validate_machine(self.effective)
+            repo_keys = set(self.selection[group])
+            local_keys = set(self.local[group])
+            if repo_keys != local_keys:
+                only_repo = sorted(repo_keys - local_keys)
+                only_local = sorted(local_keys - repo_keys)
+                message = (
+                    f'Repository selections and local runtime bindings differ: {group} '
+                    f'(repository only: {", ".join(only_repo) or "none"}; '
+                    f'local only: {", ".join(only_local) or "none"})'
+                )
+                self.mismatches.append({
+                    'group': group,
+                    'repository_only': only_repo,
+                    'local_only': only_local,
+                    'message': message,
+                })
+                if strict:
+                    require(False, message)
+                for key in sorted(repo_keys & local_keys):
+                    self.effective[group][key]['profile'] = self.selection[group][key]
+            else:
+                for key, profile in self.selection[group].items():
+                    self.effective[group][key]['profile'] = profile
+        if strict or not self.mismatches:
+            validate_machine(self.effective)
+        else:
+            matched = deepcopy(self.effective)
+            for mismatch in self.mismatches:
+                group = mismatch['group']
+                matched[group] = {key: entry for key, entry in matched[group].items() if 'profile' in entry}
+            validate_machine(matched)
 
     def switch(self, group, name, profile):
         if self.selection_path is not None:

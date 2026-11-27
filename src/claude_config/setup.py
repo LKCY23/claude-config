@@ -8,7 +8,7 @@ import shutil
 import sys
 import yaml
 
-from .profile import ReportParser, UsageError, output_report, report_format
+from .profile import ReportParser, UsageError, output_report, report_format, report_verbose
 from .core.merge import fingerprint
 from .core.machine_profiles import MachineProfiles
 from .core.native import parse_json, parse_yaml, snapshot_read
@@ -145,31 +145,54 @@ def doctor(machine_path, *, resources=False, processes=False, storage=False):
     checks = [{'name': 'python_runtime', 'status': 'passed', 'reason': sys.executable}]
     raw, pin = snapshot_read(machine_path)
     require(pin['exists'], '未找到 Machine；请先运行 claude-config init，或指定 --machine')
-    selected = MachineProfiles(machine_path)
+    selected = MachineProfiles(machine_path, strict=False)
     machine = selected.effective
     checks.append({'name': 'machine_binding', 'status': 'passed', 'reason': str(machine_path)})
-    if selected.selection_path is not None:
+    if selected.mismatches:
+        for mismatch in selected.mismatches:
+            repo_only = ', '.join(mismatch['repository_only']) or '无'
+            local_only = ', '.join(mismatch['local_only']) or '无'
+            checks.append({
+                'name': 'machine_profile_selection',
+                'status': 'failed',
+                'subject': mismatch['group'],
+                'reason': (
+                    f"{selected.selection_path} 与本机 machine.yaml 的 {mismatch['group']} 绑定不一致："
+                    f"仓库多出 [{repo_only}]，本机多出 [{local_only}]"
+                ),
+                'repository_only': mismatch['repository_only'],
+                'local_only': mismatch['local_only'],
+            })
+    elif selected.selection_path is not None:
         checks.append({'name': 'machine_profile_selection', 'status': 'passed', 'reason': str(selected.selection_path)})
     checks.append({'name': 'configuration_directory', 'status': 'passed' if Path(machine['config_dir']).is_dir() else 'warning',
                    'reason': machine['config_dir']})
     for group in ('agents','apps'):
         for name, entry in machine[group].items():
-            profile = Path(machine['config_dir']) / entry['profile']
-            checks.append({'name': 'profile_file', 'status': 'passed' if profile.is_file() else 'failed', 'subject': name, 'reason': str(profile)})
-            if profile.is_file():
-                from .core.schema import validate_profile, pointer
-                from .core.fields import validate_settings
-                try:
-                    value = parse_yaml(profile.read_bytes())
-                    validate_profile(value, kind='agent' if group == 'agents' else 'app', expected=name)
-                    if group == 'agents':
-                        validate_settings(name, value.get('settings', {}),
-                                          generated={pointer(p)[1:] for p in value.get('bindings', {})})
-                    checks.append({'name': 'profile_compatibility', 'status': 'passed', 'subject': name,
-                                   'minimum_tool_version': value.get('minimum_tool_version')})
-                except (ValueError, OSError) as exc:
-                    checks.append({'name': 'profile_compatibility', 'status': 'failed', 'subject': name,
-                                   'reason': str(exc) if isinstance(exc, SchemaError) else 'Profile cannot be parsed'})
+            if 'profile' not in entry:
+                checks.append({
+                    'name': 'profile_file',
+                    'status': 'failed',
+                    'subject': name,
+                    'reason': f'{name} 仅存在于本机 machine.yaml，缺少仓库 profile_selection 中的 Profile 选择',
+                })
+            else:
+                profile = Path(machine['config_dir']) / entry['profile']
+                checks.append({'name': 'profile_file', 'status': 'passed' if profile.is_file() else 'failed', 'subject': name, 'reason': str(profile)})
+                if profile.is_file():
+                    from .core.schema import validate_profile, pointer
+                    from .core.fields import validate_settings
+                    try:
+                        value = parse_yaml(profile.read_bytes())
+                        validate_profile(value, kind='agent' if group == 'agents' else 'app', expected=name)
+                        if group == 'agents':
+                            validate_settings(name, value.get('settings', {}),
+                                              generated={pointer(p)[1:] for p in value.get('bindings', {})})
+                        checks.append({'name': 'profile_compatibility', 'status': 'passed', 'subject': name,
+                                       'minimum_tool_version': value.get('minimum_tool_version')})
+                    except (ValueError, OSError) as exc:
+                        checks.append({'name': 'profile_compatibility', 'status': 'failed', 'subject': name,
+                                       'reason': str(exc) if isinstance(exc, SchemaError) else 'Profile cannot be parsed'})
             if group == 'agents' and name == 'antigravity':
                 binding = entry['binding']
                 if 'executable' in binding:
@@ -199,9 +222,9 @@ def doctor(machine_path, *, resources=False, processes=False, storage=False):
               'installation': tool_identity(),
               'profile_selection': {'kind': 'repository' if selected.selection_path else 'embedded',
                                     'path': str(selected.selection_path or machine_path)},
-              'client_profiles': {group: {name: entry['profile'] for name, entry in machine[group].items()}
+              'client_profiles': {group: {name: entry.get('profile') for name, entry in machine[group].items()}
                                   for group in ('agents', 'apps')}}
-    if resources:
+    if resources and not selected.mismatches:
         from .core.manager import ProfileManager
         result['resource_inventories'] = []
         for agent in machine['agents']:
@@ -239,7 +262,8 @@ def doctor(machine_path, *, resources=False, processes=False, storage=False):
 def main(argv):
     parser = ReportParser(description=__doc__, prog='claude-config ' + argv[0])
     parser.add_argument('--machine', type=Path, default=default_machine())
-    parser.add_argument('--format', choices=('auto','text','json'), default='auto')
+    parser.add_argument('--format', choices=('auto', 'text', 'tui', 'json'), default='auto')
+    parser.add_argument('--verbose', action='store_true', help='显示完整保留决策与细粒度输出')
     if argv[0] == 'doctor':
         parser.add_argument('--resources', action='store_true', help='Inspect selected skills, drift and external managers; no skill execution')
         parser.add_argument('--processes', action='store_true', help='Observe bound macOS App processes without collecting environment values')
@@ -285,4 +309,4 @@ def main(argv):
                           error=error, execution_started=started)
     if not (argv[0] == 'doctor' and 'args' in locals() and args.no_save):
         save_report(report,state)
-    return output_report(report, report_format(argv))
+    return output_report(report, report_format(argv), verbose=report_verbose(argv))

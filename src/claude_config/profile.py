@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Strict Agent and App Profile plans. No legacy fallback."""
 import argparse
+import difflib
 import errno
 import json
 from pathlib import Path
+import re
+import shlex
 import sys
 import yaml
 
@@ -17,13 +20,13 @@ from claude_config.core.journal import unfinished
 from claude_config.core.recovery import rollback_plan
 from claude_config.core.baseline import adopt_baseline
 from claude_config.core.reporting import build_report, encode_json, exit_code, fallback_state_root, render_text, save_report
-from claude_config.core.report_viewer import show_report, terminal_interactive
+from claude_config.core.report_viewer import show_report, terminal_color_enabled, terminal_interactive
 
 
-def render(report, mode):
+def render(report, mode, *, verbose=False, color=False):
     if mode == 'json':
         return encode_json(report)
-    return render_text(report)
+    return render_text(report, verbose=verbose, color=color)
 
 
 class UsageError(ValueError):
@@ -31,20 +34,80 @@ class UsageError(ValueError):
 
 
 class ReportParser(argparse.ArgumentParser):
+    def reject(self, message):
+        raise UsageError('命令参数不合法：' + message)
+
+    def _safe_unknown_tokens(self, raw_rest):
+        try:
+            tokens = shlex.split(raw_rest)
+        except ValueError:
+            tokens = raw_rest.split()
+        labels = []
+        suggestions = []
+        seen_positional = False
+        registered = list(self._option_string_actions.keys())
+        for tok in tokens:
+            if tok.startswith('--'):
+                opt = tok.partition('=')[0]
+                if re.fullmatch(r'--[A-Za-z0-9][A-Za-z0-9_-]*', opt):
+                    labels.append(opt)
+                    if opt in ('--plan-id', '--plan_id') and '--expect-plan-id' in registered:
+                        suggestions.append('--expect-plan-id')
+                    else:
+                        suggestions.extend(difflib.get_close_matches(opt, registered, n=2, cutoff=0.6))
+                else:
+                    labels.append('无效参数名')
+            elif tok.startswith('-') and len(tok) >= 2:
+                short = tok[:2]
+                labels.append(short if re.fullmatch(r'-[A-Za-z0-9]', short) else '未知短参数')
+            else:
+                seen_positional = True
+        if seen_positional:
+            labels.append('多余位置参数')
+        unique_labels = list(dict.fromkeys(labels)) or ['未知参数']
+        unique_suggestions = list(dict.fromkeys(suggestions))
+        return unique_labels, unique_suggestions
+
     def error(self, message):
-        # argparse may echo arbitrary argument values. Do not persist those as
-        # diagnostics; the supported usage remains available through --help.
-        if '--no-input' in message:
+        # argparse may echo arbitrary argument values. Parse strictly against
+        # allowlisted structural templates and never echo user-supplied values.
+        text = str(message or '').strip()
+        if '--no-input' in text:
             raise UsageError('命令参数 --no-input 已移除；静态文字请使用 --format text。')
+        match = re.fullmatch(r'unrecognized arguments:\s*(.+)', text, re.DOTALL)
+        if match:
+            labels, suggestions = self._safe_unknown_tokens(match.group(1))
+            hint = f"（你是否想输入：{'、'.join(suggestions)}）" if suggestions else ''
+            raise UsageError(f"命令参数不合法：未知参数 {'、'.join(labels)}{hint}；请用 --help 核对参数及允许值。")
+        match = re.fullmatch(r'the following arguments are required:\s*(.+)', text)
+        if match:
+            raise UsageError(f'命令参数不完整：缺少必填参数 {match.group(1)}；请用 --help 核对参数及允许值。')
+        match = re.fullmatch(r'one of the arguments (.+?) is required', text)
+        if match:
+            raise UsageError(f'命令参数不完整：以下参数需至少指定一项：{match.group(1)}；请用 --help 核对参数及允许值。')
+        match = re.fullmatch(r'argument (.+?): invalid choice: .* \(choose from (.+)\)', text, re.DOTALL)
+        if match:
+            raise UsageError(f'命令参数不合法：参数 {match.group(1)} 取值无效（允许值：{match.group(2)}）；请用 --help 核对参数及允许值。')
+        match = re.fullmatch(r'argument (.+?): not allowed with argument (.+)', text)
+        if match:
+            raise UsageError(f'命令参数不合法：参数 {match.group(1)} 与 {match.group(2)} 不能同时使用；请用 --help 核对参数及允许值。')
+        match = re.fullmatch(r'argument (.+?): expected .+', text, re.DOTALL)
+        if match:
+            raise UsageError(f'命令参数不合法：参数 {match.group(1)} 缺少参数值或数量不匹配；请用 --help 核对参数及允许值。')
+        match = re.fullmatch(r'argument (.+?): invalid .+? value: .*', text, re.DOTALL)
+        if match:
+            raise UsageError(f'命令参数不合法：参数 {match.group(1)} 的类型或格式无效；请用 --help 核对参数及允许值。')
         raise UsageError('命令参数不完整或不合法；请用 --help 核对参数及允许值。')
 
 
-def output_report(report, mode):
+def output_report(report, mode, *, verbose=False):
     progress(None)
     viewed = False
-    if report['artifacts']['saved'] and terminal_interactive(mode):
+    if mode == 'tui' and report['artifacts']['saved'] and terminal_interactive(mode):
         viewed = show_report(report)
-    print(render(report, 'json') if mode == 'json' else render_text(report, brief=viewed))
+    color = False if (mode != 'auto' or viewed) else terminal_color_enabled(mode)
+    print(render(report, 'json', verbose=verbose) if mode == 'json'
+          else render_text(report, brief=viewed, verbose=verbose, color=color))
     return exit_code(report)
 
 
@@ -53,9 +116,13 @@ def report_format(argv):
     mode = 'auto'
     for index, item in enumerate(argv):
         candidate = item.partition('=')[2] if item.startswith('--format=') else argv[index + 1] if item == '--format' and index + 1 < len(argv) else None
-        if candidate in ('auto', 'json', 'text'):
+        if candidate in ('auto', 'json', 'text', 'tui'):
             mode = candidate
     return mode
+
+
+def report_verbose(argv):
+    return '--verbose' in argv
 
 
 def main(argv=None):
@@ -68,6 +135,7 @@ def _entry(argv=None):
     operations = ('plan', 'validate', 'apply', 'export', 'switch', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run')
     operation = next((item for item in argv if item in operations), 'unknown')
     mode = report_format(argv)
+    verbose = report_verbose(argv)
     try:
         return _main(argv)
     except UsageError as exc:
@@ -75,7 +143,7 @@ def _entry(argv=None):
                               error={'code': 'invalid_arguments', 'phase': 'arguments',
                                      'reason': str(exc), 'exit_code': 2})
         save_report(report, fallback_state_root())
-        return output_report(report, mode)
+        return output_report(report, mode, verbose=verbose)
 
 
 def _main(argv):
@@ -105,48 +173,49 @@ def _main(argv):
     parser.add_argument('--expect-plan-id', help='Block if fresh plan differs from reviewed preview')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--write', action='store_true', help='Execute export, rollback, baseline selection, private review, run reconciliation or skill retirement; all preview by default')
-    parser.add_argument('--format', choices=('auto', 'json', 'text'), default='auto', help='auto: interactive TTY or static text; json: machine output')
+    parser.add_argument('--format', choices=('auto', 'text', 'tui', 'json'), default='auto', help='auto: readable terminal text; tui: expandable tree viewer; text: plain static text; json: machine output')
+    parser.add_argument('--verbose', action='store_true', help='显示完整保留决策与细粒度输出')
     args = parser.parse_args(argv)
     if (args.adopt_plugin or args.replace_plugin) and (args.app or args.operation not in ('plan', 'validate', 'apply', 'switch')):
-        parser.error('Plugin adoption/replacement inputs are only for Agent plan/validate/apply/switch')
+        parser.reject('Plugin adoption/replacement inputs are only for Agent plan/validate/apply/switch')
     if args.preserve_native_metadata_after and (args.operation != 'rollback' or args.agent != 'claude-code'):
-        parser.error('--preserve-native-metadata-after requires Claude Code rollback')
+        parser.reject('--preserve-native-metadata-after requires Claude Code rollback')
     if args.app and (args.resource or args.resource_group or args.scope == 'resources' or args.operation in ('adopt-baseline', 'review-conflicts', 'reconcile-run', 'retire-skills')):
-        parser.error('App Profiles do not manage Agent resources or catalog baselines')
+        parser.reject('App Profiles do not manage Agent resources or catalog baselines')
     if args.operation == 'switch' and not args.profile:
-        parser.error('switch requires --profile')
+        parser.reject('switch requires --profile')
     if args.write and args.operation not in ('export', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run', 'retire-skills'):
-        parser.error('--write is only for export/rollback/adopt-baseline/review-conflicts/reconcile-run/retire-skills')
+        parser.reject('--write is only for export/rollback/adopt-baseline/review-conflicts/reconcile-run/retire-skills')
     baseline_args = (args.catalog, args.commit, args.checkout, args.release_record)
     if args.operation == 'adopt-baseline' and not all(baseline_args):
-        parser.error('adopt-baseline requires --catalog, --commit, --checkout and --release-record')
+        parser.reject('adopt-baseline requires --catalog, --commit, --checkout and --release-record')
     if args.operation != 'adopt-baseline' and any(baseline_args):
-        parser.error('Baseline arguments are only for adopt-baseline')
+        parser.reject('Baseline arguments are only for adopt-baseline')
     if args.source_map and args.operation != 'adopt-baseline':
-        parser.error('--source-map is only for adopt-baseline')
+        parser.reject('--source-map is only for adopt-baseline')
     if args.operation == 'adopt-baseline' and (args.policy or args.field_policy or args.resolutions):
-        parser.error('Baseline adoption selects an exact release, not a native usage merge policy')
+        parser.reject('Baseline adoption selects an exact release, not a native usage merge policy')
     if (args.operation in ('rollback', 'reconcile-run')) != bool(args.run):
-        parser.error('rollback/reconcile-run require --run')
+        parser.reject('rollback/reconcile-run require --run')
     if args.operation in ('rollback', 'reconcile-run') and (args.policy or args.field_policy or args.resolutions):
-        parser.error('rollback uses recorded snapshots, not settings merge policies')
+        parser.reject('rollback uses recorded snapshots, not settings merge policies')
     deployment = args.operation in ('plan', 'validate', 'apply')
     if args.field and not deployment and args.operation != 'export':
-        parser.error('--field is only for plan/validate/apply/export')
+        parser.reject('--field is only for plan/validate/apply/export')
     if args.resource and not deployment and args.operation not in ('export', 'retire-skills'):
-        parser.error('--resource is only for plan/validate/apply/export/retire-skills')
+        parser.reject('--resource is only for plan/validate/apply/export/retire-skills')
     if (args.scope or args.resource_group) and not deployment:
-        parser.error('--scope/--resource-group are only for plan/validate/apply')
+        parser.reject('--scope/--resource-group are only for plan/validate/apply')
     if deployment and sum(bool(x) for x in (args.scope, args.resource_group, args.resource, args.field)) > 1:
-        parser.error('Choose one deployment selector family')
+        parser.reject('Choose one deployment selector family')
     if args.operation == 'apply' and not args.dry_run and (args.scope not in (None, 'all') or args.resource_group or args.resource or args.field) and not args.expect_plan_id:
-        parser.error('Partial apply requires --expect-plan-id from the same scoped preview')
+        parser.reject('Partial apply requires --expect-plan-id from the same scoped preview')
     if args.operation == 'retire-skills' and (not args.resource or args.policy or args.field_policy or args.resolutions):
-        parser.error('retire-skills requires explicit resources and does not override drift')
+        parser.reject('retire-skills requires explicit resources and does not override drift')
     if args.operation == 'retire-skills' and args.write and not args.expect_plan_id:
-        parser.error('retire-skills --write requires the reviewed --expect-plan-id')
+        parser.reject('retire-skills --write requires the reviewed --expect-plan-id')
     if args.profile and args.operation not in ('switch', 'export'):
-        parser.error('--profile is only for switch/export; other operations use the Machine binding')
+        parser.reject('--profile is only for switch/export; other operations use the Machine binding')
     plan, manager, error = None, None, None
     write = args.operation in ('apply', 'switch') or args.operation in ('export', 'rollback', 'adopt-baseline', 'review-conflicts', 'reconcile-run', 'retire-skills') and args.write
     started, preview_only = False, args.dry_run or not write
@@ -257,7 +326,7 @@ def _main(argv):
     report = build_report(report, operation=args.operation, preview_only=preview_only,
                           manager=manager, context=context, error=error, execution_started=started)
     save_report(report, manager.state_root if manager else fallback_state_root())
-    return output_report(report, args.format)
+    return output_report(report, args.format, verbose=args.verbose)
 
 
 if __name__ == '__main__':

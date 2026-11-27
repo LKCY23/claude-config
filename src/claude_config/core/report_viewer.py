@@ -18,9 +18,18 @@ class Node:
 def terminal_interactive(mode='auto', *, stdin=None, stdout=None):
     import sys
     stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
-    return (mode == 'auto' and os.name == 'posix'
+    return (mode in ('auto', 'tui') and os.name == 'posix'
             and os.environ.get('TERM', '').lower() not in ('', 'dumb', 'unknown')
             and stdin.isatty() and stdout.isatty())
+
+
+def terminal_color_enabled(mode='auto', *, stdout=None):
+    import sys
+    stdout = stdout or sys.stdout
+    return (mode == 'auto' and os.name == 'posix'
+            and 'NO_COLOR' not in os.environ
+            and os.environ.get('TERM', '').lower() not in ('', 'dumb', 'unknown')
+            and stdout.isatty())
 
 
 def wrapped_lines(text, width):

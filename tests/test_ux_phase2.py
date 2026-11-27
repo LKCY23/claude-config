@@ -275,6 +275,43 @@ class Phase2ResolveTests(unittest.TestCase):
         self.assertEqual(code_clean, 0, out_clean)
         self.assertEqual(json.loads(out_clean)['checks'][0]['name'], 'conflict_discovery')
 
+    def test_resolve_partial_noninteractive_choose_resolves_one_conflict_at_a_time(self):
+        fixture = manager_fixtures.ManagerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.addCleanup(fixture.tearDown)
+
+        fixture.profile('codex', settings={'model': 'repo-model', 'model_reasoning_effort': 'high'})
+        fixture.native('codex', value={'model': 'repo-model', 'model_reasoning_effort': 'high'})
+        fixture.manager('codex').plan().apply(fixture.state)
+
+        # Introduce simultaneous native drift on two fields.
+        fixture.native('codex', value={'model': 'local-model', 'model_reasoning_effort': 'low'})
+
+        probe_patch = patch('claude_config.core.manager.NativeProbe', return_value=fixture.probe)
+        probe_patch.start()
+        self.addCleanup(probe_patch.stop)
+
+        # Resolve ONLY /settings/model first using a single --choose flag.
+        code1, out1 = self._run_cli([
+            'resolve', '--machine', str(fixture.machine_path), '--agent', 'codex',
+            '--choose', '/settings/model=source_wins', '--write', '--format', 'json',
+        ])
+        self.assertEqual(code1, 0, out1)
+        native_mid = parse_native('codex', fixture.native('codex').read_bytes())
+        self.assertEqual(native_mid['model'], 'repo-model')
+        self.assertEqual(native_mid['model_reasoning_effort'], 'low')
+
+        # Second conflict remains discoverable and can then be resolved independently.
+        code2, out2 = self._run_cli([
+            'resolve', '--machine', str(fixture.machine_path), '--agent', 'codex',
+            '--choose', '/settings/model_reasoning_effort=source_wins', '--write', '--format', 'json',
+        ])
+        self.assertEqual(code2, 0, out2)
+        native_end = parse_native('codex', fixture.native('codex').read_bytes())
+        self.assertEqual(native_end['model'], 'repo-model')
+        self.assertEqual(native_end['model_reasoning_effort'], 'high')
+
 
 if __name__ == '__main__':
     unittest.main()

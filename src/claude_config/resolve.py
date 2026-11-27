@@ -240,10 +240,25 @@ def _entry(argv=None):
                     if pick is not None:
                         selections[ptr] = pick
             unselected = [item for item in discovered if item['pointer'] not in selections]
-            if unselected and (not selections or not interactive):
+            if unselected and not selections:
                 report = _unselected_blocked_report(manager, args.agent, initial.report, unselected, machine_path)
                 save_report(report, manager.state_root)
                 return output_report(report, args.format, verbose=args.verbose)
+
+            partial_scope = None
+            if unselected:
+                selected_settings = [ptr for ptr in selections if by_pointer[ptr]['kind'] == 'settings']
+                selected_resources = [
+                    by_pointer[ptr]['path'][2] if len(by_pointer[ptr]['path']) >= 3 else by_pointer[ptr]['ref']
+                    for ptr in selections
+                    if by_pointer[ptr]['kind'] == 'resources'
+                ]
+                if selected_settings and selected_resources:
+                    raise UsageError('部分解决冲突时，单次 --choose 需同属设置字段或同属资源冲突；或一次选择全部未解决冲突。')
+                if selected_settings:
+                    partial_scope = DeploymentScope(fields=tuple(selected_settings))
+                elif selected_resources:
+                    partial_scope = DeploymentScope(resources=tuple(selected_resources))
 
             export_fields = []
             resolutions = {}
@@ -260,19 +275,35 @@ def _entry(argv=None):
                 else:
                     resolutions[ptr] = {'conflict_id': item['conflict_id'], 'action': action}
 
+            def _scoped_drift_resolutions(mgr, scope_obj, base_fp):
+                if scope_obj is None or not any(
+                    by_pointer[p]['kind'] == 'settings' and by_pointer[p]['is_drift'] for p in selections
+                ):
+                    return dict(resolutions), base_fp
+                if mgr.plan().report.get('snapshots', {}).get('target') != base_fp:
+                    raise PlanStale('Native configuration changed during partial conflict resolution')
+                scoped_fp = mgr.plan(selection=scope_obj).report.get('snapshots', {}).get('target')
+                scoped_res = {
+                    ptr: ({'target_fingerprint': scoped_fp, 'policy': val['policy']}
+                          if ptr in by_pointer and by_pointer[ptr]['kind'] == 'settings' and by_pointer[ptr]['is_drift']
+                          else val)
+                    for ptr, val in resolutions.items()
+                }
+                return scoped_res, scoped_fp
+
             def _build_preview():
                 if export_fields and not resolutions and not run_policy_fields:
                     return manager.export(export_fields, run_policy={'default': 'source_wins'})
-                preview_res = dict(resolutions)
+                preview_res, preview_fp = _scoped_drift_resolutions(manager, partial_scope, target_fp)
                 preview_rp = dict(run_policy_fields)
                 for ptr in export_fields:
                     item = by_pointer[ptr]
                     if item['is_drift']:
-                        preview_res[ptr] = {'target_fingerprint': item['target_fingerprint'], 'policy': 'keep_target'}
+                        preview_res[ptr] = {'target_fingerprint': preview_fp, 'policy': 'keep_target'}
                     else:
                         preview_rp[ptr] = 'keep_target'
                 rp = {'fields': preview_rp} if preview_rp else None
-                plan_obj = manager.plan(run_policy=rp, resolutions=preview_res or None)
+                plan_obj = manager.plan(run_policy=rp, resolutions=preview_res or None, selection=partial_scope)
                 if export_fields:
                     plan_obj.report.setdefault('checks', []).append({
                         'name': 'export_resolution_preview',
@@ -315,22 +346,19 @@ def _entry(argv=None):
                     progress('对齐基线并应用剩余冲突解决策略')
                     rp = {'fields': run_policy_fields} if run_policy_fields else None
                     scope = (
-                        DeploymentScope(fields=tuple(export_fields))
+                        partial_scope
+                        if partial_scope is not None
+                        else DeploymentScope(fields=tuple(export_fields))
                         if (has_export_drift and not resolutions and not run_policy_fields)
                         else None
                     )
-                    ack_target_fp = target_fp
-                    if has_export_drift and scope is not None:
-                        verify_full = manager.plan()
-                        if verify_full.report.get('snapshots', {}).get('target') != target_fp:
-                            raise PlanStale('Native configuration changed during export resolution')
-                        ack_target_fp = manager.plan(selection=scope).report.get('snapshots', {}).get('target')
+                    scoped_res, ack_target_fp = _scoped_drift_resolutions(manager, scope, target_fp)
                     export_drift_ack = {
                         ptr: {'target_fingerprint': ack_target_fp, 'policy': 'source_wins'}
                         for ptr in export_fields
                         if by_pointer[ptr]['is_drift']
                     }
-                    merged_res = {**resolutions, **export_drift_ack}
+                    merged_res = {**scoped_res, **export_drift_ack}
                     apply_plan = manager.plan(run_policy=rp, resolutions=merged_res or None, selection=scope)
                     if apply_plan.report.get('ready', False):
                         started = True

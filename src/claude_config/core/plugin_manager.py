@@ -105,7 +105,8 @@ class PluginManager:
         catalogs, _, _ = m._read(m.root / 'catalogs.yaml', lambda raw: validate_catalogs(parse_yaml(raw)))
         require(alias in catalogs['catalogs'] and alias in m.machine['catalog_roots'], 'Catalog must be declared and bound')
         declared = catalogs['catalogs'][alias]
-        bound = Path(m.machine['catalog_roots'][alias])
+        from .schema import resolve_catalog_root
+        bound = resolve_catalog_root(m.machine, alias, declared, state_root=m.state_root)
         if not bound.exists():
             expected = m.state_root / 'sources' / declared['repo'].replace('/', '--') / declared['commit']
             require(bound.absolute().resolve() == expected.resolve(),

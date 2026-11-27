@@ -14,7 +14,9 @@ from .core.machine_profiles import MachineProfiles
 from .core.native import parse_json, parse_yaml, snapshot_read
 from .core.recovery import rollback_plan
 from .core.reporting import build_report, fallback_state_root, save_report
-from .core.schema import SchemaError, require, state_directory, validate_machine
+from .core.schema import (AGENTS, APPS, SchemaError, pointer, profile_path, profile_yaml_files,
+                          require, resolve_catalog_root, state_directory, validate_catalogs, validate_machine,
+                          validate_machine_profiles, validate_profile, within)
 from .core.transaction import FileChange, FilePlan, PlanStale, file_fingerprint, plan_id_matches
 
 OLD_RUNTIME = ('python', 'framework_source', 'framework_commit')
@@ -53,6 +55,18 @@ class Setup:
             self.machine.pop('runtime', None)
         if args.config_dir:
             self.machine['config_dir'] = str(args.config_dir.expanduser().absolute())
+        if getattr(args, 'auto_catalog_roots', False):
+            for alias in list(self.machine.get('catalog_roots', {})):
+                self.machine['catalog_roots'][alias] = 'auto'
+        sync_selection = bool(getattr(args, 'sync_selection', False))
+        select_args = list(getattr(args, 'select', ()))
+        require(not select_args or sync_selection, '--select 仅可与 --sync-selection 配合使用')
+        require(not (sync_selection and getattr(args, 'profile_selection', None)),
+                '--sync-selection 与 --profile-selection 不能同时使用')
+        require(not (sync_selection and getattr(args, 'run', None)),
+                '--sync-selection 与 --run 不能同时使用')
+        if sync_selection:
+            require('profile_selection' in self.machine, '--sync-selection 需要 machine.yaml 已配置 profile_selection')
         if getattr(args, 'profile_selection', None):
             previous = {group: {name: entry.get('profile') for name, entry in self.machine[group].items()}
                         for group in ('agents', 'apps')}
@@ -60,13 +74,17 @@ class Setup:
             for group in ('agents', 'apps'):
                 for entry in self.machine[group].values():
                     entry.pop('profile', None)
-        resolved = MachineProfiles(source, self.machine, expected=pin)
+        resolved = MachineProfiles(source, self.machine, expected=pin, strict=not sync_selection)
         self.machine_profiles = resolved
         if getattr(args, 'profile_selection', None):
             require(all(profile is None or profile == resolved.effective[group][name]['profile']
                         for group, entries in previous.items() for name, profile in entries.items()),
                     'Repository choices differ from the current Machine; reconcile before adopting the selection file')
         self.sources.update(resolved.sources)
+        self.updated_selection = None
+        self.selection_path = resolved.selection_path
+        if sync_selection:
+            self.updated_selection = self._reconcile_selection(resolved.selection, select_args)
         self.state_root = state_directory(self.machine)
         self.skills = {}
         for item in args.skill:
@@ -78,8 +96,68 @@ class Setup:
             self.skills[agent] = path
         require(len(set(self.skills.values())) == len(self.skills) and self.machine_path not in self.skills.values(),
                 'Machine 与 Skill 目标不得重叠')
-        self.recovery_scopes = sorted({str(self.machine_path.parent.resolve()),
-                                       *(str(p.resolve()) for p in self.skills.values())})
+        scopes = {str(self.machine_path.parent.resolve()), *(str(p.resolve()) for p in self.skills.values())}
+        if sync_selection and self.selection_path is not None:
+            scopes.add(str(self.selection_path.parent.resolve()))
+        self.recovery_scopes = sorted(scopes)
+
+    def _reconcile_selection(self, base_selection, select_args):
+        explicit = {}
+        for item in select_args:
+            target, sep, rel = item.partition('=')
+            require(bool(sep) and bool(target) and bool(rel), '--select 必须使用 TARGET=PROFILE 格式')
+            if target in AGENTS:
+                group = 'agents'
+            elif target in APPS:
+                group = 'apps'
+            else:
+                raise SchemaError(f'--select 指定的目标未知: {target}')
+            require(target in self.machine[group], f'--select 指定的目标未在本机 machine.yaml 中绑定: {target}')
+            require(target not in explicit, f'--select 重复指定目标: {target}')
+            profile_path(rel, group, target)
+            explicit[target] = (group, rel)
+
+        updated = deepcopy(base_selection)
+        config_dir = Path(self.machine['config_dir'])
+        for group in ('agents', 'apps'):
+            current = updated[group]
+            local_targets = self.machine[group]
+            for stale in [key for key in current if key not in local_targets]:
+                del current[stale]
+            for name in sorted(local_targets):
+                if name in explicit:
+                    current[name] = explicit[name][1]
+                elif name not in current:
+                    profile_dir = config_dir / 'profiles' / group / name
+                    candidates = [
+                        p.relative_to(config_dir).as_posix()
+                        for p in profile_yaml_files(profile_dir)
+                    ] if profile_dir.is_dir() else []
+                    if len(candidates) == 1:
+                        current[name] = candidates[0]
+                    elif not candidates:
+                        raise SchemaError(
+                            f'{name} 缺少可用 Profile 文件（{profile_dir} 下无 .yaml）；请先创建 Profile 或使用 --select {name}=<profile>'
+                        )
+                    else:
+                        raise SchemaError(
+                            f'{name} 存在多个候选 Profile（{", ".join(candidates)}），请使用 --select {name}=<profile> 明确指定'
+                        )
+                sel_rel = current[name]
+                prof_file = within(config_dir, sel_rel)
+                raw_prof, prof_pin = snapshot_read(prof_file)
+                self.sources[prof_file] = prof_pin
+                prof_doc = parse_yaml(raw_prof)
+                validate_profile(prof_doc, kind='agent' if group == 'agents' else 'app', expected=name)
+                if group == 'agents':
+                    from .core.fields import validate_settings
+                    validate_settings(
+                        name,
+                        prof_doc.get('settings', {}),
+                        generated={pointer(p)[1:] for p in prof_doc.get('bindings', {})},
+                    )
+        validate_machine_profiles(updated, self.machine['machine_id'])
+        return updated
 
     def plan(self):
         changes, decisions = [], []
@@ -102,6 +180,35 @@ class Setup:
             require(self.args.from_machine.expanduser().absolute() == self.machine_path,
                     '目标已有不同 Machine；请选择新目标或先明确整理绑定')
         add(self.machine_path, yaml.safe_dump(self.machine, allow_unicode=True, sort_keys=False).encode(), expected=pin)
+        if getattr(self, 'updated_selection', None) is not None and self.selection_path is not None:
+            selection_bytes = yaml.safe_dump(self.updated_selection, allow_unicode=True, sort_keys=False).encode()
+            old_pin = self.sources[self.selection_path]
+            after_pin = {'exists': True, 'sha256': hashlib.sha256(selection_bytes).hexdigest(), 'mode': 0o600}
+            if old_pin != after_pin:
+                changes.append(
+                    FileChange(
+                        self.selection_path,
+                        selection_bytes,
+                        'machine-selection',
+                        lambda data: validate_machine_profiles(parse_yaml(data), self.machine['machine_id']),
+                        old_pin,
+                        0o600,
+                    )
+                )
+                decisions.append({
+                    'path': ['bootstrap', str(self.selection_path)],
+                    'before_exists': old_pin['exists'],
+                    'before': old_pin,
+                    'incoming_exists': True,
+                    'incoming': after_pin,
+                    'after_exists': True,
+                    'after': after_pin,
+                    'action': 'replace',
+                    'category': 'policy_merge',
+                    'policy': 'explicit-local-bootstrap',
+                    'policy_origin': 'init',
+                    'reason': '对齐本机 machine.yaml 与 machines/<id>.yaml 的目标选择清单。',
+                })
         invoked = Path(sys.argv[0]).absolute()
         command = (str(invoked) if invoked.name == 'claude-config' and invoked.is_file()
                    and os.access(invoked, os.X_OK) else shutil.which('claude-config'))
@@ -213,8 +320,33 @@ def doctor(machine_path, *, resources=False, processes=False, storage=False):
     for name, value in machine.get('bindings', {}).get('executables', {}).items():
         checks.append({'name': 'local_dependency', 'subject': name,
                        'status': 'passed' if Path(value).is_file() and os.access(value, os.X_OK) else 'failed', 'reason': value})
+    catalogs_doc = None
+    catalogs_error = None
+    if any(value == 'auto' for value in machine['catalog_roots'].values()):
+        catalogs_path = Path(machine['config_dir']) / 'catalogs.yaml'
+        if not catalogs_path.is_file():
+            catalogs_error = 'catalog_roots 包含 auto，但 catalogs.yaml 不存在'
+        else:
+            try:
+                catalogs_doc = validate_catalogs(parse_yaml(snapshot_read(catalogs_path)[0]))['catalogs']
+            except (SchemaError, ValueError, OSError) as exc:
+                catalogs_error = str(exc) if isinstance(exc, SchemaError) else 'catalogs.yaml 无法解析'
     for name, value in machine['catalog_roots'].items():
-        checks.append({'name': 'catalog_directory', 'subject': name, 'status': 'passed' if Path(value).is_dir() else 'failed', 'reason': value})
+        if value == 'auto':
+            if catalogs_error:
+                checks.append({'name': 'catalog_directory', 'subject': name, 'status': 'failed', 'reason': catalogs_error})
+            elif name not in catalogs_doc:
+                checks.append({'name': 'catalog_directory', 'subject': name, 'status': 'failed', 'reason': f'catalogs.yaml 中未声明 {name}'})
+            else:
+                resolved = resolve_catalog_root(machine, name, catalogs_doc[name])
+                checks.append({
+                    'name': 'catalog_directory',
+                    'subject': name,
+                    'status': 'passed' if resolved.is_dir() else 'failed',
+                    'reason': f'auto -> {resolved}',
+                })
+        else:
+            checks.append({'name': 'catalog_directory', 'subject': name, 'status': 'passed' if Path(value).is_dir() else 'failed', 'reason': value})
     if not machine['agents'] and not machine['apps']:
         checks.append({'name': 'client_bindings', 'status': 'warning', 'reason': '尚未绑定 Agent 或 App；init 不推测客户端和 Profile。'})
     from .core.diagnostics import agent_processes, tool_identity, app_instances, storage_summary
@@ -273,6 +405,10 @@ def main(argv):
         parser.add_argument('--from-machine', type=Path)
         parser.add_argument('--config-dir', type=Path)
         parser.add_argument('--profile-selection', help='Adopt machines/<machine_id>.yaml without changing current Profile choices')
+        parser.add_argument('--auto-catalog-roots', action='store_true', help='将 catalog_roots 中的目录绑定改为 auto，随 catalogs.yaml 自动定位源码缓存')
+        parser.add_argument('--sync-selection', action='store_true', help='同步本机 machine.yaml 与 machines/<machine_id>.yaml 的目标清单差异（默认仅预览）')
+        parser.add_argument('--select', action='append', default=[], metavar='TARGET=PROFILE',
+                            help='配合 --sync-selection 显式指定新增 Agent/App 的 Profile 路径')
         parser.add_argument('--skill', action='append', default=[], metavar='AGENT=SKILL.md')
         parser.add_argument('--retire-script-install', action='store_true')
         parser.add_argument('--write', action='store_true')
@@ -291,6 +427,13 @@ def main(argv):
         else:
             manager = Setup(args)
             state = manager.state_root
+            if args.run:
+                from .core.journal import read_journal
+                run_journal = state / 'runs' / args.run / 'journal.json'
+                if run_journal.is_file() and manager.selection_path is not None:
+                    with_selection = sorted({*manager.recovery_scopes, str(manager.selection_path.parent.resolve())})
+                    if read_journal(run_journal).get('scopes') == with_selection:
+                        manager.recovery_scopes = with_selection
             plan = rollback_plan(manager, args.run) if args.run else manager.plan()
             raw = plan.report
             if args.expect_plan_id and not plan_id_matches(raw['plan_id'], args.expect_plan_id):

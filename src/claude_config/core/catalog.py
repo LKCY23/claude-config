@@ -11,7 +11,7 @@ import subprocess
 from .catalog_schema import validate_catalog
 from .merge import fingerprint
 from .native import parse_json, parse_yaml, snapshot_read
-from .schema import RESOURCE_KINDS, SchemaError, require, validate_catalogs, within
+from .schema import RESOURCE_KINDS, SchemaError, require, resolve_catalog_root, validate_catalogs, within
 from .transaction import PlanStale
 
 
@@ -120,7 +120,7 @@ class CatalogResolver:
                                                    lambda data: validate_catalogs(parse_yaml(data)))
         require(alias in self.catalogs['catalogs'] and alias in self.manager.machine['catalog_roots'], 'Selected catalog is not declared and bound: ' + alias)
         declared = self.catalogs['catalogs'][alias]
-        reference = Path(self.manager.machine['catalog_roots'][alias])
+        reference = resolve_catalog_root(self.manager.machine, alias, declared, state_root=self.manager.state_root)
         root = reference.resolve()
         self.manager.references[reference] = root
         self._verify(root, declared['repo'], declared['commit'])

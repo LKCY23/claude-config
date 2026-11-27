@@ -101,15 +101,18 @@ def inspect_baselines(machine_path, *, catalog_filter=None):
         commit = entry['commit']
         expected_checkout = state_root / 'sources' / repo.replace('/', '--') / commit
         expected_record = state_root / 'releases' / repo.replace('/', '--') / ('baseline-' + commit) / (alias + '.baseline.json')
-        bound_root = catalog_roots.get(alias)
-        cached_commit, status = _inspect_checkout(bound_root, repo, commit)
+        raw_bound = catalog_roots.get(alias)
+        catalog_root_mode = 'auto' if raw_bound == 'auto' else ('explicit' if raw_bound else 'unbound')
+        effective_root = str(expected_checkout) if raw_bound == 'auto' else raw_bound
+        cached_commit, status = _inspect_checkout(effective_root, repo, commit)
 
         items_by_alias[alias] = {
             'alias': alias,
             'repo': repo,
             'catalog_commit': commit,
             'catalog_path': entry['path'],
-            'catalog_root': bound_root,
+            'catalog_root': effective_root,
+            'catalog_root_mode': catalog_root_mode,
             'cached_commit': cached_commit,
             'expected_checkout': str(expected_checkout),
             'expected_checkout_exists': expected_checkout.exists(),

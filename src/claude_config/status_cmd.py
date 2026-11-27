@@ -347,6 +347,8 @@ def render_status(report, *, color=False):
         lines.append(f"  {badge}  {item['name']} [{profile_label}] — {detail}")
 
     hints = []
+    if mismatches:
+        hints.append('claude-config init --sync-selection')
     if not baselines.get('aligned', True):
         hints.append('claude-config baseline sync --write')
     for item in report['targets']:

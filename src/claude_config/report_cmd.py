@@ -62,19 +62,43 @@ _REQUIRED_REPORT_KEYS = {
 }
 
 
+_SUMMARY_COUNT_KEYS = (
+    'changes', 'conflicts', 'unresolved_conflicts', 'resolved_conflicts', 'blockers',
+)
+_CHECK_COUNT_KEYS = (
+    'passed', 'blocked', 'failed', 'warning', 'not_verified', 'skipped',
+)
+
+
 def _validate_loaded_report(report):
     require(isinstance(report, dict) and _REQUIRED_REPORT_KEYS <= set(report),
             '指定文件不是有效的 claude-config 报告格式。')
+    require(isinstance(report.get('operation'), str) and isinstance(report.get('preview_only'), bool),
+            '报告缺少有效的 operation/preview_only 字段。')
     require(isinstance(report['targets'], list) and len(report['targets']) > 0 and isinstance(report['targets'][0], dict),
             '报告缺少有效的 targets 字段。')
-    require(isinstance(report['summary'], dict) and isinstance(report['summary'].get('checks'), dict),
-            '报告缺少有效的 summary 字段。')
-    require(isinstance(report['execution'], dict) and 'started' in report['execution'],
+    summary = report['summary']
+    require(isinstance(summary, dict)
+            and all(type(summary.get(key)) is int for key in _SUMMARY_COUNT_KEYS),
+            '报告缺少有效的 summary 计数字段。')
+    checks = summary.get('checks')
+    require(isinstance(checks, dict)
+            and all(type(checks.get(key)) is int for key in _CHECK_COUNT_KEYS),
+            '报告缺少有效的 summary.checks 字段。')
+    execution = report['execution']
+    require(isinstance(execution, dict) and isinstance(execution.get('started'), bool),
             '报告缺少有效的 execution 字段。')
-    require(isinstance(report['scope'], dict) and 'selected' in report['scope'] and 'note' in report['scope'],
+    scope = report['scope']
+    require(isinstance(scope, dict) and isinstance(scope.get('selected'), list) and isinstance(scope.get('note'), str),
             '报告缺少有效的 scope 字段。')
-    require(isinstance(report['artifacts'], dict) and 'saved' in report['artifacts'],
+    artifacts = report['artifacts']
+    require(isinstance(artifacts, dict) and isinstance(artifacts.get('saved'), bool)
+            and isinstance(artifacts.get('review_directories'), list)
+            and (not artifacts['saved'] or isinstance(artifacts.get('json_path'), str)),
             '报告缺少有效的 artifacts 字段。')
+    require(all(isinstance(report[key], list) for key in ('checks', 'decisions', 'changes', 'conflicts', 'blockers'))
+            and isinstance(report.get('errors', []), list),
+            '报告列表字段格式无效。')
     require(isinstance(report['recovery'], dict), '报告缺少有效的 recovery 字段。')
 
 

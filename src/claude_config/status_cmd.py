@@ -328,6 +328,12 @@ def render_status(report, *, color=False):
             if not g['needs_sync']:
                 badge = _style('✓ 已对齐', _ANSI_GREEN, color)
                 lines.append(f'  {badge}  {aliases} @ {declared}')
+            elif g['status'] == 'dirty_cache':
+                badge = _style('! 缓存异常', _ANSI_YELLOW, color)
+                lines.append(f'  {badge}  {aliases}: 本地缓存存在未提交改动或来源不匹配 (@ {cached})')
+            elif g['status'] == 'invalid_checkout':
+                badge = _style('! 缓存无效', _ANSI_YELLOW, color)
+                lines.append(f'  {badge}  {aliases}: 本地缓存不是有效 Git 仓库')
             else:
                 badge = _style('! 需同步', _ANSI_YELLOW, color)
                 lines.append(f'  {badge}  {aliases}: 本地 {cached} -> 声明 {declared}')

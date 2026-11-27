@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 
 from .core.baseline import adopt_baseline, baseline_group, catalog_target, default_agent_for_machine
-from .core.catalog import git
+from .core.catalog import git, verify_git
 from .core.execution_context import progress
 from .core.machine_profiles import MachineProfiles
 from .core.manager import ProfileManager
@@ -34,16 +34,26 @@ def parse_commit_or_release(value):
     return commit, 'baseline-' + commit
 
 
-def _cached_git_head(checkout_path):
-    """Best-effort read-only check of the HEAD commit in a cached catalog checkout."""
+def _inspect_checkout(checkout_path, repo, commit):
+    """Read-only check of a bound catalog checkout: existence, commit, origin, and clean tree."""
+    if not checkout_path:
+        return None, 'unbound'
     path = Path(checkout_path)
     if not path.exists():
-        return None
+        return None, 'missing_checkout'
     try:
         sha = git(path, 'rev-parse', 'HEAD').decode().strip()
-        return sha if COMMIT.fullmatch(sha) else None
     except (OSError, SchemaError):
-        return None
+        return None, 'invalid_checkout'
+    if not COMMIT.fullmatch(sha):
+        return None, 'invalid_checkout'
+    if sha != commit:
+        return sha, 'stale_cache'
+    try:
+        verify_git(path, repo, commit)
+    except (OSError, SchemaError):
+        return sha, 'dirty_cache'
+    return sha, 'aligned'
 
 
 def _short(sha):
@@ -92,16 +102,7 @@ def inspect_baselines(machine_path, *, catalog_filter=None):
         expected_checkout = state_root / 'sources' / repo.replace('/', '--') / commit
         expected_record = state_root / 'releases' / repo.replace('/', '--') / ('baseline-' + commit) / (alias + '.baseline.json')
         bound_root = catalog_roots.get(alias)
-        cached_commit = _cached_git_head(bound_root) if bound_root else None
-
-        if bound_root is None:
-            status = 'unbound'
-        elif not Path(bound_root).exists():
-            status = 'missing_checkout'
-        elif cached_commit != commit:
-            status = 'stale_cache'
-        else:
-            status = 'aligned'
+        cached_commit, status = _inspect_checkout(bound_root, repo, commit)
 
         items_by_alias[alias] = {
             'alias': alias,
@@ -324,6 +325,8 @@ def render_baseline_status(report, *, color=False):
             reason_map = {
                 'unbound': 'machine.yaml 未绑定 catalog_roots',
                 'missing_checkout': '本地缓存目录缺失',
+                'invalid_checkout': '本地缓存不是有效 Git 仓库',
+                'dirty_cache': '本地缓存存在未提交/未跟踪改动或来源不匹配',
                 'stale_cache': f'缓存版本落后 (本地 {cached} -> 声明 {declared})',
             }
             reason = reason_map.get(group['status'], group['status'])

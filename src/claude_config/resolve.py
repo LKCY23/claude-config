@@ -4,9 +4,10 @@ import shlex
 import sys
 
 from .core.deployment_scope import DeploymentScope
-from .core.execution_context import progress, progress_output
+from .core.execution_context import progress, progress_output, prompt_input
 from .core.journal import unfinished
 from .core.manager import ProfileManager
+from .core.report_viewer import terminal_color_enabled
 from .core.reporting import (
     build_report,
     fallback_state_root,
@@ -16,6 +17,7 @@ from .core.reporting import (
     value_label,
 )
 from .core.schema import SchemaError, require
+from .core.terminal_ui import badge, heading, meta_line, style
 from .core.transaction import PlanStale, UnfinishedRun
 from .profile import ReportParser, UsageError, output_report, report_format, report_verbose
 
@@ -72,28 +74,31 @@ def _discover_conflicts(initial_report, target_fp):
     return items
 
 
-def _prompt_for_item(index, total, item, profile_name):
-    print(f'\n[{index}/{total}] ', end='')
+def _prompt_for_item(index, total, item, profile_name, *, color=False):
+    header_idx = style(f'[{index}/{total}]', 'bold', color=color)
     if item['kind'] == 'settings':
-        print(f"设置冲突：{item['pointer']}（{item['label']}）")
-        print(f"  本机当前：{item['before_display']}")
-        print(f"  配置库值：{item['incoming_display']} ({profile_name})")
+        label_txt = style(f"（{item['label']}）", 'muted', color=color)
+        print(f"\n{header_idx} {badge('warning', '设置冲突', color=color)}  {item['pointer']}{label_txt}")
+        print(f"  {style('本机当前:', 'muted', color=color)}  {item['before_display']}")
+        print(f"  {style('配置库值:', 'muted', color=color)}  {style(item['incoming_display'], 'cyan', color=color)} {style(f'({profile_name})', 'muted', color=color)}")
         print('  请选择处理方式：')
-        print('    1) 采用配置库值 (source_wins)')
-        print('    2) 保留本机值 (keep_target，仅本次保留)')
-        print('    3) 回写配置库 (export 到 Profile)')
-        print('    4) 跳过')
+        print(f"    {style('1)', 'cyan', color=color)} 采用配置库值 {style('(source_wins)', 'muted', color=color)}")
+        print(f"    {style('2)', 'muted', color=color)} 保留本机值 {style('(keep_target，仅本次保留)', 'muted', color=color)}")
+        print(f"    {style('3)', 'muted', color=color)} 回写配置库 {style('(export 到 Profile)', 'muted', color=color)}")
+        print(f"    {style('4)', 'muted', color=color)} 跳过 {style('(默认)', 'muted', color=color)}")
         mapping = {'1': 'source_wins', '2': 'keep_target', '3': 'export'}
         while True:
-            ans = input('  请选择 [1-4] (默认 4): ').strip()
+            ans = prompt_input('  请选择 [1-4] (默认 4): ').strip()
             if ans in ('', '4', 'skip'):
                 return None
             if ans in mapping:
                 return mapping[ans]
-            print('  请输入 1、2、3 或 4。')
-    print(f"资源冲突：{item['pointer']}（{item['ref']}，涉及 {item['file_changes_count']} 处文件差异）")
+            print(style('  请输入 1、2、3 或 4。', 'warning', color=color))
+    res_txt = style(f"（{item['ref']}，涉及 {item['file_changes_count']} 处文件差异）", 'muted', color=color)
+    print(f"\n{header_idx} {badge('warning', '资源冲突', color=color)}  {item['pointer']}{res_txt}")
     if not item['eligible']:
-        print(f"  提示：当前存在阻断项（{', '.join(item['issues']) or '需先更新来源'}），请用 review-conflicts 查看。")
+        reason_text = ', '.join(item['issues']) or '需先更新来源'
+        print(f"  {badge('warning', f'当前存在阻断项（{reason_text}），请用 review-conflicts 查看。', color=color)}")
         return None
     options = []
     if 'adopt_source' in item['eligible']:
@@ -102,16 +107,17 @@ def _prompt_for_item(index, total, item, profile_name):
         options.append(('keep_local', '本次保留本机版本 (keep_local)'))
     print('  请选择处理方式：')
     for pos, (_, label) in enumerate(options, 1):
-        print(f'    {pos}) {label}')
+        role = 'cyan' if pos == 1 else 'muted'
+        print(f"    {style(f'{pos})', role, color=color)} {label}")
     skip_num = len(options) + 1
-    print(f'    {skip_num}) 跳过')
+    print(f"    {style(f'{skip_num})', 'muted', color=color)} 跳过 {style('(默认)', 'muted', color=color)}")
     while True:
-        ans = input(f'  请选择 [1-{skip_num}] (默认 {skip_num}): ').strip()
+        ans = prompt_input(f'  请选择 [1-{skip_num}] (默认 {skip_num}): ').strip()
         if ans in ('', str(skip_num), 'skip'):
             return None
         if ans.isdigit() and 1 <= int(ans) <= len(options):
             return options[int(ans) - 1][0]
-        print(f'  请输入 1 到 {skip_num} 之间的数字。')
+        print(style(f'  请输入 1 到 {skip_num} 之间的数字。', 'warning', color=color))
 
 
 def _unselected_blocked_report(manager, agent, initial_report, unselected, machine_path):
@@ -230,13 +236,19 @@ def _entry(argv=None):
         else:
             interactive = (sys.stdin.isatty() and sys.stdout.isatty()
                            and args.format != 'json' and not args.dry_run)
+            color = terminal_color_enabled('text' if args.format == 'json' else args.format)
             selections = dict(chosen)
+            if interactive and any(item['pointer'] not in selections for item in discovered):
+                progress(None)
+                print(heading(f'交互式冲突解决 ({args.agent})', color=color))
+                print(meta_line('Profile', manager.entry['profile'], color=color))
+                print(meta_line('原生配置', str(manager.native_path), color=color))
             for idx, item in enumerate(discovered, 1):
                 ptr = item['pointer']
                 if ptr in selections:
                     continue
                 if interactive:
-                    pick = _prompt_for_item(idx, len(discovered), item, manager.entry['profile'])
+                    pick = _prompt_for_item(idx, len(discovered), item, manager.entry['profile'], color=color)
                     if pick is not None:
                         selections[ptr] = pick
             unselected = [item for item in discovered if item['pointer'] not in selections]
@@ -315,6 +327,7 @@ def _entry(argv=None):
             execute = False if args.dry_run else True if args.write else False
             preview_plan = _build_preview()
             if not args.write and not args.dry_run and interactive and preview_plan.report.get('ready', False):
+                progress(None)
                 shown = build_report(
                     preview_plan.report,
                     operation='resolve',
@@ -322,8 +335,8 @@ def _entry(argv=None):
                     manager=manager,
                     context={'machine_file': str(machine_path), 'agent_type': args.agent},
                 )
-                print('\n' + render_text(shown, verbose=args.verbose))
-                execute = input('\n确认执行以上冲突处理？[y/N] ').strip().lower() in ('y', 'yes')
+                print('\n' + render_text(shown, verbose=args.verbose, color=color))
+                execute = prompt_input('\n确认执行以上冲突处理？[y/N] ').strip().lower() in ('y', 'yes')
 
             if not execute or not preview_plan.report.get('ready', False):
                 raw = preview_plan.report
@@ -411,4 +424,5 @@ def _entry(argv=None):
         execution_started=started,
     )
     save_report(report, manager.state_root if manager else fallback_state_root())
+    progress(None)
     return output_report(report, args.format if args else mode, verbose=args.verbose if args else verbose)

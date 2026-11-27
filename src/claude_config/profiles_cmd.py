@@ -6,7 +6,7 @@ import sys
 import yaml
 
 from .core.data_repo import format_dirty_hint
-from .core.execution_context import progress
+from .core.execution_context import progress, prompt_input
 from .core.fields import leaves, validate_settings
 from .core.machine_profiles import MachineProfiles
 from .core.merge import MISSING, get
@@ -17,20 +17,10 @@ from .core.reporting import encode_json, public_value
 from .core.schema import (AGENTS, APPS, PLUGIN_LOCK_SUFFIX, REF, SchemaError, as_pointer,
                           pointer, profile_yaml_files, require, state_directory,
                           validate_machine_profiles, validate_profile, within)
+from .core.terminal_ui import badge, heading, meta_line, pad_display, section, style
 from .core.transaction import FileChange, FilePlan
 from .profile import ReportParser, UsageError, report_format
 from .status_cmd import effective_file_writes
-
-_ANSI_GREEN = '\033[32m'
-_ANSI_YELLOW = '\033[33m'
-_ANSI_CYAN = '\033[36m'
-_ANSI_RED = '\033[31m'
-_ANSI_BOLD = '\033[1m'
-_ANSI_RESET = '\033[0m'
-
-
-def _style(text, code, color):
-    return f'{code}{text}{_ANSI_RESET}' if color else text
 
 
 def _load_local_pins(state_root):
@@ -217,18 +207,19 @@ def build_matrix(machine_path, *, agent_filter=None):
 
 def render_matrix(report, *, color=False):
     lines = [
-        _style(f"Profile 矩阵总览 ({report['machine_id']})", _ANSI_BOLD, color),
-        f"  配置目录: {report['config_dir']}",
+        heading(f"Profile 矩阵总览 ({report['machine_id']})", color=color),
+        meta_line('配置目录', report['config_dir'], color=color),
     ]
     if not report['agents']:
         lines.append('  (未找到匹配的 Agent Profile)')
         return '\n'.join(lines)
     for agent, sec in report['agents'].items():
         lines.append('')
-        lines.append(_style(f'[{agent}]', _ANSI_BOLD, color))
+        lines.append(section(f'[{agent}]', color=color))
+        name_w = max((len(str(p['short'])) for p in sec['profiles']), default=0)
         for p in sec['profiles']:
             machines = '、'.join(p['machines']) if p['machines'] else '(未绑定机器)'
-            lines.append(f"  · {p['short']}  <- 绑定机器: {machines}")
+            lines.append(f"  · {pad_display(p['short'], name_w)}  <- 绑定机器: {machines}")
         if sec['all_plugins']:
             lines.append('  插件对比:')
             for ref in sec['all_plugins']:
@@ -333,23 +324,23 @@ def build_diff(machine_path, spec_a, spec_b):
 
 def render_diff(report, *, color=False):
     lines = [
-        _style(f"Profile 结构对比 ({report['target_type']})", _ANSI_BOLD, color),
-        f"  A: {report['a']['profile']}  (机器: {', '.join(report['a']['machines']) or '无'})",
-        f"  B: {report['b']['profile']}  (机器: {', '.join(report['b']['machines']) or '无'})",
+        heading(f"Profile 结构对比 ({report['target_type']})", color=color),
+        meta_line('A', f"{report['a']['profile']}  (机器: {', '.join(report['a']['machines']) or '无'})", color=color),
+        meta_line('B', f"{report['b']['profile']}  (机器: {', '.join(report['b']['machines']) or '无'})", color=color),
     ]
     if report['identical']:
-        lines.append(f"  {_style('✓ 完全一致', _ANSI_GREEN, color)}")
+        lines.append(f"  {badge('success', '完全一致', color=color)}")
         return '\n'.join(lines)
     if report['settings_diff']:
         lines.append('')
-        lines.append(_style('设置差异：', _ANSI_BOLD, color))
+        lines.append(section('设置差异：', color=color))
         for item in report['settings_diff']:
             va = item['a'] if item['a_present'] else '<未声明>'
             vb = item['b'] if item['b_present'] else '<未声明>'
             lines.append(f"  · {item['path']}: A={va}  |  B={vb}")
     if report['resources_diff']:
         lines.append('')
-        lines.append(_style('资源差异：', _ANSI_BOLD, color))
+        lines.append(section('资源差异：', color=color))
         for item in report['resources_diff']:
             sa = '已选' if item['a_present'] else '未选'
             sb = '已选' if item['b_present'] else '未选'
@@ -489,18 +480,18 @@ def _plan_copy_item(machine_path, *, src_spec, dst_specs, resource_refs=(), fiel
 def _render_copy_item(report, *, color=False):
     header = 'Profile 项复制预览' if report.get('preview_only') else 'Profile 项复制结果'
     lines = [
-        _style(f"{header} ({report['machine_id']})", _ANSI_BOLD, color),
-        f"  源 Profile: {report['source_profile']}",
+        heading(f"{header} ({report['machine_id']})", color=color),
+        meta_line('源 Profile', report['source_profile'], color=color),
     ]
     for tgt in report['targets']:
         changed = tgt['profile_changed'] or tgt['lock_changed']
         if not changed:
-            badge = _style('✓ 已一致', _ANSI_GREEN, color)
+            status_badge = badge('success', '已一致', color=color)
         elif report.get('preview_only'):
-            badge = _style('→ 待复制', _ANSI_CYAN, color)
+            status_badge = badge('pending', '待复制', color=color)
         else:
-            badge = _style('✓ 已写入', _ANSI_GREEN, color)
-        lines.append(f"  {badge}  {tgt['profile']}")
+            status_badge = badge('success', '已写入', color=color)
+        lines.append(f"  {status_badge}  {tgt['profile']}")
         for act in tgt['actions']:
             lines.append(f'    · {act}')
     if not report.get('has_writes'):
@@ -508,7 +499,7 @@ def _render_copy_item(report, *, color=False):
         lines.append('所有目标均已包含相同声明，无需写入。')
     elif report.get('preview_only'):
         lines.append('')
-        lines.append('提示：当前仅预览，未修改任何 Profile；如需执行请追加 --write。')
+        lines.append(style('提示：当前仅预览，未修改任何 Profile；如需执行请追加 --write。', 'hint', color=color))
     elif report.get('run_id'):
         lines.append('')
         lines.append(f"恢复 Run ID：{report['run_id']}")
@@ -586,7 +577,7 @@ def main(argv):
             progress(None)
             print(_render_copy_item(report, color=color))
             try:
-                execute = input('\n确认执行以上复制写入吗？[y/N]: ').strip().lower() in ('y', 'yes')
+                execute = prompt_input('\n确认执行以上复制写入吗？[y/N]: ').strip().lower() in ('y', 'yes')
             except (EOFError, KeyboardInterrupt):
                 execute = False
             if not execute:

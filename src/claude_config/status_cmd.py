@@ -14,21 +14,11 @@ from .core.manager import ProfileManager
 from .core.report_viewer import terminal_color_enabled
 from .core.reporting import _logical_changes, encode_json, is_difference, public_value
 from .core.schema import SchemaError, state_directory
+from .core.terminal_ui import badge, heading, meta_line, next_steps, pad_display, section, style
 from .profile import ReportParser, UsageError, report_format
 
 AGENT_ORDER = ('claude-code', 'codex', 'antigravity')
 APP_ORDER = ('codex-app', 'claude-desktop')
-
-_ANSI_GREEN = '\033[32m'
-_ANSI_YELLOW = '\033[33m'
-_ANSI_CYAN = '\033[36m'
-_ANSI_RED = '\033[31m'
-_ANSI_BOLD = '\033[1m'
-_ANSI_RESET = '\033[0m'
-
-
-def _style(text, code, color):
-    return f'{code}{text}{_ANSI_RESET}' if color else text
 
 
 def _short_id(value):
@@ -272,10 +262,10 @@ def _describe_target(item, *, color=False):
     state = item['state']
     logical = item['logical_changes']
     if state == 'synced':
-        badge = _style('✓ 已同步', _ANSI_GREEN, color)
+        status_badge = badge('success', '已同步', color=color)
         detail = '无待应用变更'
     elif state == 'pending':
-        badge = _style('→ 待同步', _ANSI_CYAN, color)
+        status_badge = badge('pending', '待同步', color=color)
         parts = []
         if logical.get('settings'):
             parts.append(f"{logical['settings']} 项设置")
@@ -287,26 +277,26 @@ def _describe_target(item, *, color=False):
         if item.get('plan_id'):
             detail += f" (plan {_short_id(item['plan_id'])})"
     elif state == 'conflict':
-        badge = _style('! 有冲突', _ANSI_YELLOW, color)
+        status_badge = badge('warning', '有冲突', color=color)
         detail = f"{item['conflicts_count']} 处冲突待解决"
     elif state == 'blocked':
-        badge = _style('✗ 被阻塞', _ANSI_RED, color)
+        status_badge = badge('error', '被阻塞', color=color)
         detail = item.get('reason') or '存在阻塞条件'
     else:
-        badge = _style('✗ 检查失败', _ANSI_RED, color)
+        status_badge = badge('error', '检查失败', color=color)
         detail = item.get('reason') or '检查失败'
-    return badge, detail
+    return status_badge, detail
 
 
 def render_status(report, *, color=False):
     lines = [
-        _style(f"全局配置状态 ({report['machine_id']})", _ANSI_BOLD, color),
-        f"  Machine: {report['machine_file']}",
+        heading(f"全局配置状态 ({report['machine_id']})", color=color),
+        meta_line('Machine', report['machine_file'], color=color),
     ]
 
     mismatches = report.get('mismatches', [])
     if mismatches:
-        lines.append(_style('  ⚠ machine.yaml 与 machines/<id>.yaml 存在声明差异（已降级只读展示）：', _ANSI_YELLOW, color))
+        lines.append(style('  ⚠ machine.yaml 与 machines/<id>.yaml 存在声明差异（已降级只读展示）：', 'warning', color=color))
         for row in mismatches[:3]:
             msg = row['message'] if isinstance(row, dict) and 'message' in row else str(row)
             lines.append(f'    - {msg}')
@@ -317,14 +307,14 @@ def render_status(report, *, color=False):
     if data_repo.get('is_git'):
         from .data_cmd import render_data_repo_lines
         lines.append('')
-        lines.append(_style('配置仓库状态：', _ANSI_BOLD, color))
+        lines.append(section('配置仓库状态：', color=color))
         lines.extend(render_data_repo_lines(data_repo, color=color))
 
     lines.append('')
-    lines.append(_style('基线缓存：', _ANSI_BOLD, color))
+    lines.append(section('基线缓存：', color=color))
     baselines = report['baselines']
     if baselines.get('error'):
-        lines.append(f"  {_style('✗ 读取失败', _ANSI_RED, color)}  {baselines['error']}")
+        lines.append(f"  {badge('error', '读取失败', color=color)}  {baselines['error']}")
     elif not baselines.get('groups'):
         lines.append('  (未声明 catalog)')
     else:
@@ -333,28 +323,32 @@ def render_status(report, *, color=False):
             declared = (g['catalog_commit'] or '-')[:8]
             cached = (g['cached_commit'] or '-')[:8]
             if not g['needs_sync']:
-                badge = _style('✓ 已对齐', _ANSI_GREEN, color)
-                lines.append(f'  {badge}  {aliases} @ {declared}')
+                status_badge = badge('success', '已对齐', color=color)
+                lines.append(f'  {status_badge}  {aliases} @ {declared}')
             elif g['status'] == 'dirty_cache':
-                badge = _style('! 缓存异常', _ANSI_YELLOW, color)
-                lines.append(f'  {badge}  {aliases}: 本地缓存存在未提交改动或来源不匹配 (@ {cached})')
+                status_badge = badge('warning', '缓存异常', color=color)
+                lines.append(f'  {status_badge}  {aliases}: 本地缓存存在未提交改动或来源不匹配 (@ {cached})')
             elif g['status'] == 'invalid_checkout':
-                badge = _style('! 缓存无效', _ANSI_YELLOW, color)
-                lines.append(f'  {badge}  {aliases}: 本地缓存不是有效 Git 仓库')
+                status_badge = badge('warning', '缓存无效', color=color)
+                lines.append(f'  {status_badge}  {aliases}: 本地缓存不是有效 Git 仓库')
             else:
-                badge = _style('! 需同步', _ANSI_YELLOW, color)
-                lines.append(f'  {badge}  {aliases}: 本地 {cached} -> 声明 {declared}')
+                status_badge = badge('warning', '需同步', color=color)
+                lines.append(f'  {status_badge}  {aliases}: 本地 {cached} -> 声明 {declared}')
 
     lines.append('')
-    lines.append(_style('配置目标：', _ANSI_BOLD, color))
+    lines.append(section('配置目标：', color=color))
     if not report['targets']:
         lines.append('  (未绑定 agent 或 app)')
+    target_labels = []
     for item in report['targets']:
-        badge, detail = _describe_target(item, color=color)
         profile_label = item.get('profile') or '-'
         if item.get('kind') == 'app' and item.get('sync_mode') == 'manual':
             profile_label = f'{profile_label} | manual'
-        lines.append(f"  {badge}  {item['name']} [{profile_label}] — {detail}")
+        target_labels.append(f"{item['name']} [{profile_label}]")
+    label_w = max((len(lbl) for lbl in target_labels), default=0)
+    for item, target_label in zip(report['targets'], target_labels):
+        status_badge, detail = _describe_target(item, color=color)
+        lines.append(f"  {status_badge}  {pad_display(target_label, label_w)} — {detail}")
 
     hints = []
     if data_repo.get('is_git') and (data_repo.get('dirty') or data_repo.get('ahead', 0) > 0):
@@ -370,11 +364,7 @@ def render_status(report, *, color=False):
             hints.append(item['hint'])
     if any(item['state'] == 'pending' for item in report['targets']):
         hints.append('claude-config sync')
-    if hints:
-        lines.append('')
-        lines.append('建议下一步：')
-        for cmd in dict.fromkeys(hints):
-            lines.append(f'  {cmd}')
+    lines.extend(next_steps(hints, color=color))
     return '\n'.join(lines)
 
 

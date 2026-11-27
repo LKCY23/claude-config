@@ -20,7 +20,7 @@ import time
 from .journal import JournalWriter, unfinished, registered_pending, register_run
 
 from .merge import fingerprint
-from .execution_context import progress
+from .execution_context import is_progress_tty, progress
 
 
 class PlanStale(RuntimeError):
@@ -207,6 +207,7 @@ class FilePlan:
         seen = set()
         resolved_parents = {}
         progress_label = '检查计划文件' if prepare else '收集文件变更'
+        progress_step = 50 if is_progress_tty() else max(50, len(self.changes) // 10)
         progress(f'{progress_label}：共 {len(self.changes)} 项')
         for index, change in enumerate(self.changes, 1):
             original = change.path
@@ -239,7 +240,7 @@ class FilePlan:
                 raise ValueError('Delete operations do not carry replacement content')
             if not callable(change.validator):
                 raise ValueError('Every target requires a final-result validator')
-            if index % 50 == 0:
+            if index % progress_step == 0:
                 progress(f'{progress_label}：{index}/{len(self.changes)}')
         sources_is_dict = isinstance(sources, dict)
         for source in sources:

@@ -8,27 +8,17 @@ import sys
 from .baseline_cmd import inspect_baselines, sync_baseline_groups
 from .core.app_manager import AppProfileManager
 from .core.data_repo import pull_repo
-from .core.execution_context import progress
+from .core.execution_context import progress, prompt_input
 from .core.machine_profiles import MachineProfiles
 from .core.manager import ProfileManager
 from .core.report_viewer import terminal_color_enabled
 from .core.reporting import build_report, encode_json, public_value, save_report
 from .core.schema import SchemaError, state_directory
 from .core.source_transport import DEFAULT_GIT_TRANSPORT, GIT_TRANSPORTS
+from .core.terminal_ui import badge, heading, meta_line, next_steps, pad_display, section, style
 from .core.transaction import PlanStale
 from .profile import ReportParser, UsageError, report_format
 from .status_cmd import AGENT_ORDER, APP_ORDER, _classify_target_plan, _ordered_keys, effective_file_writes
-
-_ANSI_GREEN = '\033[32m'
-_ANSI_YELLOW = '\033[33m'
-_ANSI_CYAN = '\033[36m'
-_ANSI_RED = '\033[31m'
-_ANSI_BOLD = '\033[1m'
-_ANSI_RESET = '\033[0m'
-
-
-def _style(text, code, color):
-    return f'{code}{text}{_ANSI_RESET}' if color else text
 
 
 def _select_targets(machine, agent_filter, app_filter, *, agents_only=False):
@@ -120,89 +110,87 @@ def _save_target_report(mgr, raw, state_root, *, operation):
 def render_sync(report, *, color=False):
     header = '全局同步预览' if report['preview_only'] else '全局同步结果'
     lines = [
-        _style(f"{header} ({report['machine_id']})", _ANSI_BOLD, color),
-        f"  Machine: {report['machine_file']}",
+        heading(f"{header} ({report['machine_id']})", color=color),
+        meta_line('Machine', report['machine_file'], color=color),
     ]
 
     data_pull = report.get('data_pull')
     if data_pull is not None:
         lines.append('')
-        lines.append(_style('0. 配置仓库拉取：', _ANSI_BOLD, color))
+        lines.append(section('0. 配置仓库拉取：', color=color))
         if not data_pull.get('ready'):
-            lines.append(f"  {_style('✗ 阻止拉取', _ANSI_RED, color)}  {data_pull.get('reason')}")
+            lines.append(f"  {badge('error', '阻止拉取', color=color)}  {data_pull.get('reason')}")
         elif data_pull.get('status') == 'up_to_date':
-            lines.append(f"  {_style('✓ 已是最新', _ANSI_GREEN, color)}")
+            lines.append(f"  {badge('success', '已是最新', color=color)}")
         elif data_pull.get('status') == 'pending':
-            lines.append(f"  {_style('→ 待拉取', _ANSI_CYAN, color)}  {data_pull.get('would_pull_commits', 0)} 个提交")
+            lines.append(f"  {badge('pending', '待拉取', color=color)}  {data_pull.get('would_pull_commits', 0)} 个提交")
             for f in data_pull.get('updated_files', [])[:5]:
-                lines.append(f'    · {f}')
+                lines.append(f"    {style('· ' + f, 'muted', color=color)}")
         else:
-            lines.append(f"  {_style('✓ 已拉取', _ANSI_GREEN, color)}  {data_pull.get('before_head')} -> {data_pull.get('after_head')} ({data_pull.get('pulled_commits', 0)} 个提交)")
+            lines.append(f"  {badge('success', '已拉取', color=color)}  {data_pull.get('before_head')} -> {data_pull.get('after_head')} ({data_pull.get('pulled_commits', 0)} 个提交)")
 
     baseline_stage = report['baseline']
     if not baseline_stage.get('skipped'):
         lines.append('')
-        lines.append(_style('1. 基线状态：', _ANSI_BOLD, color))
+        lines.append(section('1. 基线状态：', color=color))
         actions = baseline_stage.get('actions', [])
         if not actions:
-            lines.append(f"  {_style('✓ 已对齐', _ANSI_GREEN, color)}")
+            lines.append(f"  {badge('success', '已对齐', color=color)}")
         for item in actions:
             aliases = ', '.join(item['aliases'])
             if item['status'] == 'aligned':
-                lines.append(f"  {_style('✓ 已对齐', _ANSI_GREEN, color)}  {aliases}")
+                lines.append(f"  {badge('success', '已对齐', color=color)}  {aliases}")
             elif item['status'] == 'pending':
-                lines.append(f"  {_style('→ 待同步', _ANSI_CYAN, color)}  {aliases}: {(item['from_commit'] or '-')[:8]} -> {item['to_commit'][:8]}")
+                lines.append(f"  {badge('pending', '待同步', color=color)}  {aliases}: {(item['from_commit'] or '-')[:8]} -> {item['to_commit'][:8]}")
             else:
-                lines.append(f"  {_style('✓ 已同步', _ANSI_GREEN, color)}  {aliases}: {(item['from_commit'] or '-')[:8]} -> {item['to_commit'][:8]}")
+                lines.append(f"  {badge('success', '已同步', color=color)}  {aliases}: {(item['from_commit'] or '-')[:8]} -> {item['to_commit'][:8]}")
 
     lines.append('')
-    lines.append(_style('2. 目标配置：', _ANSI_BOLD, color))
+    lines.append(section('2. 目标配置：', color=color))
     if not report['targets']:
-        lines.append('  (无选定目标)')
+        lines.append(style('  (无选定目标)', 'muted', color=color))
+    name_w = max((len(t['name']) for t in report['targets']), default=0)
     for item in report['targets']:
         outcome = item['outcome']
-        name = item['name']
-        profile = item.get('profile') or '-'
+        name = pad_display(item['name'], name_w)
+        profile = style(f"[{item.get('profile') or '-'}]", 'muted', color=color)
         if outcome == 'applied':
-            badge = _style('✓ 已同步', _ANSI_GREEN, color)
-            lines.append(f'  {badge}  {name} [{profile}] — 已写入 {item.get("applied_changes", 0)} 项')
+            b = badge('success', '已同步', color=color)
+            lines.append(f'  {b}  {name} {profile} — 已写入 {item.get("applied_changes", 0)} 项')
         elif outcome == 'synced':
-            badge = _style('✓ 已最新', _ANSI_GREEN, color)
-            lines.append(f'  {badge}  {name} [{profile}] — 无需更新')
+            b = badge('success', '已最新', color=color)
+            lines.append(f'  {b}  {name} {profile} — 无需更新')
         elif outcome == 'pending':
-            badge = _style('→ 待同步', _ANSI_CYAN, color)
+            b = badge('pending', '待同步', color=color)
             logical = item.get('logical_changes', {})
-            lines.append(f"  {badge}  {name} [{profile}] — 待应用 {logical.get('total', 0) or item.get('pending_file_writes', 0)} 项")
+            lines.append(f"  {b}  {name} {profile} — 待应用 {logical.get('total', 0) or item.get('pending_file_writes', 0)} 项")
         elif outcome == 'skipped_conflict':
-            badge = _style('! 已跳过(冲突)', _ANSI_YELLOW, color)
-            lines.append(f"  {badge}  {name} [{profile}] — {item.get('conflicts_count', 0)} 处冲突，需先执行 {item.get('hint')}")
+            b = badge('warning', '已跳过(冲突)', color=color)
+            lines.append(f"  {b}  {name} {profile} — {item.get('conflicts_count', 0)} 处冲突，需先执行 {style(item.get('hint') or '', 'cmd', color=color)}")
         elif outcome == 'skipped_blocked':
-            badge = _style('✗ 已跳过(阻塞)', _ANSI_RED, color)
-            lines.append(f"  {badge}  {name} [{profile}] — {item.get('reason') or '存在阻塞条件'}")
+            b = badge('error', '已跳过(阻塞)', color=color)
+            lines.append(f"  {b}  {name} {profile} — {item.get('reason') or '存在阻塞条件'}")
         else:
-            badge = _style('✗ 失败', _ANSI_RED, color)
-            lines.append(f"  {badge}  {name} [{profile}] — {item.get('reason') or '执行失败'}")
+            b = badge('error', '失败', color=color)
+            lines.append(f"  {b}  {name} {profile} — {item.get('reason') or '执行失败'}")
 
     manual_skipped = report.get('skipped_manual_apps', [])
     if manual_skipped:
-        lines.append(f"  · 已跳过 manual App：{', '.join(manual_skipped)}（如需同步请显式指定 --app）")
+        lines.append(style(f"  · 已跳过 manual App：{', '.join(manual_skipped)}（如需同步请显式指定 --app）", 'muted', color=color))
 
     if report['preview_only'] and report.get('has_pending'):
         lines.append('')
-        lines.append('提示：当前仅预览，未写入任何目标；如需执行请追加 --yes。')
+        lines.append(style('提示：当前仅预览，未写入任何目标；如需执行请追加 --yes。', 'muted', color=color))
     conflicts = [t for t in report['targets'] if t['outcome'] == 'skipped_conflict']
     if conflicts:
-        lines.append('')
-        lines.append('解决冲突后可再次运行 sync：')
-        for item in conflicts:
-            lines.append(f"  {item['hint']}")
+        lines.extend(next_steps([item['hint'] for item in conflicts], title='解决冲突后可再次运行 sync：', color=color))
     return '\n'.join(lines)
 
 
 def _confirm_sync(report, color):
     print(render_sync(report, color=color))
     try:
-        answer = input('\n确认执行以上同步吗？[y/N]: ').strip().lower()
+        answer = prompt_input('\n确认执行以上同步吗？[y/N]: ').strip().lower()
     except (EOFError, KeyboardInterrupt):
         return False
     return answer in ('y', 'yes')

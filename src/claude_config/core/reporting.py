@@ -779,14 +779,8 @@ def _style_line(text, role, *, color=False):
     safe = clean_text(text)
     if not color or 'NO_COLOR' in os.environ or not role:
         return safe
-    code = {
-        'title': '1;36',
-        'heading': '1;36',
-        'success': '32',
-        'warning': '33',
-        'error': '1;31',
-        'hint': '36',
-    }.get(role)
+    from .terminal_ui import SGR
+    code = SGR.get(role)
     if not code:
         return safe
     return '\n'.join(f'\x1b[{code}m{part}\x1b[0m' if part else '' for part in safe.split('\n'))

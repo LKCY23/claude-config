@@ -1,18 +1,18 @@
 # claude-config
 
-当前版本 **0.11.0**：管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。支持全局状态看板（`status`）、一键同步（`sync` / `sync --pull`）、配置仓库同步（`data status/pull/publish`）、多 Profile 对比协同（`profiles matrix/diff/copy-item`）、交互式冲突解决（`resolve`）、一键基线同步（`baseline`）、[统一插件管理入口](references/plugin-management.md) 与 [按范围同步](references/scoped-deployment.md)。
+当前版本 **0.11.1**：管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。支持全局状态看板（`status`）、一键同步（`sync` / `sync --pull`）、配置仓库同步（`data status/pull/publish`）、多 Profile 对比协同（`profiles matrix/diff/copy-item`）、交互式冲突解决（`resolve`）、一键基线同步（`baseline`）、[统一插件管理入口](references/plugin-management.md) 与 [按范围同步](references/scoped-deployment.md)。
 
 Claudespace 托管资源正文；Profile 选择配置和资源运行参数；Machine 提供本机绑定。同步结果与会话生效分开报告；部署一致性诊断、技能交接与显式退役沿用[现有规则](references/deployment-consistency.md)。
 
 ## 安装
 
 支持 macOS 和 Linux；原生 Windows 执行器尚不支持。macOS App 适配不自动适用于 Linux。
-先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后从明确版本的 [GitHub Release](https://github.com/LKCY23/claude-config/releases) 取得 wheel、`constraints.txt` 和 `install.sh`。使用已登录的 GitHub CLI 下载 0.11.0：
+先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后从明确版本的 [GitHub Release](https://github.com/LKCY23/claude-config/releases) 取得 wheel、`constraints.txt` 和 `install.sh`。使用已登录的 GitHub CLI 下载 0.11.1：
 
 ```sh
-gh release download v0.11.0 --repo LKCY23/claude-config --dir ./claude-config-v0.11.0 \
+gh release download v0.11.1 --repo LKCY23/claude-config --dir ./claude-config-v0.11.1 \
   --pattern '*.whl' --pattern constraints.txt --pattern install.sh
-bash ./claude-config-v0.11.0/install.sh ./claude-config-v0.11.0/claude_config-0.11.0-py3-none-any.whl
+bash ./claude-config-v0.11.1/install.sh ./claude-config-v0.11.1/claude_config-0.11.1-py3-none-any.whl
 claude-config --version
 ```
 

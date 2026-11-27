@@ -4,16 +4,18 @@ import sys
 
 from .profile import ReportParser, UsageError, report_format, report_verbose
 from .core.data_repo import format_dirty_hint
+from .core.execution_context import prompt_input
 from .core.manager import ProfileManager
 from .core.plugin_manager import PluginManager
 from .core.schema import SchemaError, require
 from .core.source_transport import DEFAULT_GIT_TRANSPORT, GIT_TRANSPORTS
+from .core.terminal_ui import badge, heading, meta_line, pad_display, style
 from .core.transaction import PlanStale, UnfinishedRun, plan_id_matches
 from .core.report_viewer import show_report, terminal_color_enabled, terminal_interactive
 from .core.reporting import build_report, encode_json, exit_code, render_text, save_report
 
 
-def summary(report):
+def summary(report, *, color=False):
     intent = report.get('plugin_management')
     if intent:
         before, after = intent.get('before') or {}, intent['after']
@@ -23,32 +25,45 @@ def summary(report):
             'lock': 'Profile 锁文件 (*.plugins.lock.yaml)',
             'unlocked': '已解除钉死（跟随 catalogs.yaml）',
         }.get(intent.get('pin_scope'), intent.get('pin_scope'))
-        lines = [f"插件：{intent['resource']}", f"Profile：{intent['profile']}",
-                 f"版本：{before.get('version') or '未安装'} → {after['version'] or '已移除'}",
-                 f"状态：{flag(before.get('enabled'))} → {'已移除' if intent['action'] == 'remove' else flag(after['enabled'])}",
-                 '范围：当前 Agent 用户级插件；共用配置目录的 CLI / Desktop 会受影响']
+        lines = [
+            heading(f"插件管理：{intent['resource']}", color=color),
+            meta_line('Profile', intent['profile'], color=color),
+            meta_line('版本', f"{before.get('version') or '未安装'} → {after['version'] or '已移除'}", color=color),
+            meta_line('状态', f"{flag(before.get('enabled'))} → {'已移除' if intent['action'] == 'remove' else flag(after['enabled'])}", color=color),
+            meta_line('范围', '当前 Agent 用户级插件；共用配置目录的 CLI / Desktop 会受影响', color=color),
+        ]
         if scope_label and intent['action'] in ('install', 'upgrade', 'unlock'):
-            lines.append('钉死方式：' + scope_label)
+            lines.append(meta_line('钉死方式', scope_label, color=color))
         if intent.get('also_profiles'):
-            lines.append('联动更新锁文件：' + '、'.join(intent['also_profiles']))
+            lines.append(meta_line('联动更新锁文件', '、'.join(intent['also_profiles']), color=color))
         if report.get('plan_id'):
-            lines.append('计划 ID：' + report['plan_id'])
+            lines.append(f"  {style('计划 ID：', 'muted', color=color)}{style(report['plan_id'], 'cmd', color=color)}")
         if intent.get('source'):
-            lines.append('固定提交：' + intent['source']['commit'])
+            lines.append(meta_line('固定提交', intent['source']['commit'], color=color))
         if intent.get('resolution', {}).get('kind') == 'commit':
-            lines.append('来源：明确指定的 Git 提交；不代表已发布 Release')
+            lines.append(meta_line('来源', '明确指定的 Git 提交；不代表已发布 Release', color=color))
         if intent.get('prepared_sources'):
-            lines.append('已准备来源缓存；预览尚未改变 Profile 或插件安装')
+            lines.append(style('  ! 已准备来源缓存；预览尚未改变 Profile 或插件安装', 'hint', color=color))
         if not report.get('preview_only', True):
-            lines.append('会话效果：未验证；如有需要请重新加载插件或重开会话')
+            lines.append(style('  · 会话效果：未验证；如有需要请重新加载插件或重开会话', 'muted', color=color))
         return '\n'.join(lines)
     if report.get('errors') and 'plugins' not in report:
-        return '插件操作未完成。'
-    return '\n'.join(f"{row['resource']}  已装={row.get('installed_version') or '无'}  "
-                     f"声明版本={row.get('selected_version') or '未验证'}  来源={row.get('pin_source') or 'catalog'}  "
-                     f"期望启用={row.get('desired_enabled')}  实际启用={row.get('enabled')}  "
-                     f"状态={row['status']}  会话=未验证"
-                     for row in report.get('plugins', [])) or '当前 Profile 未选择插件。'
+        return badge('error', '插件操作未完成。', color=color)
+    rows = report.get('plugins', [])
+    if not rows:
+        return style('当前 Profile 未选择插件。', 'muted', color=color)
+    lines = [heading(f"插件状态（共 {len(rows)} 项）", color=color)]
+    name_w = max((len(str(row['resource'])) for row in rows), default=12)
+    for row in rows:
+        st = row['status']
+        kind = 'success' if st in ('已同步', 'ok', 'installed') else 'warning' if '待' in st or '未' in st or '冲突' in st else 'muted'
+        lines.append(
+            f"  {badge(kind, st, color=color)}  {pad_display(row['resource'], name_w)}  "
+            f"已装={row.get('installed_version') or '无'}  "
+            f"声明={row.get('selected_version') or '未验证'}  来源={row.get('pin_source') or 'catalog'}  "
+            f"期望启用={row.get('desired_enabled')}  实际启用={row.get('enabled')}"
+        )
+    return '\n'.join(lines)
 
 
 def emit(report, mode, *, verbose=False):
@@ -59,7 +74,7 @@ def emit(report, mode, *, verbose=False):
     if mode == 'tui' and report['artifacts']['saved'] and terminal_interactive(mode):
         viewed = show_report(report)
     color = False if (mode != 'auto' or viewed) else terminal_color_enabled(mode)
-    print(summary(report) + '\n\n' + render_text(report, brief=viewed, verbose=verbose, color=color))
+    print(summary(report, color=color) + '\n\n' + render_text(report, brief=viewed, verbose=verbose, color=color))
     return exit_code(report)
 
 
@@ -132,9 +147,10 @@ def main(argv=None):
             interactive = sys.stdin.isatty() and sys.stdout.isatty() and args.format != 'json'
             execute = args.write
             if not args.write and not args.dry_run and interactive and report['ready']:
+                confirm_color = terminal_color_enabled(args.format)
                 shown = build_report(report, operation=operation, preview_only=True, manager=manager)
-                print(summary(shown) + '\n\n' + render_text(shown))
-                execute = input('执行这份插件计划？[y/N] ').strip().lower() in ('y', 'yes')
+                print(summary(shown, color=confirm_color) + '\n\n' + render_text(shown, color=confirm_color))
+                execute = prompt_input('执行这份插件计划？[y/N] ').strip().lower() in ('y', 'yes')
             if execute and report['ready']:
                 preview = False
                 started = True

@@ -4,7 +4,7 @@ import sys
 
 from .core.baseline import adopt_baseline, baseline_group, catalog_target, default_agent_for_machine
 from .core.catalog import git, verify_git
-from .core.execution_context import progress
+from .core.execution_context import progress, prompt_input
 from .core.machine_profiles import MachineProfiles
 from .core.manager import ProfileManager
 from .core.native import parse_yaml, snapshot_read
@@ -12,16 +12,9 @@ from .core.report_viewer import terminal_color_enabled
 from .core.reporting import build_report, encode_json, public_value, save_report
 from .core.schema import COMMIT, SchemaError, state_directory, validate_catalogs
 from .core.source_transport import DEFAULT_GIT_TRANSPORT, GIT_TRANSPORTS
+from .core.terminal_ui import badge, heading, meta_line, next_steps, style
 from .fetch_baseline import fetch
 from .profile import ReportParser, UsageError, report_format
-
-_ANSI_GREEN = '\033[32m'
-_ANSI_YELLOW = '\033[33m'
-_ANSI_CYAN = '\033[36m'
-_ANSI_RED = '\033[31m'
-_ANSI_DIM = '\033[2m'
-_ANSI_BOLD = '\033[1m'
-_ANSI_RESET = '\033[0m'
 
 
 def parse_commit_or_release(value):
@@ -58,10 +51,6 @@ def _inspect_checkout(checkout_path, repo, commit):
 
 def _short(sha):
     return sha[:8] if isinstance(sha, str) and len(sha) >= 8 else (sha or '-')
-
-
-def _style(text, code, color):
-    return f'{code}{text}{_ANSI_RESET}' if color else text
 
 
 def inspect_baselines(machine_path, *, catalog_filter=None):
@@ -312,18 +301,19 @@ def sync_baseline_groups(
 
 def render_baseline_status(report, *, color=False):
     lines = [
-        _style(f"基线状态 ({report['machine_id']})", _ANSI_BOLD, color),
-        f"  Machine: {report['machine_file']}",
+        heading(f"基线状态 ({report['machine_id']})", color=color),
+        meta_line('Machine', report['machine_file'], color=color),
     ]
     if report.get('mismatches'):
-        lines.append(_style('  ⚠ 存在 machine.yaml 与 machines/<id>.yaml 声明差异，请运行 doctor 查看详情', _ANSI_YELLOW, color))
+        lines.append(f"  {badge('warning', '存在 machine.yaml 与 machines/<id>.yaml 声明差异，请运行 doctor 查看详情', color=color)}")
     for group in report['groups']:
         aliases = ', '.join(group['aliases'])
         declared = _short(group['catalog_commit'])
         cached = _short(group['cached_commit'])
         if not group['needs_sync']:
-            badge = _style('✓ 已对齐', _ANSI_GREEN, color)
-            lines.append(f'  {badge}  {aliases} ({group["repo"]} @ {declared})')
+            b = badge('success', '已对齐', color=color)
+            src_note = style(f"({group['repo']} @ {declared})", 'muted', color=color)
+            lines.append(f"  {b}  {aliases} {src_note}")
         else:
             reason_map = {
                 'unbound': 'machine.yaml 未绑定 catalog_roots',
@@ -333,34 +323,32 @@ def render_baseline_status(report, *, color=False):
                 'stale_cache': f'缓存版本落后 (本地 {cached} -> 声明 {declared})',
             }
             reason = reason_map.get(group['status'], group['status'])
-            badge = _style('! 需同步', _ANSI_YELLOW, color)
-            lines.append(f'  {badge}  {aliases}: {reason}')
+            b = badge('warning', '需同步', color=color)
+            lines.append(f'  {b}  {aliases}: {reason}')
     if not report['aligned']:
-        lines.append('')
-        lines.append('下一步：')
-        lines.append('  claude-config baseline sync --write')
+        lines.extend(next_steps(['claude-config baseline sync --write'], title='下一步：', color=color))
     return '\n'.join(lines)
 
 
 def render_baseline_sync(report, *, color=False):
     header = '基线同步预览' if report['preview_only'] else '基线同步结果'
-    lines = [_style(f"{header} ({report['machine_id']})", _ANSI_BOLD, color)]
+    lines = [heading(f"{header} ({report['machine_id']})", color=color)]
     for item in report['actions']:
         aliases = ', '.join(item['aliases'])
         if item['status'] == 'aligned':
-            badge = _style('✓ 已对齐', _ANSI_GREEN, color)
-            lines.append(f'  {badge}  {aliases} @ {_short(item["to_commit"])}')
+            b = badge('success', '已对齐', color=color)
+            lines.append(f"  {b}  {aliases} {style('@ ' + _short(item['to_commit']), 'muted', color=color)}")
         elif item['status'] == 'pending':
-            badge = _style('→ 待同步', _ANSI_CYAN, color)
+            b = badge('pending', '待同步', color=color)
             fetch_note = '（需先拉取源码与 Release）' if item.get('fetch_needed') else '（本地缓存已就绪，仅更新指向）'
-            lines.append(f'  {badge}  {aliases}: {_short(item["from_commit"])} -> {_short(item["to_commit"])} {fetch_note}')
+            lines.append(f'  {b}  {aliases}: {_short(item["from_commit"])} -> {_short(item["to_commit"])} {fetch_note}')
         else:
-            badge = _style('✓ 已同步', _ANSI_GREEN, color)
+            b = badge('success', '已同步', color=color)
             fetch_note = '（含源码拉取与基线采用）' if item.get('fetched') else '（使用本地缓存完成基线采用）'
-            lines.append(f'  {badge}  {aliases}: {_short(item["from_commit"])} -> {_short(item["to_commit"])} {fetch_note}')
+            lines.append(f'  {b}  {aliases}: {_short(item["from_commit"])} -> {_short(item["to_commit"])} {fetch_note}')
     if report['preview_only'] and report['pending']:
         lines.append('')
-        lines.append('提示：当前仅预览，未写入文件；如需执行请追加 --write 或 --yes。')
+        lines.append(style('提示：当前仅预览，未写入文件；如需执行请追加 --write 或 --yes。', 'muted', color=color))
     elif not report['preview_only'] and any(item['applied'] for item in report['actions']):
         lines.append('')
         lines.append('下一步：可运行 claude-config status 或 claude-config sync 同步各端配置。')
@@ -370,7 +358,7 @@ def render_baseline_sync(report, *, color=False):
 def _confirm_baseline_sync(report, color):
     print(render_baseline_sync(report, color=color))
     try:
-        answer = input('\n确认执行以上基线同步吗？[y/N]: ').strip().lower()
+        answer = prompt_input('\n确认执行以上基线同步吗？[y/N]: ').strip().lower()
     except (EOFError, KeyboardInterrupt):
         return False
     return answer in ('y', 'yes')

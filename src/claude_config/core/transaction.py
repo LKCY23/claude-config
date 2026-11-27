@@ -181,7 +181,11 @@ class FileChange:
 
 class FilePlan:
     def __init__(self, changes, *, sources=(), scopes=(), report=None, directories=(), native_operations=(), native_index=None, steps=None, recovery_guard=None, guards=(), step_guard=None, prepare=True, read_only_reason=None):
-        self.changes = tuple(replace(change, path=Path(change.path).absolute()) for change in changes)
+        self.changes = tuple(
+            change if isinstance(change.path, Path) and change.path.is_absolute()
+            else replace(change, path=Path(change.path).absolute())
+            for change in changes
+        )
         self.native_operations = tuple(native_operations)
         self.recovery_guard = recovery_guard
         self.guards = tuple(guards)
@@ -201,21 +205,30 @@ class FilePlan:
         self.report.setdefault('recovery', None)
         self.blockers = self.report['blockers']
         seen = set()
+        resolved_parents = {}
         progress_label = '检查计划文件' if prepare else '收集文件变更'
         progress(f'{progress_label}：共 {len(self.changes)} 项')
         for index, change in enumerate(self.changes, 1):
-            original = Path(change.path).absolute()
+            original = change.path
             # Keep the actual checked path; resolving must not hide a leaf symlink.
-            resolved = original.resolve()
-            if resolved in seen:
+            if original.is_symlink() or original.name in ('', '.', '..'):
+                resolved_str = str(original.resolve())
+            else:
+                parent = original.parent
+                resolved_parent = resolved_parents.get(parent)
+                if resolved_parent is None:
+                    resolved_parent = str(parent.resolve())
+                    resolved_parents[parent] = resolved_parent
+                resolved_str = '/' + original.name if resolved_parent == '/' else resolved_parent + '/' + original.name
+            if resolved_str in seen:
                 raise ValueError('Multiple owners write the same file; combine field plans first')
-            seen.add(resolved)
+            seen.add(resolved_str)
             expected = change.expected
             if expected is None:
                 expected = file_fingerprint(original)
             elif isinstance(expected, dict):
                 expected = dict(expected)
-            self.paths[original] = {'file': expected, 'resolved': str(resolved)}
+            self.paths[original] = {'file': expected, 'resolved': resolved_str}
             if change.expected is not None and change.expected != self.paths[original]['file']:
                 raise PlanStale('plan_stale during planning: ' + str(original))
             if not isinstance(change.content, bytes):
@@ -228,12 +241,22 @@ class FilePlan:
                 raise ValueError('Every target requires a final-result validator')
             if index % 50 == 0:
                 progress(f'{progress_label}：{index}/{len(self.changes)}')
+        sources_is_dict = isinstance(sources, dict)
         for source in sources:
-            path = Path(source).absolute()
+            path = source if isinstance(source, Path) and source.is_absolute() else Path(source).absolute()
             if path not in self.paths:
-                self.paths[path] = {'file': dict(sources[source]) if isinstance(sources, dict) else file_fingerprint(path),
-                                    'resolved': str(path.resolve())}
-            if isinstance(sources, dict) and sources[source] != self.paths[Path(source).absolute()]['file']:
+                if path.is_symlink() or path.name in ('', '.', '..'):
+                    resolved_str = str(path.resolve())
+                else:
+                    parent = path.parent
+                    resolved_parent = resolved_parents.get(parent)
+                    if resolved_parent is None:
+                        resolved_parent = str(parent.resolve())
+                        resolved_parents[parent] = resolved_parent
+                    resolved_str = '/' + path.name if resolved_parent == '/' else resolved_parent + '/' + path.name
+                self.paths[path] = {'file': dict(sources[source]) if sources_is_dict else file_fingerprint(path),
+                                    'resolved': resolved_str}
+            if sources_is_dict and sources[source] != self.paths[path]['file']:
                 raise PlanStale('plan_stale source during planning: ' + str(source))
         for operation in self.native_operations:
             for path in operation.paths:
@@ -253,11 +276,16 @@ class FilePlan:
         self.report['file_snapshots'] = {str(path): info for path, info in self.paths.items()}
         self.report['directory_snapshots'] = {str(path): {'exists': value['exists'], 'fingerprint': fingerprint(value)} if value is not None else {'not_checked': True}
                                                for path, value in self.directories.items()}
+        empty_digest = hashlib.sha256(b'').hexdigest()
+        self._content_digests = tuple(
+            empty_digest if c.delete else hashlib.sha256(c.content).hexdigest()
+            for c in self.changes
+        )
         identity = {'merge_plan': self.report.get('plan_id'),
                                             'files': self.report['file_snapshots'],
                                             'scopes': self.scopes,
                                             'directories': {str(path): value for path, value in self.directories.items()},
-                                            'outputs': [hashlib.sha256(c.content).hexdigest() for c in self.changes],
+                                            'outputs': list(self._content_digests),
                                             'modes': [c.mode for c in self.changes], 'deletes': [c.delete for c in self.changes]}
         if 'deployment_scope' in self.report:
             identity['deployment_scope'] = self.report['deployment_scope']
@@ -268,8 +296,8 @@ class FilePlan:
         self.report['results'] = [
             {'path': str(change.path), 'owner': change.owner,
              'action': 'delete' if change.delete else 'write',
-             'status': 'unchanged' if self._unchanged(change, self.paths[change.path]['file']) else 'planned'}
-            for change in self.changes]
+             'status': 'unchanged' if self._unchanged(change, self.paths[change.path]['file'], content_sha256=digest) else 'planned'}
+            for change, digest in zip(self.changes, self._content_digests)]
         self.report['results'] += [{'path': str(op.root), 'owner': 'native-plugins', 'action': 'native_plugin', 'status': 'unchanged' if self._native_unchanged(op) else 'planned'} for op in self.native_operations]
         progress(f'{progress_label}完成：{len(self.changes)} 项')
 
@@ -296,10 +324,11 @@ class FilePlan:
         self.paths[path] = {'file': file_fingerprint(path), 'resolved': str(path.resolve())}
 
     @staticmethod
-    def _unchanged(change, before):
+    def _unchanged(change, before, *, content_sha256=None):
         if change.delete:
             return not before['exists']
-        return before.get('sha256') == hashlib.sha256(change.content).hexdigest() and (change.mode is None or before.get('mode') == change.mode)
+        digest = hashlib.sha256(change.content).hexdigest() if content_sha256 is None else content_sha256
+        return before.get('sha256') == digest and (change.mode is None or before.get('mode') == change.mode)
 
     def _recheck(self):
         for path, snapshot in self.paths.items():

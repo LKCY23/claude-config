@@ -1,4 +1,7 @@
 """Unified baseline + agent + app sync workflow."""
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
+from copy import deepcopy
 from pathlib import Path
 import sys
 
@@ -51,60 +54,43 @@ def _select_targets(machine, agent_filter, app_filter, *, agents_only=False):
     return list(agent_filter or ()), list(app_filter or ()), []
 
 
-def _plan_all_targets(machine_file, selected_agents, selected_apps, baselines, *, prepare=False):
-    plans = []
-    items = []
-    for agent in selected_agents:
-        progress(f'规划 {agent} 同步')
-        try:
-            mgr = ProfileManager(machine_file, agent)
-            plan = mgr.plan(prepare=prepare)
-            item = _classify_target_plan('agent', agent, mgr.entry.get('profile'), plan, baselines)
-            plans.append((mgr, plan, item))
-            items.append(item)
-        except Exception as exc:
-            reason = str(exc) if isinstance(exc, SchemaError) else f'{agent} 规划失败'
-            item = {
-                'kind': 'agent',
-                'name': agent,
-                'profile': None,
-                'state': 'error',
-                'plan_id': None,
-                'logical_changes': {'settings': 0, 'resources': 0, 'other': 0, 'total': 0},
-                'pending_file_writes': 0,
-                'conflicts_count': 0,
-                'blockers': [],
-                'reason': reason,
-                'hint': f'claude-config plan --agent {agent}',
-            }
-            plans.append((None, None, item))
-            items.append(item)
+def _plan_one_target(machine_file, kind, name, baselines, *, prepare=False):
+    progress(f'规划 {name} 同步')
+    try:
+        mgr = ProfileManager(machine_file, name) if kind == 'agent' else AppProfileManager(machine_file, name)
+        plan = mgr.plan(prepare=prepare)
+        item = _classify_target_plan(kind, name, mgr.entry.get('profile'), plan, baselines)
+        return mgr, plan, item
+    except Exception as exc:
+        reason = str(exc) if isinstance(exc, SchemaError) else f'{name} 规划失败'
+        item = {
+            'kind': kind,
+            'name': name,
+            'profile': None,
+            'state': 'error',
+            'plan_id': None,
+            'logical_changes': {'settings': 0, 'resources': 0, 'other': 0, 'total': 0},
+            'pending_file_writes': 0,
+            'conflicts_count': 0,
+            'blockers': [],
+            'reason': reason,
+            'hint': f'claude-config plan --{kind} {name}',
+        }
+        return None, None, item
 
-    for app in selected_apps:
-        progress(f'规划 {app} 同步')
-        try:
-            mgr = AppProfileManager(machine_file, app)
-            plan = mgr.plan(prepare=prepare)
-            item = _classify_target_plan('app', app, mgr.entry.get('profile'), plan, baselines)
-            plans.append((mgr, plan, item))
-            items.append(item)
-        except Exception as exc:
-            reason = str(exc) if isinstance(exc, SchemaError) else f'{app} 规划失败'
-            item = {
-                'kind': 'app',
-                'name': app,
-                'profile': None,
-                'state': 'error',
-                'plan_id': None,
-                'logical_changes': {'settings': 0, 'resources': 0, 'other': 0, 'total': 0},
-                'pending_file_writes': 0,
-                'conflicts_count': 0,
-                'blockers': [],
-                'reason': reason,
-                'hint': f'claude-config plan --app {app}',
-            }
-            plans.append((None, None, item))
-            items.append(item)
+
+def _plan_all_targets(machine_file, selected_agents, selected_apps, baselines, *, prepare=False):
+    specs = [('agent', agent) for agent in selected_agents] + [('app', app) for app in selected_apps]
+    if not prepare and len(specs) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(specs))) as pool:
+            futures = [
+                pool.submit(copy_context().run, _plan_one_target, machine_file, kind, name, baselines, prepare=False)
+                for kind, name in specs
+            ]
+            plans = [future.result() for future in futures]
+    else:
+        plans = [_plan_one_target(machine_file, kind, name, baselines, prepare=prepare) for kind, name in specs]
+    items = [item for _, _, item in plans]
     return plans, items
 
 
@@ -287,6 +273,7 @@ def run_sync(
             return preview_report, _sync_exit_code(preview_items)
 
     # Stage 1: sync baseline if pending.
+    baseline_updated = False
     if not skip_baseline and baseline_pending:
         progress('阶段 1：同步基线缓存')
         b_result = sync_baseline_groups(machine_file, git_transport=git_transport, write=True)
@@ -307,13 +294,29 @@ def run_sync(
             )
         baseline_stage = {'skipped': False, 'status': 'synced', 'actions': b_result['actions']}
         baselines = inspect_baselines(machine_file)
+        baseline_updated = True
 
     # Stage 2 & 4: fresh plan(prepare=True) and apply ready targets per target.
-    plans, _ = _plan_all_targets(machine_file, selected_agents, selected_apps, baselines, prepare=True)
+    if baseline_updated:
+        plans, _ = _plan_all_targets(machine_file, selected_agents, selected_apps, baselines, prepare=True)
+    else:
+        plans = []
+        for preview_item in preview_items:
+            if preview_item['state'] == 'pending':
+                plans.append(_plan_one_target(
+                    machine_file, preview_item['kind'], preview_item['name'], baselines, prepare=True,
+                ))
+            else:
+                plans.append((None, None, deepcopy(preview_item)))
+
     result_targets = []
     for mgr, plan, item in plans:
         if mgr is None or plan is None:
-            item['outcome'] = 'error'
+            item['outcome'] = {
+                'synced': 'synced',
+                'conflict': 'skipped_conflict',
+                'blocked': 'skipped_blocked',
+            }.get(item.get('state'), 'error')
             result_targets.append(item)
             continue
         if item['state'] == 'conflict':

@@ -52,8 +52,9 @@ def _is_empty_plugin_dependencies_lockfile(root, entries):
     return isinstance(data, dict) and data.get('name') == 'plugin-dependencies' and data.get('packages') == {}
 
 
-def image_fingerprint(path):
-    value = directory_fingerprint(path)
+def image_fingerprint(path, *, value=None):
+    if value is None:
+        value = directory_fingerprint(path)
     require_image(value['exists'] and bool(value['entries']), 'Native plugin image is missing')
     require_image(all('sha256' in entry for entry in value['entries'].values()), 'Native plugin image contains symlinks')
     ignore_empty_lockfile = _is_empty_plugin_dependencies_lockfile(path, value['entries'])
@@ -264,7 +265,7 @@ class PluginOperation:
         require(isinstance(root, str) and Path(root).is_absolute(), 'Adoption requires a registered local marketplace checkout')
         return str(Path(root).resolve())
 
-    def native(self, receipt, registration_root=None, documents=None):
+    def native(self, receipt, registration_root=None, documents=None, *, dir_cache=None):
         config = self._config(documents)
         selector, market = receipt['selector'], receipt['marketplace']
         allowed_roots = {Path(receipt['market_root']).resolve()}
@@ -317,8 +318,16 @@ class PluginOperation:
             require(isinstance(source, str) and Path(source).resolve() in allowed_roots
                     and (source_type in ('directory', 'local') or registration_root is not None),
                     'Native marketplace registration differs from the selected fixed source')
+        cached_image = None
+        if item is not None:
+            cache_value = dir_cache.get(cache) if dir_cache is not None else None
+            if cache_value is None:
+                cache_value = directory_fingerprint(cache)
+                if dir_cache is not None:
+                    dir_cache[cache] = cache_value
+            cached_image = image_fingerprint(cache, value=cache_value)
         return {'installed': item is not None, 'version': item.get('version') if self.agent == 'claude-code' and item else version if self.agent == 'codex' else None,
-                'image': image_fingerprint(cache) if item is not None else None, 'enabled': enabled, 'marketplace': known is not None}
+                'image': cached_image, 'enabled': enabled, 'marketplace': known is not None}
 
     def install_environment(self, home):
         """Environment for every native installer call, install and restore alike."""
@@ -434,13 +443,18 @@ class PluginOperation:
             if getattr(self, 'checkpoint', None):
                 self.checkpoint(row)
 
-    def unchanged(self):
+    def unchanged(self, *, documents=None, dir_cache=None):
         for item in self.plugins:
             desired = item['desired']
-            actual = self.native(desired, item.get('adoption', item.get('replacement', {})).get('registration_root'))
+            actual = self.native(
+                desired,
+                item.get('adoption', item.get('replacement', {})).get('registration_root'),
+                documents=documents,
+                dir_cache=dir_cache,
+            )
             if not actual['installed'] or not actual['marketplace'] or any(actual[k] != desired[k] for k in ('version', 'image', 'enabled')):
                 return False
-            if self.registered_root(desired['marketplace']) != desired['market_root']:
+            if self.registered_root(desired['marketplace'], documents=documents) != desired['market_root']:
                 return False
         return True
 
@@ -837,11 +851,12 @@ class PluginPlanner:
                 if plugin and plugin['marketplace'] == market:
                     plugin['manifest_snapshot'] = desired
         executable = Path(self.manager.entry['binding']['executable']).resolve()
+        exec_snapshot = self.manager.sources.get(executable) or file_fingerprint(executable)
         definition = {'agent': self.manager.agent, 'root': str(self.manager.native_path.parent.resolve()),
                       'user_config': str(claude_user_config(self.manager.entry['binding']).resolve()) if self.manager.agent == 'claude-code' else None,
-                      'executable': str(executable), 'executable_snapshot': file_fingerprint(executable), 'plugins': self.items}
+                      'executable': str(executable), 'executable_snapshot': exec_snapshot, 'plugins': self.items}
         operation = PluginOperation(definition)
-        self.manager.sources[executable] = definition['executable_snapshot']
+        self.manager.sources[executable] = exec_snapshot
         documents = {}
         for path in operation.paths:
             # The user config is an installer side-effect boundary, not an input
@@ -858,16 +873,35 @@ class PluginPlanner:
         installed = operation.installed_selectors(documents)
         adopted = getattr(self.manager, 'adopt_plugins', {})
         replacements = getattr(self.manager, 'replace_plugins', {})
+        dir_cache = getattr(self.resources, '_dir_fingerprints', {})
         for item in self.items:
             ref, receipt, previous = item['ref'], item['desired'], item['previous']
             replacement = replacements.get(ref)
             registration = operation.registered_root(receipt['marketplace'], documents) if ref in adopted or replacement else None
-            actual = operation.native(receipt, registration, documents)
+            actual = operation.native(receipt, registration, documents, dir_cache=dir_cache)
             managed_market = any(record['native'].get('plugin', {}).get('marketplace') == receipt['marketplace'] for record in self.resources.previous.values())
             require(not actual['marketplace'] or managed_market or registration, 'Native marketplace has unknown management ownership')
             require(not managed_market or actual['marketplace'], 'Managed native marketplace registration was removed')
             parent = operation.cache_parent(receipt)
-            current = directory_fingerprint(parent)
+            current = dir_cache.get(parent)
+            if current is None:
+                current = directory_fingerprint(parent)
+                dir_cache[parent] = current
+                if parent.exists():
+                    # Seed per-version subdirectory caches from the parent scan so
+                    # native() and history validation avoid re-hashing the same files.
+                    for version_name in {name.split('/')[0] for name in current['entries']}:
+                        sub_dir = parent / version_name
+                        prefix = version_name + '/'
+                        dir_cache[sub_dir] = {
+                            'exists': sub_dir.exists(),
+                            'resolved': str(sub_dir.resolve()),
+                            'entries': {
+                                k[len(prefix):]: v
+                                for k, v in current['entries'].items()
+                                if k.startswith(prefix)
+                            },
+                        }
             if not previous:
                 if registration:
                     expected = replacement or receipt
@@ -913,15 +947,20 @@ class PluginPlanner:
                     if version in retained:
                         continue
                     matching = [pin for pin in previous['history'] if cache_version(self.manager.agent, pin) == version]
-                    require(len(matching) == 1 and image_fingerprint(parent / version) == previous['history'][matching[0]]['image'], 'Historical native plugin image has unknown content')
+                    sub_dir = parent / version
+                    sub_value = dir_cache.get(sub_dir)
+                    require(len(matching) == 1 and image_fingerprint(sub_dir, value=sub_value) == previous['history'][matching[0]]['image'], 'Historical native plugin image has unknown content')
                 for historical in previous['history'].values():
                     source = Path(historical['source'])
-                    require(image_fingerprint(source) == historical['image'], 'Historical prepared plugin source drifted')
+                    source_value = dir_cache.get(source)
+                    if source_value is None:
+                        source_value = directory_fingerprint(source)
+                        dir_cache[source] = source_value
+                    require(image_fingerprint(source, value=source_value) == historical['image'], 'Historical prepared plugin source drifted')
                     self.resources.directories.add(source)
-                    for path in source.rglob('*'):
-                        if path.is_file():
-                            _, expected = snapshot_read(path)
-                            self.manager.sources[path] = expected
+                    for rel_name, entry_fp in source_value['entries'].items():
+                        if 'sha256' in entry_fp:
+                            self.manager.sources[source / rel_name] = entry_fp
             before_identity = {key: previous[key] for key in ('selector', 'version', 'image')} if previous else None
             after_identity = {key: receipt[key] for key in ('selector', 'version', 'image')}
             if registration:
@@ -935,7 +974,7 @@ class PluginPlanner:
                                      'Omitted enabled preserves known state; a new installation has a native default')
         # Adoption inputs become part of the operation identity and saved journal.
         operation = PluginOperation({**definition, 'plugins': self.items})
-        if operation.unchanged():
+        if operation.unchanged(documents=documents, dir_cache=dir_cache):
             # Keep ownership/image checks, without scheduling an installer or
             # watching its unrelated user-config and backup side effects.
             self.resources.directories.update(operation.cache_parent(item['desired']) for item in self.items)

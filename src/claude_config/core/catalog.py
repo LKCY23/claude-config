@@ -27,8 +27,9 @@ def git(root, *args, input=None):
 def verify_git(root, repo, commit):
     root = Path(root).resolve()
     require(root.is_dir(), 'Selected source must be prepared before planning')
-    require(Path(git(root, 'rev-parse', '--show-toplevel').decode().strip()).resolve() == root, 'Source root is not a repository root')
-    require(git(root, 'rev-parse', 'HEAD').decode().strip() == commit, 'Selected checkout does not match the fixed commit')
+    lines = git(root, 'rev-parse', '--show-toplevel', 'HEAD').decode().splitlines()
+    require(len(lines) == 2 and Path(lines[0]).resolve() == root, 'Source root is not a repository root')
+    require(lines[1].strip() == commit, 'Selected checkout does not match the fixed commit')
     remote = git(root, 'remote', 'get-url', 'origin').decode().strip()
     match = re.fullmatch(r'(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?', remote)
     require(match is not None and match[1].lower() == repo.lower(), 'Selected repository identity does not match the declared source')
@@ -57,9 +58,16 @@ class CatalogResolver:
         self.loaded = {}
         self.guards = []
         self.repositories = []
+        self._verified = set()
+        self._tracked_cache = {}
 
     def _verify(self, root, repo, commit):
+        root = Path(root).resolve()
+        key = (root, repo.lower(), commit)
+        if key in self._verified:
+            return
         verify_git(root, repo, commit)
+        self._verified.add(key)
         self.repositories.append(root)
         def guard():
             try:
@@ -67,6 +75,42 @@ class CatalogResolver:
             except (ValueError, OSError, subprocess.SubprocessError) as exc:
                 raise PlanStale('Selected resource source changed after planning') from exc
         self.guards.append(guard)
+
+    def _tracked_index(self, repository):
+        repository = Path(repository).resolve()
+        cached = self._tracked_cache.get(repository)
+        if cached is not None:
+            return cached
+        rows = git(repository, 'ls-files', '--stage', '-z').split(b'\0')
+        index = {}
+        for row in rows:
+            if not row:
+                continue
+            metadata, raw_name = row.split(b'\t', 1)
+            mode, oid, stage = metadata.decode().split()
+            index.setdefault(raw_name.decode(), []).append((mode, oid, stage))
+        self._tracked_cache[repository] = index
+        return index
+
+    def _verify_repo_blobs(self, repository, requests):
+        if not requests:
+            return
+        oids = []
+        seen_oids = set()
+        for _, _, _, oid in requests:
+            if oid not in seen_oids:
+                seen_oids.add(oid)
+                oids.append(oid)
+        blobs = io.BytesIO(git(repository, 'cat-file', '--batch', input=''.join(oid + '\n' for oid in oids).encode()))
+        contents = {}
+        for oid in oids:
+            header = blobs.readline().decode().strip().split()
+            require(len(header) == 3 and header[:2] == [oid, 'blob'], 'Resource Git object is missing or not a blob')
+            content = blobs.read(int(header[2]))
+            require(blobs.read(1) == b'\n', 'Resource Git object is missing or not a blob')
+            contents[oid] = content
+        for files, name, _, oid in requests:
+            require(contents[oid] == files[name], 'Resource content differs from its pinned Git object')
 
     def _catalog(self, alias):
         if alias in self.loaded:
@@ -90,22 +134,23 @@ class CatalogResolver:
         self.loaded[alias] = (root, directory, declared, value)
         return self.loaded[alias]
 
-    def _tree(self, repository, root, entry):
+    def _tree(self, repository, root, entry, *, pending_blobs=None):
         files, modes = {}, {}
         is_file = root.is_file()
         base = root.parent if is_file else root
         require(is_file or root.is_dir(), 'Resource source is not a file or directory')
+        repo_key = Path(repository).resolve()
         relative = root.relative_to(repository).as_posix()
-        rows = git(repository, 'ls-files', '--stage', '-z', '--', relative).split(b'\0')
+        index = self._tracked_index(repo_key)
         tracked = {}
-        for row in rows:
-            if not row:
+        for rel_name, entries in index.items():
+            if relative != '.' and rel_name != relative and not rel_name.startswith(relative + '/'):
                 continue
-            metadata, raw_name = row.split(b'\t', 1)
-            mode, oid, stage = metadata.decode().split()
+            require(len(entries) == 1, 'Resource has unresolved Git entries')
+            mode, oid, stage = entries[0]
             require(stage == '0', 'Resource has unresolved Git entries')
             require(mode != '160000', 'Nested submodule must be an explicitly pinned resource source')
-            tracked[repository / raw_name.decode()] = (mode, oid)
+            tracked[repository / rel_name] = (mode, oid)
         selected_files = []
         resolved_base = base.resolve()
         for source, metadata in tracked.items():
@@ -121,9 +166,10 @@ class CatalogResolver:
             if actual != source:
                 target = tracked.get(actual)
                 if target is None:
-                    row = git(repository, 'ls-files', '--stage', '-z', '--', actual.relative_to(repository).as_posix()).rstrip(b'\0')
-                    require(bool(row) and b'\0' not in row, 'Resource symlink target must be tracked')
-                    mode, oid, stage = row.split(b'\t', 1)[0].decode().split()
+                    rel_actual = actual.relative_to(repository).as_posix()
+                    entries = index.get(rel_actual, ())
+                    require(len(entries) == 1, 'Resource symlink target must be tracked')
+                    mode, oid, stage = entries[0]
                     require(stage == '0' and mode in ('100644', '100755'), 'Resource symlink target must be a regular tracked file')
                     target = (mode, oid)
                 metadata = target
@@ -136,13 +182,11 @@ class CatalogResolver:
             modes[name] = 0o700 if expected['mode'] & 0o111 else 0o600
             selected_files.append((name, metadata[1]))
         require(bool(files), 'Selected resource has no tracked files')
-        # One Git request verifies all package bytes against the selected objects.
-        blobs = io.BytesIO(git(repository, 'cat-file', '--batch', input=''.join(oid + '\n' for _, oid in selected_files).encode()))
-        for name, oid in selected_files:
-            header = blobs.readline().decode().strip().split()
-            require(len(header) == 3 and header[:2] == [oid, 'blob'], 'Resource Git object is missing or not a blob')
-            content = blobs.read(int(header[2]))
-            require(blobs.read(1) == b'\n' and content == files[name], 'Resource content differs from its pinned Git object')
+        requests = [(files, name, None, oid) for name, oid in selected_files]
+        if pending_blobs is not None:
+            pending_blobs.setdefault(repo_key, []).extend(requests)
+        else:
+            self._verify_repo_blobs(repo_key, requests)
         selected = root.name if is_file and entry == '.' else str(Path(entry))
         require(selected in files, 'Native entry must be a tracked package file')
         manifest = {name: {'sha256': hashlib.sha256(data).hexdigest(), 'executable': bool(modes[name] & 0o111)} for name, data in files.items()}
@@ -164,6 +208,8 @@ class CatalogResolver:
                 if dependency not in needed:
                     needed.add(dependency)
                     queue.append(dependency)
+        pending_blobs = {}
+        pending_pin_checks = []
         for group, selections in profile.get('resources', {}).items():
             for ref, selection in selections.items():
                 if ref not in needed:
@@ -196,11 +242,11 @@ class CatalogResolver:
                     root = within(catalog_root, source['path'])
                     if source['kind'] == 'submodule':
                         relative = root.relative_to(repository).as_posix()
-                        rows = git(repository, 'ls-files', '--stage', '--', relative).decode().splitlines()
-                        require(len(rows) == 1 and rows[0].split()[:2] == ['160000', source['commit']], 'Submodule pin disagrees with catalog source')
+                        entries = self._tracked_index(repository).get(relative, ())
+                        require(len(entries) == 1 and entries[0][:2] == ('160000', source['commit']), 'Submodule pin disagrees with catalog source')
                         self._verify(root, source['repo'], source['commit'])
                         repository = root
-                entry, files, modes, digest = self._tree(repository, root, item['compatibility'][self.manager.agent]['entry'])
+                entry, files, modes, digest = self._tree(repository, root, item['compatibility'][self.manager.agent]['entry'], pending_blobs=pending_blobs)
                 require(all(location in files for location in compatible.get('entries', {}).values()), 'Declared MCP entry is not a tracked package file: ' + ref)
                 require(not compatible.get('entries') or default_entry in files, 'Default MCP entry is not a tracked package file: ' + ref)
                 if source['kind'] == 'snapshot':
@@ -212,8 +258,13 @@ class CatalogResolver:
                     self.manager.sources[evidence] = expected
                 packages[ref] = Package(ref, group, item, selection, root, entry, files, modes, declared['commit'], digest)
                 if pin is not None:
-                    from .plugin_locks import validate_package_pin
-                    validate_package_pin(packages[ref], pin)
+                    pending_pin_checks.append((packages[ref], pin))
+        for repo_key, requests in pending_blobs.items():
+            self._verify_repo_blobs(repo_key, requests)
+        if pending_pin_checks:
+            from .plugin_locks import validate_package_pin
+            for pkg, pin in pending_pin_checks:
+                validate_package_pin(pkg, pin)
         for ref, package in packages.items():
             for dependency in package.item['requires'].get('resources', []):
                 require(dependency in packages, 'Resource dependency must be explicitly selected: ' + dependency)

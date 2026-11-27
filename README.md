@@ -1,70 +1,81 @@
 # claude-config
 
-当前版本 **0.8.0**：[统一插件管理入口](references/plugin-management.md)，支持 `plugin install/upgrade/enable/disable/list/status`、Profile 级版本锁定、Antigravity Phase A/B 及统一恢复。`plugin --write` 可直接执行，计划 ID 为可选的审核约束。下方 0.7.0 安装说明仍指向先前已发布版本。
+当前版本 **0.9.0**：管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。支持全局状态看板（`status`）、一键同步（`sync`）、交互式冲突解决（`resolve`）、一键基线同步（`baseline`）、[统一插件管理入口](references/plugin-management.md) 与 [按范围同步](references/scoped-deployment.md)。
 
-> 2026-10-28 S9：新增 Claude Desktop 4.29.0 偏好接口审计与包内语言目录适配；Mac mini macOS 27.2 上定向回归、真实源码合成偏好验证及真实 Machine 只读 plan 通过。未升级已安装工具或写入日常偏好。见[实现记录](docs/implementation-20261028-s9.md)。
-
-> 2026-11-04 候选：新增 Claude Desktop 4.4212.0 / 4.16336.0 审计、desktopHome standard/off 与旧 Chat 覆盖语义；声明 API 现在为六字段。Mini 回归、源码/合成文件验证和真实只读 plan 已通过，尚未升级日常 CLI 或应用真实配置。见[实现记录](docs/implementation-20261104-desktop.md)。
-
-> 2026-10-28 S7：新增未发布的五字段 App Profile 声明 API，已在 Mac mini 完成回归与 Bootstrap 合成保存／恢复联调。见 [实现记录](docs/implementation-20261028-s7.md)。本机正式安装尚未升级。
-
-管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。
-Claudespace 托管资源正文；Profile 选择配置和资源运行参数；Machine 提供本机绑定。
-
-0.7.0 增加[按范围同步](references/scoped-deployment.md)：可单独部署设置、资源组、指定资源或字段；无变化插件不再将用户配置与备份轮换纳入无关资源更新。同步结果与会话生效分开报告。部署一致性诊断、技能交接与显式退役沿用[现有规则](references/deployment-consistency.md)。
+Claudespace 托管资源正文；Profile 选择配置和资源运行参数；Machine 提供本机绑定。同步结果与会话生效分开报告；部署一致性诊断、技能交接与显式退役沿用[现有规则](references/deployment-consistency.md)。
 
 ## 安装
 
 支持 macOS 和 Linux；原生 Windows 执行器尚不支持。macOS App 适配不自动适用于 Linux。
-先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后从明确版本的 [GitHub Release](https://github.com/LKCY23/claude-config/releases) 取得 wheel、`constraints.txt` 和 `install.sh`。使用已登录的 GitHub CLI 下载 0.7.0：
+先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后从明确版本的 [GitHub Release](https://github.com/LKCY23/claude-config/releases) 取得 wheel、`constraints.txt` 和 `install.sh`。使用已登录的 GitHub CLI 下载 0.9.0：
 
 ```sh
-gh release download v0.7.0 --repo LKCY23/claude-config --dir ./claude-config-v0.7.0 \
+gh release download v0.9.0 --repo LKCY23/claude-config --dir ./claude-config-v0.9.0 \
   --pattern '*.whl' --pattern constraints.txt --pattern install.sh
-bash ./claude-config-v0.7.0/install.sh ./claude-config-v0.7.0/claude_config-0.7.0-py3-none-any.whl
+bash ./claude-config-v0.9.0/install.sh ./claude-config-v0.9.0/claude_config-0.9.0-py3-none-any.whl
 claude-config --version
 ```
 
 安装器使用 uv 管理的 Python 3.11 和独立工具环境。命令目录未进入 PATH 时，运行 `uv tool update-shell`，然后在已有 tmux 窗格重新加载 shell。
-本文对应 0.7.0。版本 tag 的 macOS/Linux、Python 3.11/3.12 检查全部通过后，CI 才发布固定安装附件；不发布到 PyPI。已安装版本以 `claude-config --version` 为准。
+版本 tag 的 macOS/Linux、Python 3.11/3.12 检查全部通过后，CI 才发布固定安装附件；不发布到 PyPI。已安装版本以 `claude-config --version` 为准。
 
 事务日志、混合插件恢复、进度和运行依赖说明见[执行与恢复](references/execution-recovery.md)。
 
 ## 日常使用
 
+建议优先使用高层工作流，再按需进入单端细粒度操作：
+
+```sh
+claude-config status                                    # 只读全局看板：基线缓存 + 所有端同步与冲突状态
+claude-config sync                                      # 一键对齐基线并同步就绪的 Agent/App（交互确认或 --dry-run / --yes）
+claude-config resolve --agent codex                     # 引导式解决冲突（支持 --choose POINTER=ACTION 非交互）
+claude-config report last                               # 查看最近保存的报告（终端交互树，支持 --format json/text）
+```
+
+单端预览、按范围同步与健康诊断：
+
 ```sh
 claude-config plan --agent codex
 claude-config validate --agent claude-code
 claude-config plan --app codex-app
-claude-config apply --agent codex --expect-plan-id "<reviewed-plan-id>"
-claude-config plan --agent codex --format text
+claude-config apply --agent codex --plan-id "<前缀8-12位或完整plan-id>"
+claude-config plan --agent codex --format text --verbose
 claude-config plan --agent codex --format json
 claude-config doctor --resources --processes --format text
 claude-config doctor --resources --no-save --format json
 ```
 
-按设置字段、资源组或单项资源同步，见[按范围同步](references/scoped-deployment.md)。局部 `apply` 使用与预览相同的选择器及 `--expect-plan-id`。
+按设置字段、资源组或单项资源同步，见[按范围同步](references/scoped-deployment.md)。局部 `apply` 使用与预览相同的选择器及 `--plan-id`（`--expect-plan-id` 别名）。
 
 默认读取 `~/.claude-config-tool/machine.yaml`；`--machine` 可以显式覆盖，不搜索当前工作目录。
 
-跨设备的 Profile 选择保存在配置仓库 `machines/<machine_id>.yaml`；本机 Machine 通过 `profile_selection` 显式引用，只保留路径与依赖。`init --profile-selection machines/<machine_id>.yaml` 预览接管当前选择，`--write --expect-plan-id <ID>` 执行；Git 拉取不会自动 apply。格式、切换与恢复见 [机器绑定规范](references/machine-profile-bindings.md)。
+跨设备的 Profile 选择保存在配置仓库 `machines/<machine_id>.yaml`；本机 Machine 通过 `profile_selection` 显式引用，只保留路径与依赖。`init --profile-selection machines/<machine_id>.yaml` 预览接管当前选择，`--write --plan-id <ID>` 执行；Git 拉取不会自动 apply。格式、切换与恢复见 [机器绑定规范](references/machine-profile-bindings.md)。
 数据默认 `~/claude-config-data`，报告和私有恢复日志默认 `<config_dir>/.state/`。
-TTY/tmux 默认可展开；管道/重定向输出静态文字。配置操作保存完整 JSON；`doctor --no-save` 可仅输出诊断。见 [返回协议](references/report-contract.md)。
+默认以紧凑简洁文本输出；`--verbose` 展开完整保留项；`--format tui` 或 `claude-config report` 打开交互树。配置操作保存完整 JSON；`doctor --no-save` 可仅输出诊断。见 [返回协议](references/report-contract.md)。
 
 ## 获取并采用资源基线
 
+日常使用建议直接运行统一 `baseline` 工作流，自动检查声明与本地缓存差异并串联拉取与采用：
+
 ```sh
-claude-config fetch-baseline --agent codex --catalog claudespace-candidates \
-  --release baseline-<完整40位SHA>
+claude-config baseline status                           # 只读检查 catalogs.yaml 与本地缓存是否对齐
+claude-config baseline sync --write                     # 一键拉取并更新 machine.yaml catalog_roots 指向
+claude-config baseline adopt <40位SHA或baseline-SHA>    # 一步切换并采用指定的发布基线
 ```
 
-获取只准备正式发布记录与明确选择的固定来源，返回下一步采用命令。随后 `adopt-baseline` 预览／执行配置选择，再 `plan/apply` 部署；普通配置检查不联网更新。更换仓库或目录需精确来源映射，私有历史来源继续保持私有。详见[基线获取、采用与恢复](references/baseline-distribution.md)。
+需要分步或底层排查时，仍可使用显式两步命令（`fetch-baseline` 现在可省略 `--agent`，默认选用第一个已绑定 Agent，并支持 `--git-transport gh-https|ssh`）：
+
+```sh
+claude-config fetch-baseline --catalog claudespace-candidates --release baseline-<完整40位SHA>
+```
+
+获取只准备正式发布记录与明确选择的固定来源，返回下一步采用命令；普通配置检查不联网更新。更换仓库或目录需精确来源映射，私有历史来源继续保持私有。详见[基线获取、采用与恢复](references/baseline-distribution.md)。
 
 ## 初始化与迁移
 
 ```sh
 claude-config init --config-dir ~/claude-config-data --format text
-claude-config init --config-dir ~/claude-config-data --write --expect-plan-id "<preview-id>"
+claude-config init --config-dir ~/claude-config-data --write --plan-id "<preview-id>"
 claude-config doctor --format text
 ```
 
@@ -89,6 +100,8 @@ uv pip install -e . -c constraints.txt
 uv build
 PYTHONPATH=src python -m unittest discover -s tests
 ```
+
+阶段性开发记录与历史候选说明归档在[开发与候选记录](docs/dev-log.md)。
 
 Codex Cloud 环境选择 Python 3.11 或更新版本，在 **Setup script** 填写：
 
@@ -116,4 +129,4 @@ bash scripts/setup-cloud.sh
 
 新版 Desktop 的自动检查和订阅 Codex 修复入口见[兼容性自动化](references/desktop-compatibility-automation.md)：Actions 生成待核验草稿 PR，用户在 PR 下委派给 `@codex`，独立 macOS CI 验证修复。无需在仓库保存 OpenAI API Key 或订阅登录凭据；不自动升级用户机器。
 
-Codex App 26.1021.31345 的偏好接口在 0.6.1 完成复验；继续按安装源码签名检查，保留旧接口支持。范围、原生隔离测试及限制见[接口审查](references/codex-app-26.1021.31345-audit.md)。工具升级不自动应用模型或桌面偏好。
+Codex App 26.1021.31345 的偏好接口在 0.6.1 完成复验；继续按安装源码签名检查，保留旧接口支持。范围、原生隔离测试及限制见[接口审查](references/codex-app-26102131345-audit.md)。工具升级不自动应用模型或桌面偏好。

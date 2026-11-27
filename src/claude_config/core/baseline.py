@@ -7,11 +7,24 @@ import yaml
 
 from .catalog import CatalogResolver, git, verify_git
 from .catalog_schema import validate_catalog
+from .machine_profiles import MachineProfiles
 from .merge import MergePlan
 from .native import parse_json, parse_yaml, snapshot_read
-from .schema import (COMMIT, RESOURCE_KINDS, closed, profile_yaml_files, require,
+from .schema import (COMMIT, RESOURCE_KINDS, SchemaError, closed, profile_yaml_files, require,
                      validate_catalogs, validate_machine, validate_profile, within)
 from .transaction import FileChange, FilePlan
+
+
+def default_agent_for_machine(machine_path, preferred=('claude-code', 'codex', 'antigravity')):
+    """Return the first bound agent declared by the machine configuration."""
+    profiles = MachineProfiles(Path(machine_path).expanduser().absolute(), strict=False)
+    agents = profiles.effective.get('agents', {})
+    for name in preferred:
+        if name in agents:
+            return name
+    for name in agents:
+        return name
+    raise SchemaError('machine.yaml 未绑定任何 agent，请使用 --agent 明确指定')
 
 
 def catalog_target(old, alias, commit, source_map=None):

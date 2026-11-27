@@ -24,7 +24,7 @@ def main(argv=None):
     parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--write', action='store_true')
     parser.add_argument('--app-profile', action='append', default=[])
-    parser.add_argument('--expect-plan-id')
+    parser.add_argument('--expect-plan-id', '--plan-id', dest='expect_plan_id')
     try:
         args = parser.parse_args(argv)
     except UsageError as exc:

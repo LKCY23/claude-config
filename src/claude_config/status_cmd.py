@@ -1,4 +1,6 @@
 """Read-only global status dashboard across machine bindings, baselines, agents, and apps."""
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 import hashlib
 from pathlib import Path
 import sys
@@ -9,7 +11,7 @@ from .core.execution_context import progress
 from .core.machine_profiles import MachineProfiles
 from .core.manager import ProfileManager
 from .core.report_viewer import terminal_color_enabled
-from .core.reporting import _logical_changes, build_report, encode_json, public_value
+from .core.reporting import _logical_changes, encode_json, is_difference, public_value
 from .core.schema import SchemaError, state_directory
 from .profile import ReportParser, UsageError, report_format
 
@@ -47,7 +49,9 @@ def effective_file_writes(plan):
     """Count planned file or native-operation writes that actually mutate target state."""
     writes = len(getattr(plan, 'native_operations', ()))
     paths = getattr(plan, 'paths', {})
-    for change in getattr(plan, 'changes', ()):
+    digests = getattr(plan, '_content_digests', None)
+    changes = getattr(plan, 'changes', ())
+    for idx, change in enumerate(changes):
         entry = paths.get(Path(change.path).absolute(), {})
         expected = entry.get('file') if isinstance(entry, dict) else None
         if not isinstance(expected, dict):
@@ -60,7 +64,8 @@ def effective_file_writes(plan):
         if not exists:
             writes += 1
             continue
-        if hashlib.sha256(change.content).hexdigest() != expected.get('sha256'):
+        digest = digests[idx] if digests is not None and idx < len(digests) else hashlib.sha256(change.content).hexdigest()
+        if digest != expected.get('sha256'):
             writes += 1
             continue
         if change.mode is not None and (change.mode & 0o777) != expected.get('mode'):
@@ -70,8 +75,16 @@ def effective_file_writes(plan):
 
 def _classify_target_plan(kind, name, profile_name, plan, baselines):
     raw = plan.report
-    built = build_report(raw, operation='plan', preview_only=True)
-    logical_raw = _logical_changes(built.get('changes', []))
+    decisions = list(raw.get('decisions', []))
+    seen_paths = set()
+    changed_rows = []
+    for row in decisions:
+        if is_difference(row):
+            key = tuple(row.get('path', []))
+            if key not in seen_paths:
+                seen_paths.add(key)
+                changed_rows.append({'path': list(key)})
+    logical_raw = _logical_changes(changed_rows)
     logical = {
         'settings': logical_raw['settings'],
         'resources': logical_raw['packages'],
@@ -80,7 +93,6 @@ def _classify_target_plan(kind, name, profile_name, plan, baselines):
     }
     pending_writes = effective_file_writes(plan)
     blockers = list(raw.get('blockers', []))
-    decisions = list(raw.get('decisions', []))
     resource_conflicts = list(raw.get('resource_conflicts', []))
 
     has_conflict = bool(resource_conflicts) or any(d.get('action') == 'conflict' for d in decisions)
@@ -157,83 +169,68 @@ def inspect_status(machine_path, *, agent_filter=None, app_filter=None):
         selected_agents = list(agent_filter or ()) if agent_filter else []
         selected_apps = list(app_filter or ()) if app_filter else []
 
-    targets = []
     empty_logical = {'settings': 0, 'resources': 0, 'other': 0, 'total': 0}
-    for agent in selected_agents:
-        profile_name = bound_agents[agent].get('profile')
-        if not profile_name:
-            targets.append({
-                'kind': 'agent',
-                'name': agent,
-                'profile': None,
-                'state': 'error',
-                'plan_id': None,
-                'logical_changes': dict(empty_logical),
-                'pending_file_writes': 0,
-                'conflicts_count': 0,
-                'blockers': [],
-                'reason': f'{agent} 仅存在于本机 machine.yaml，缺少 machines/<id>.yaml 中的 Profile 声明',
-                'hint': 'claude-config doctor',
-            })
-            continue
-        progress(f'检查 {agent} 状态')
-        try:
-            mgr = ProfileManager(machine_file, agent, machine_strict=False)
-            plan = mgr.plan(prepare=False)
-            targets.append(_classify_target_plan('agent', agent, profile_name, plan, baselines))
-        except Exception as exc:
-            reason = str(exc) if isinstance(exc, SchemaError) else f'{agent} 状态检查失败'
-            targets.append({
-                'kind': 'agent',
-                'name': agent,
-                'profile': profile_name,
-                'state': 'error',
-                'plan_id': None,
-                'logical_changes': dict(empty_logical),
-                'pending_file_writes': 0,
-                'conflicts_count': 0,
-                'blockers': [],
-                'reason': reason,
-                'hint': 'claude-config baseline sync --write' if not baselines.get('aligned', True) else f'claude-config plan --agent {agent}',
-            })
 
-    for app in selected_apps:
-        profile_name = bound_apps[app].get('profile')
+    def _error_entry(kind, name, profile_name, reason, hint, *, sync_mode=None):
+        entry = {
+            'kind': kind,
+            'name': name,
+            'profile': profile_name,
+            'state': 'error',
+            'plan_id': None,
+            'logical_changes': dict(empty_logical),
+            'pending_file_writes': 0,
+            'conflicts_count': 0,
+            'blockers': [],
+            'reason': reason,
+            'hint': hint,
+        }
+        if sync_mode is not None:
+            entry['sync_mode'] = sync_mode
+        return entry
+
+    def _inspect_one(spec):
+        kind, name, profile_name, sync_mode = spec
         if not profile_name:
-            targets.append({
-                'kind': 'app',
-                'name': app,
-                'profile': None,
-                'state': 'error',
-                'plan_id': None,
-                'logical_changes': dict(empty_logical),
-                'pending_file_writes': 0,
-                'conflicts_count': 0,
-                'blockers': [],
-                'reason': f'{app} 仅存在于本机 machine.yaml，缺少 machines/<id>.yaml 中的 Profile 声明',
-                'hint': 'claude-config doctor',
-            })
-            continue
-        progress(f'检查 {app} 状态')
+            return _error_entry(
+                kind, name, None,
+                f'{name} 仅存在于本机 machine.yaml，缺少 machines/<id>.yaml 中的 Profile 声明',
+                'claude-config doctor',
+                sync_mode=sync_mode,
+            )
+        progress(f'检查 {name} 状态')
         try:
-            mgr = AppProfileManager(machine_file, app, machine_strict=False)
+            if kind == 'agent':
+                mgr = ProfileManager(machine_file, name, machine_strict=False)
+                plan = mgr.plan(prepare=False)
+                return _classify_target_plan('agent', name, profile_name, plan, baselines)
+            mgr = AppProfileManager(machine_file, name, machine_strict=False)
             plan = mgr.plan(prepare=False)
-            targets.append(_classify_target_plan('app', app, profile_name, plan, baselines))
+            item = _classify_target_plan('app', name, profile_name, plan, baselines)
+            item['sync_mode'] = sync_mode
+            return item
         except Exception as exc:
-            reason = str(exc) if isinstance(exc, SchemaError) else f'{app} 状态检查失败'
-            targets.append({
-                'kind': 'app',
-                'name': app,
-                'profile': profile_name,
-                'state': 'error',
-                'plan_id': None,
-                'logical_changes': dict(empty_logical),
-                'pending_file_writes': 0,
-                'conflicts_count': 0,
-                'blockers': [],
-                'reason': reason,
-                'hint': f'claude-config plan --app {app}',
-            })
+            reason = str(exc) if isinstance(exc, SchemaError) else f'{name} 状态检查失败'
+            if kind == 'agent':
+                hint = 'claude-config baseline sync --write' if not baselines.get('aligned', True) else f'claude-config plan --agent {name}'
+            else:
+                hint = f'claude-config plan --app {name}'
+            return _error_entry(kind, name, profile_name, reason, hint, sync_mode=sync_mode)
+
+    specs = [
+        ('agent', agent, bound_agents[agent].get('profile'), None)
+        for agent in selected_agents
+    ] + [
+        ('app', app, bound_apps[app].get('profile'), bound_apps[app].get('sync_mode', 'auto'))
+        for app in selected_apps
+    ]
+    plannable = sum(1 for _, _, profile_name, _ in specs if profile_name)
+    if plannable > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(specs))) as pool:
+            futures = [pool.submit(copy_context().run, _inspect_one, spec) for spec in specs]
+            targets = [future.result() for future in futures]
+    else:
+        targets = [_inspect_one(spec) for spec in specs]
 
     counts = {'synced': 0, 'pending': 0, 'conflict': 0, 'blocked': 0, 'error': 0}
     for item in targets:
@@ -345,9 +342,13 @@ def render_status(report, *, color=False):
     for item in report['targets']:
         badge, detail = _describe_target(item, color=color)
         profile_label = item.get('profile') or '-'
+        if item.get('kind') == 'app' and item.get('sync_mode') == 'manual':
+            profile_label = f'{profile_label} | manual'
         lines.append(f"  {badge}  {item['name']} [{profile_label}] — {detail}")
 
     hints = []
+    if mismatches:
+        hints.append('claude-config init --sync-selection')
     if not baselines.get('aligned', True):
         hints.append('claude-config baseline sync --write')
     for item in report['targets']:

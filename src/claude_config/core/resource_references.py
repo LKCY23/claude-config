@@ -8,24 +8,31 @@ from .schema import require
 
 LINK = re.compile(r'!?\[[^\]\n]*\]\(\s*(<[^>\n]+>|[^\s)]+)(?:\s+["\'][^\n]*?["\'])?\s*\)')
 IMPORT = re.compile(r'(?<![\w\\])@((?:\\ |[^\s`"\'<>])+)')
+_FENCE = re.compile(r'^\s{0,3}(`{3,}|~{3,})')
+_NON_NL = re.compile(r'[^\n]')
+_INLINE_CODE = re.compile(r'(?<!`)(`+)(?!`)(.*?)(?<!`)\1(?!`)', re.S)
 
 
 def prose(text):
     """Mask code without moving offsets used to resolve links in the source."""
+    if '`' not in text and '~' not in text:
+        return text
     lines, fence = [], None
     for line in text.splitlines(keepends=True):
-        match = re.match(r'^\s{0,3}(`{3,}|~{3,})', line)
+        match = _FENCE.match(line)
         if fence:
             if match and match[1][0] == fence[0] and len(match[1]) >= len(fence):
                 fence = None
-            lines.append(re.sub(r'[^\n]', ' ', line))
+            lines.append(_NON_NL.sub(' ', line))
         elif match:
             fence = match[1]
-            lines.append(re.sub(r'[^\n]', ' ', line))
+            lines.append(_NON_NL.sub(' ', line))
         else:
             lines.append(line)
-    return re.sub(r'(?<!`)(`+)(?!`)(.*?)(?<!`)\1(?!`)',
-                  lambda m: re.sub(r'[^\n]', ' ', m[0]), ''.join(lines), flags=re.S)
+    body = ''.join(lines)
+    if '`' not in body:
+        return body
+    return _INLINE_CODE.sub(lambda m: _NON_NL.sub(' ', m[0]), body)
 
 
 def local_target(source, target, files, sibling_files=frozenset()):
@@ -47,7 +54,11 @@ def local_target(source, target, files, sibling_files=frozenset()):
 
 
 def markdown_links(source, content, files, sibling_files=frozenset()):
+    if b'[' not in content:
+        return []
     text = content.decode()
+    if '[' not in text:
+        return []
     result = []
     for match in LINK.finditer(prose(text)):
         raw = match[1]

@@ -1,4 +1,7 @@
 """Unified baseline + agent + app sync workflow."""
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
+from copy import deepcopy
 from pathlib import Path
 import sys
 
@@ -27,9 +30,11 @@ def _style(text, code, color):
     return f'{code}{text}{_ANSI_RESET}' if color else text
 
 
-def _select_targets(machine, agent_filter, app_filter):
+def _select_targets(machine, agent_filter, app_filter, *, agents_only=False):
     bound_agents = machine.get('agents', {})
     bound_apps = machine.get('apps', {})
+    if agents_only and app_filter:
+        raise UsageError('--agents-only 与 --app 不能同时使用')
     if agent_filter:
         for agent in agent_filter:
             if agent not in bound_agents:
@@ -38,65 +43,54 @@ def _select_targets(machine, agent_filter, app_filter):
         for app in app_filter:
             if app not in bound_apps:
                 raise UsageError(f'machine.yaml 中未绑定 app: {app}')
+    if agents_only:
+        agents = list(agent_filter) if agent_filter else _ordered_keys(bound_agents, AGENT_ORDER)
+        return agents, [], []
     if agent_filter is None and app_filter is None:
-        return _ordered_keys(bound_agents, AGENT_ORDER), _ordered_keys(bound_apps, APP_ORDER)
-    return list(agent_filter or ()), list(app_filter or ())
+        all_apps = _ordered_keys(bound_apps, APP_ORDER)
+        auto_apps = [app for app in all_apps if bound_apps[app].get('sync_mode', 'auto') != 'manual']
+        manual_apps = [app for app in all_apps if bound_apps[app].get('sync_mode', 'auto') == 'manual']
+        return _ordered_keys(bound_agents, AGENT_ORDER), auto_apps, manual_apps
+    return list(agent_filter or ()), list(app_filter or ()), []
+
+
+def _plan_one_target(machine_file, kind, name, baselines, *, prepare=False):
+    progress(f'规划 {name} 同步')
+    try:
+        mgr = ProfileManager(machine_file, name) if kind == 'agent' else AppProfileManager(machine_file, name)
+        plan = mgr.plan(prepare=prepare)
+        item = _classify_target_plan(kind, name, mgr.entry.get('profile'), plan, baselines)
+        return mgr, plan, item
+    except Exception as exc:
+        reason = str(exc) if isinstance(exc, SchemaError) else f'{name} 规划失败'
+        item = {
+            'kind': kind,
+            'name': name,
+            'profile': None,
+            'state': 'error',
+            'plan_id': None,
+            'logical_changes': {'settings': 0, 'resources': 0, 'other': 0, 'total': 0},
+            'pending_file_writes': 0,
+            'conflicts_count': 0,
+            'blockers': [],
+            'reason': reason,
+            'hint': f'claude-config plan --{kind} {name}',
+        }
+        return None, None, item
 
 
 def _plan_all_targets(machine_file, selected_agents, selected_apps, baselines, *, prepare=False):
-    plans = []
-    items = []
-    for agent in selected_agents:
-        progress(f'规划 {agent} 同步')
-        try:
-            mgr = ProfileManager(machine_file, agent)
-            plan = mgr.plan(prepare=prepare)
-            item = _classify_target_plan('agent', agent, mgr.entry.get('profile'), plan, baselines)
-            plans.append((mgr, plan, item))
-            items.append(item)
-        except Exception as exc:
-            reason = str(exc) if isinstance(exc, SchemaError) else f'{agent} 规划失败'
-            item = {
-                'kind': 'agent',
-                'name': agent,
-                'profile': None,
-                'state': 'error',
-                'plan_id': None,
-                'logical_changes': {'settings': 0, 'resources': 0, 'other': 0, 'total': 0},
-                'pending_file_writes': 0,
-                'conflicts_count': 0,
-                'blockers': [],
-                'reason': reason,
-                'hint': f'claude-config plan --agent {agent}',
-            }
-            plans.append((None, None, item))
-            items.append(item)
-
-    for app in selected_apps:
-        progress(f'规划 {app} 同步')
-        try:
-            mgr = AppProfileManager(machine_file, app)
-            plan = mgr.plan(prepare=prepare)
-            item = _classify_target_plan('app', app, mgr.entry.get('profile'), plan, baselines)
-            plans.append((mgr, plan, item))
-            items.append(item)
-        except Exception as exc:
-            reason = str(exc) if isinstance(exc, SchemaError) else f'{app} 规划失败'
-            item = {
-                'kind': 'app',
-                'name': app,
-                'profile': None,
-                'state': 'error',
-                'plan_id': None,
-                'logical_changes': {'settings': 0, 'resources': 0, 'other': 0, 'total': 0},
-                'pending_file_writes': 0,
-                'conflicts_count': 0,
-                'blockers': [],
-                'reason': reason,
-                'hint': f'claude-config plan --app {app}',
-            }
-            plans.append((None, None, item))
-            items.append(item)
+    specs = [('agent', agent) for agent in selected_agents] + [('app', app) for app in selected_apps]
+    if not prepare and len(specs) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(specs))) as pool:
+            futures = [
+                pool.submit(copy_context().run, _plan_one_target, machine_file, kind, name, baselines, prepare=False)
+                for kind, name in specs
+            ]
+            plans = [future.result() for future in futures]
+    else:
+        plans = [_plan_one_target(machine_file, kind, name, baselines, prepare=prepare) for kind, name in specs]
+    items = [item for _, _, item in plans]
     return plans, items
 
 
@@ -173,6 +167,10 @@ def render_sync(report, *, color=False):
             badge = _style('✗ 失败', _ANSI_RED, color)
             lines.append(f"  {badge}  {name} [{profile}] — {item.get('reason') or '执行失败'}")
 
+    manual_skipped = report.get('skipped_manual_apps', [])
+    if manual_skipped:
+        lines.append(f"  · 已跳过 manual App：{', '.join(manual_skipped)}（如需同步请显式指定 --app）")
+
     if report['preview_only'] and report.get('has_pending'):
         lines.append('')
         lines.append('提示：当前仅预览，未写入任何目标；如需执行请追加 --yes。')
@@ -206,6 +204,7 @@ def run_sync(
     *,
     agent_filter=None,
     app_filter=None,
+    agents_only=False,
     skip_baseline=False,
     git_transport=DEFAULT_GIT_TRANSPORT,
     dry_run=False,
@@ -218,7 +217,9 @@ def run_sync(
     profiles = MachineProfiles(machine_file, strict=True)
     machine = profiles.effective
     state_root = state_directory(machine)
-    selected_agents, selected_apps = _select_targets(machine, agent_filter, app_filter)
+    selected_agents, selected_apps, skipped_manual_apps = _select_targets(
+        machine, agent_filter, app_filter, agents_only=agents_only,
+    )
 
     baselines = {'aligned': True, 'groups': []} if skip_baseline else inspect_baselines(machine_file)
     baseline_preview = None if skip_baseline else sync_baseline_groups(machine_file, write=False)
@@ -251,6 +252,8 @@ def run_sync(
         'machine_file': str(machine_file),
         'state_root': str(state_root),
         'has_pending': has_pending,
+        'agents_only': agents_only,
+        'skipped_manual_apps': skipped_manual_apps,
         'baseline': baseline_stage,
         'targets': preview_items,
     }
@@ -270,6 +273,7 @@ def run_sync(
             return preview_report, _sync_exit_code(preview_items)
 
     # Stage 1: sync baseline if pending.
+    baseline_updated = False
     if not skip_baseline and baseline_pending:
         progress('阶段 1：同步基线缓存')
         b_result = sync_baseline_groups(machine_file, git_transport=git_transport, write=True)
@@ -290,13 +294,29 @@ def run_sync(
             )
         baseline_stage = {'skipped': False, 'status': 'synced', 'actions': b_result['actions']}
         baselines = inspect_baselines(machine_file)
+        baseline_updated = True
 
     # Stage 2 & 4: fresh plan(prepare=True) and apply ready targets per target.
-    plans, _ = _plan_all_targets(machine_file, selected_agents, selected_apps, baselines, prepare=True)
+    if baseline_updated:
+        plans, _ = _plan_all_targets(machine_file, selected_agents, selected_apps, baselines, prepare=True)
+    else:
+        plans = []
+        for preview_item in preview_items:
+            if preview_item['state'] == 'pending':
+                plans.append(_plan_one_target(
+                    machine_file, preview_item['kind'], preview_item['name'], baselines, prepare=True,
+                ))
+            else:
+                plans.append((None, None, deepcopy(preview_item)))
+
     result_targets = []
     for mgr, plan, item in plans:
         if mgr is None or plan is None:
-            item['outcome'] = 'error'
+            item['outcome'] = {
+                'synced': 'synced',
+                'conflict': 'skipped_conflict',
+                'blocked': 'skipped_blocked',
+            }.get(item.get('state'), 'error')
             result_targets.append(item)
             continue
         if item['state'] == 'conflict':
@@ -331,6 +351,8 @@ def run_sync(
         'machine_file': str(machine_file),
         'state_root': str(state_root),
         'has_pending': False,
+        'agents_only': agents_only,
+        'skipped_manual_apps': skipped_manual_apps,
         'baseline': baseline_stage,
         'targets': result_targets,
     }
@@ -345,6 +367,7 @@ def _build_parser():
     parser.add_argument('--machine', type=Path, default=Path.home() / '.claude-config-tool/machine.yaml')
     parser.add_argument('--agent', action='append', choices=AGENT_ORDER, help='仅同步指定 Agent（可重复）')
     parser.add_argument('--app', action='append', choices=APP_ORDER, help='仅同步指定 App（可重复）')
+    parser.add_argument('--agents-only', action='store_true', help='仅同步 Agent 配置，跳过所有桌面 App')
     parser.add_argument('--skip-baseline', action='store_true', help='跳过第 1 阶段基线检查与同步')
     parser.add_argument('--git-transport', choices=GIT_TRANSPORTS, default=DEFAULT_GIT_TRANSPORT)
     parser.add_argument('--dry-run', action='store_true', help='仅预览各阶段变更，不拉取或写入文件')
@@ -366,6 +389,7 @@ def main(argv):
             args.machine,
             agent_filter=args.agent,
             app_filter=args.app,
+            agents_only=args.agents_only,
             skip_baseline=args.skip_baseline,
             git_transport=args.git_transport,
             dry_run=args.dry_run,

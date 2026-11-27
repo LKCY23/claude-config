@@ -43,7 +43,7 @@ PREVIOUS_AUDITS = {
     }),),
     'codex-app': (('26.1013.31256', 'com.openai.codex', {
         '.vite/build/src-Dtwb7yKT.js': 'a0e4b4b014f04a9391bcfa6a0d6f2b6703590daacf3591831a62fec809b2cb76',
-        '.vite/build/startup-requirements-BlaoVssN.js': '8a38b0850e36b761e0d95e07e93600716db41cb88de98c8e18fb392be25a38e6',
+        '.vite/build/startup-requirements-BlaoVssN.js': '8a38b0850e36b761e0d6f2b6703590716db41cb88de98c8e18fb392be25a38e6',
     }), ('26.1007.21159', 'com.openai.codex', {
         '.vite/build/src-CP7XXlpZ.js': '79623d50989f9efbcb8e5752c56b3cc608a0f5993c05112e03e11b718ac7a586',
         '.vite/build/startup-requirements-C6B1x9gL.js': '73f93b81152bff48cd27bcebcf27c430fb763e5c7418c67824950f4092ba933d',
@@ -56,26 +56,143 @@ PREVIOUS_AUDITS = {
 # These capabilities follow the exact matched source, never a numeric version comparison.
 PACKED_CATALOG_AUDITS = frozenset(('4.29.0', '4.4212.0', '4.16336.0', '4.23118.0'))
 DESKTOP_HOME_AUDITS = frozenset(('4.4212.0', '4.16336.0', '4.23118.0'))
+_MAX_PROBE_MODULE_BYTES = 32 * 1024 * 1024
 
 
-def asar_entries(content, selected):
+def _asar_header(content):
     require(len(content) >= 16, 'Invalid App source archive')
     header_size = struct.unpack_from('<I', content, 4)[0]
     json_size = struct.unpack_from('<I', content, 12)[0]
     require(16 + json_size <= 8 + header_size <= len(content), 'Invalid App source archive bounds')
     tree = mapping(json.loads(content[16:16 + json_size]), 'App source archive header')
+    return header_size, tree
+
+
+def _asar_read_node(content, header_size, node):
+    require(not node.get('unpacked') and 'link' not in node
+            and 'offset' in node and type(node.get('size')) is int and node['size'] >= 0,
+            'Audited App source entry is missing')
+    offset = 8 + header_size + int(node['offset'])
+    require(offset >= 8 + header_size and offset + node['size'] <= len(content), 'App source entry escapes archive')
+    return content[offset:offset + node['size']]
+
+
+def asar_entries(content, selected):
+    header_size, tree = _asar_header(content)
     result = {}
     for name in selected:
         node = tree
         for part in name.split('/'):
             node = mapping(mapping(node.get('files', {}), 'App source archive directory').get(part, {}), 'App source archive entry')
-        require(not node.get('unpacked') and 'link' not in node
-                and 'offset' in node and type(node.get('size')) is int and node['size'] >= 0,
-                'Audited App source entry is missing')
-        offset = 8 + header_size + int(node['offset'])
-        require(offset >= 8 + header_size and offset + node['size'] <= len(content), 'App source entry escapes archive')
-        result[name] = content[offset:offset + node['size']]
+        result[name] = _asar_read_node(content, header_size, node)
     return result
+
+
+def _asar_vite_js_entries(tree):
+    """Return packed `.vite/build/**/*.js` entries inside an asar directory tree."""
+    files_node = tree.get('files', {})
+    if not isinstance(files_node, dict):
+        return []
+    vite = files_node.get('.vite')
+    if not isinstance(vite, dict) or not isinstance(vite.get('files'), dict):
+        return []
+    build = vite['files'].get('build')
+    if not isinstance(build, dict) or not isinstance(build.get('files'), dict):
+        return []
+    found = []
+    def walk(dir_files, prefix):
+        for name, node in sorted(dir_files.items()):
+            if not isinstance(node, dict):
+                continue
+            rel = f'{prefix}/{name}'
+            if isinstance(node.get('files'), dict):
+                walk(node['files'], rel)
+            elif (name.endswith('.js') and not node.get('unpacked') and 'link' not in node
+                  and 'offset' in node and type(node.get('size')) is int and 0 <= node['size'] <= _MAX_PROBE_MODULE_BYTES):
+                found.append((rel, node))
+    walk(build['files'], '.vite/build')
+    return found
+
+
+def _semantic_probe_claude_desktop(content, header_size, tree, settings):
+    """Locate Claude Desktop preference storage/schema contracts dynamically inside .vite/build/."""
+    vite_entries = _asar_vite_js_entries(tree)
+    if not vite_entries:
+        return None
+    main_modules = []
+    main_blobs = []
+    schema_modules = []
+    schema_blobs = []
+    for path, node in vite_entries:
+        blob = _asar_read_node(content, header_size, node)
+        if all(marker in blob for marker in (b'config.json', b'userThemeMode', b'configLibrary', b'_meta.json')):
+            main_modules.append(path)
+            main_blobs.append(blob)
+        elif path == '.vite/build/managedConfigSchemas.js' or b'managedConfigSchemas' in blob or (
+            b'desktopHome' in blob and b'chatTabEnabled' in blob
+        ):
+            schema_modules.append(path)
+            schema_blobs.append(blob)
+    if not main_modules:
+        return None
+
+    combined_blobs = (*main_blobs, *schema_blobs)
+    for key in settings:
+        if key == 'locale':
+            if not any(b'i18n' in blob or b'locale' in blob for blob in main_blobs):
+                return {'missing_field': key}
+            continue
+        marker = key.encode('ascii')
+        if not any(marker in blob for blob in combined_blobs):
+            return {'missing_field': key}
+
+    desktop_home_supported = any(b'desktopHome' in blob for blob in combined_blobs)
+    resources_files = (tree.get('files') or {}).get('resources', {}).get('files', {})
+    i18n_files = resources_files.get('i18n', {}).get('files') if isinstance(resources_files, dict) else None
+    packed_catalog = isinstance(i18n_files, dict)
+    return {
+        'matched_modules': [*main_modules, *schema_modules],
+        'desktop_home_supported': desktop_home_supported,
+        'packed_catalog': packed_catalog,
+    }
+
+
+def _semantic_probe_codex_app(content, header_size, tree, settings):
+    """Locate Codex App desktop preference contracts dynamically inside .vite/build/."""
+    vite_entries = _asar_vite_js_entries(tree)
+    if not vite_entries:
+        return None
+    pref_modules = []
+    pref_blobs = []
+    markers = (b'appearanceTheme', b'composerEnterBehavior', b'followUpQueueMode')
+    for path, node in vite_entries:
+        blob = _asar_read_node(content, header_size, node)
+        if any(marker in blob for marker in markers) or (b'config.toml' in blob and b'desktop' in blob):
+            pref_modules.append(path)
+            pref_blobs.append(blob)
+    if not any(any(marker in blob for marker in markers) for blob in pref_blobs):
+        return None
+    for key in settings:
+        marker = key.encode('ascii')
+        if not any(marker in blob for blob in pref_blobs):
+            return {'missing_field': key}
+    return {'matched_modules': pref_modules}
+
+
+def _validate_locale_catalog(application, archive_data, locale, *, packed, sources):
+    """Verify bundled locale catalog JSON exists and parses as a JSON object."""
+    if packed:
+        name = 'resources/i18n/' + locale + '.json'
+        catalog = asar_entries(archive_data, [name])[name]
+        require(0 < len(catalog) <= 8 * 1024 * 1024 and isinstance(json.loads(catalog), dict),
+                'Selected Claude interface locale has no valid packed catalog')
+    else:
+        catalog = application / 'Contents' / 'Resources' / (locale + '.json')
+        raw, expected = snapshot_read(catalog)
+        require(expected['exists'], 'Selected Claude interface locale has no bundled catalog')
+        require(0 < len(raw) <= 8 * 1024 * 1024 and isinstance(json.loads(raw), dict),
+                'Selected Claude interface locale has no valid bundled catalog')
+        sources[catalog] = expected
 
 
 class AppProbe:
@@ -109,31 +226,55 @@ class AppProbe:
                 if all(hashlib.sha256(entries[name]).hexdigest() == digest for name, digest in hashes.items()):
                     reviewed_version = baseline
                     break
-            require(reviewed_version is not None, 'App source differs from the audited preference interface')
+
+            if reviewed_version is not None:
+                if app == 'claude-desktop' and 'desktopHome' in settings:
+                    stage = 'preference_field'
+                    require(reviewed_version in DESKTOP_HOME_AUDITS,
+                            'desktopHome has not been reviewed for this source interface')
+                if app == 'claude-desktop' and isinstance(settings.get('locale'), str):
+                    stage = 'locale_catalog'
+                    # Selected by the matched source signature, not the build label.
+                    _validate_locale_catalog(
+                        application, data, settings['locale'],
+                        packed=(reviewed_version in PACKED_CATALOG_AUDITS), sources=sources,
+                    )
+                checks.append({
+                    'name': 'app_preference_interface', 'status': 'passed',
+                    'version': version, 'reviewed_version': reviewed_version,
+                    'level': 'installed-source-audit',
+                    'reason': 'Selected preference storage and schemas match reviewed installed code',
+                })
+                return checks
+
+            # L2 semantic source probe when exact Vite chunk hashes change across App updates.
+            header_size, tree = _asar_header(data)
+            semantic = (
+                _semantic_probe_claude_desktop(data, header_size, tree, settings)
+                if app == 'claude-desktop'
+                else _semantic_probe_codex_app(data, header_size, tree, settings)
+            )
+            require(semantic is not None, 'App source differs from the audited preference interface')
+            if 'missing_field' in semantic:
+                stage = 'preference_field'
+                require(False, f"Selected field {semantic['missing_field']} is absent from App preference interface")
             if app == 'claude-desktop' and 'desktopHome' in settings:
                 stage = 'preference_field'
-                require(reviewed_version in DESKTOP_HOME_AUDITS,
-                        'desktopHome has not been reviewed for this source interface')
+                require(semantic['desktop_home_supported'], 'desktopHome has not been verified in this source interface')
             if app == 'claude-desktop' and isinstance(settings.get('locale'), str):
                 stage = 'locale_catalog'
-                # The native setter silently falls back for missing catalogs;
-                # do not claim that an unsupported locale was applied.
-                if reviewed_version in PACKED_CATALOG_AUDITS:
-                    # Selected by the matched source signature, not the build
-                    # label. GCt/QCt resolve this packed location in 4.29.0.
-                    name = 'resources/i18n/' + settings['locale'] + '.json'
-                    catalog = asar_entries(data, [name])[name]
-                    require(0 < len(catalog) <= 8 * 1024 * 1024 and isinstance(json.loads(catalog), dict),
-                            'Selected Claude interface locale has no valid packed catalog')
-                    # The entire archive is already pinned in sources, so a
-                    # catalog change after preview invalidates the same plan.
-                else:
-                    catalog = application / 'Contents' / 'Resources' / (settings['locale'] + '.json')
-                    _, expected = snapshot_read(catalog)
-                    require(expected['exists'], 'Selected Claude interface locale has no bundled catalog')
-                    sources[catalog] = expected
-            checks.append({'name': 'app_preference_interface', 'status': 'passed', 'version': version, 'reviewed_version': reviewed_version,
-                           'level': 'installed-source-audit', 'reason': 'Selected preference storage and schemas match reviewed installed code'})
+                _validate_locale_catalog(
+                    application, data, settings['locale'],
+                    packed=semantic['packed_catalog'], sources=sources,
+                )
+            checks.append({
+                'name': 'app_preference_interface', 'status': 'passed',
+                'version': version, 'reviewed_version': None,
+                'level': 'semantic-source-probe',
+                'matched_modules': semantic['matched_modules'],
+                'desktop_home_supported': bool(semantic.get('desktop_home_supported')),
+                'reason': 'Selected preference storage and field contracts verified via semantic source probe',
+            })
         except (OSError, ValueError, TypeError, KeyError, struct.error):
             reasons = {
                 'application_metadata': '无法读取应用版本元数据；请核对绑定的应用路径',

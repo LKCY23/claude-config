@@ -21,7 +21,7 @@ from .skill_controls import invocation_controls, register_skill_control, validat
 from .agent_options import agent_options, definition_options
 from .resource_conflicts import ResourceConflicts, validate_review
 from .resource_references import package_references, instruction_body
-from .schema import NAME, REF, RESOURCE_KINDS, SchemaError, closed, mapping, pointer, require, within
+from .schema import NAME, REF, RESOURCE_KINDS, SchemaError, closed, mapping, pointer, relative, require, within
 from .transaction import FileChange, file_fingerprint
 
 START, END = '<!-- claude-config:begin -->', '<!-- claude-config:end -->'
@@ -266,6 +266,50 @@ class ResourcePlan:
         self.plugins = PluginPlanner(self)
         self.conflicts = ResourceConflicts(self, resolutions)
         self.processed = set()
+        self._observed_files = {}
+        self._dir_fingerprints = {}
+        self._resolved_dirs = {}
+        self._scanned_files = {}
+
+    def _scan_dir_files(self, root):
+        """Return (resolved_files_set, rel_paths_list, has_symlink) via os.scandir without per-file Path/relative_to allocations."""
+        root_key = Path(root)
+        cached = self._scanned_files.get(root_key)
+        if cached is not None:
+            return cached
+        resolved_root_str = str(root_key.resolve())
+        existing = set()
+        rel_files = []
+        has_symlink = False
+        stack = [('', str(root_key))]
+        while stack:
+            rel_prefix, current_dir = stack.pop()
+            with os.scandir(current_dir) as it:
+                for entry in it:
+                    name = entry.name
+                    if name in ('__pycache__', '.DS_Store', '.in_use'):
+                        continue
+                    rel_path = name if not rel_prefix else rel_prefix + '/' + name
+                    if entry.is_symlink():
+                        has_symlink = True
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append((rel_path, entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        existing.add(Path(resolved_root_str + '/' + rel_path))
+                        rel_files.append(rel_path)
+        result = (frozenset(existing), tuple(rel_files), has_symlink)
+        self._scanned_files[root_key] = result
+        return result
+
+    def _file_state(self, path):
+        key = Path(path).absolute()
+        cached = self._observed_files.get(key)
+        if cached is not None:
+            return dict(cached)
+        _, snap = snapshot_read(key)
+        self._observed_files[key] = snap
+        return dict(snap)
 
     def _decision(self, ref, path, before, after, action, reason):
         package = self.rendered[ref]['package']
@@ -282,18 +326,41 @@ class ResourcePlan:
         self.checks.append({'name': 'resource_preflight', 'path': ['resources', self.rendered[ref]['package'].group, ref],
                             'status': 'blocked', 'code': code, 'reason': reason})
 
-    def _target(self, root, relative):
-        target = within(root, relative, must_exist=False)
-        require(not any(target.is_relative_to(repository) for repository in self.resolver.repositories), 'Resource destination overlaps an immutable source checkout')
-        self.manager.references[(Path(root) / relative).absolute()] = target
+    def _target(self, root, rel_path):
+        relative(rel_path, 'source path')
+        root_path = Path(root)
+        resolved_root = self._resolved_dirs.get(root_path)
+        if resolved_root is None:
+            resolved_root = root_path.resolve()
+            self._resolved_dirs[root_path] = resolved_root
+        candidate = root_path / rel_path
+        parent = candidate.parent
+        resolved_parent = self._resolved_dirs.get(parent)
+        if resolved_parent is None:
+            resolved_parent = parent.resolve()
+            self._resolved_dirs[parent] = resolved_parent
+        fast = resolved_parent / candidate.name
+        root_str = str(resolved_root)
+        root_prefix = '/' if root_str == '/' else root_str + '/'
+        fast_str = str(fast)
+        if fast.is_symlink() or candidate.name in ('', '.', '..') or not (fast_str == root_str or fast_str.startswith(root_prefix)):
+            target = within(root, rel_path, must_exist=False)
+            target_str = str(target)
+        else:
+            target = fast
+            target_str = fast_str
+        repo_roots = tuple(dict.fromkeys(self.resolver.repositories))
+        require(
+            not any(target_str == str(r) or target_str.startswith('/' if str(r) == '/' else str(r) + '/') for r in repo_roots),
+            'Resource destination overlaps an immutable source checkout',
+        )
+        self.manager.references[candidate.absolute()] = target
         return target
 
     def _write(self, ref, target, content, mode):
         require(target not in self.targets or self.targets[target] == ref, 'Multiple resources own the same native file')
         self.targets[target] = ref
-        current = file_fingerprint(target)
-        if target.exists():
-            _, current = snapshot_read(target)
+        current = self._file_state(target)
         previous = self.previous.get(ref, {}).get('files', {}).get(str(target))
         desired = {'exists': True, 'sha256': hashlib.sha256(content).hexdigest(), 'mode': mode}
         if previous is None and current['exists']:
@@ -314,18 +381,15 @@ class ResourcePlan:
         self.directories.add(root)
         previous = self.previous.get(ref, {}).get('files', {})
         for path, expected in previous.items():
-            if Path(path).is_relative_to(root) and file_fingerprint(path) != expected and ref not in self.conflicts.restore:
+            if Path(path).is_relative_to(root) and self._file_state(path) != expected and ref not in self.conflicts.restore:
                 self._block(ref, 'resource_drift', 'Previously owned resource file changed or disappeared')
                 return
         existing = set()
         if root.exists():
             require(root.is_dir() and not root.is_symlink(), 'Resource directory cannot be a symlink or non-directory')
-            for path in root.rglob('*'):
-                if any(part in ('__pycache__', '.DS_Store', '.in_use') for part in path.relative_to(root).parts):
-                    continue
-                require(not path.is_symlink(), 'Deployed resource contains an unexpected symlink')
-                if path.is_file():
-                    existing.add(path.resolve())
+            scanned_existing, _, has_symlink = self._scan_dir_files(root)
+            require(not has_symlink, 'Deployed resource contains an unexpected symlink')
+            existing = set(scanned_existing)
         wanted = {self._target(root, relative): (content, modes[relative]) for relative, content in files.items()}
         obsolete = []
         for path in existing - set(wanted):
@@ -333,7 +397,7 @@ class ResourcePlan:
             if expected is None:
                 self._block(ref, 'unmanaged_resource_collision', 'Resource directory contains unknown extra files')
                 continue
-            actual = file_fingerprint(path)
+            actual = self._file_state(path)
             if actual != expected and ref not in self.conflicts.restore:
                 self._block(ref, 'resource_drift', 'Obsolete resource file was externally changed')
                 continue

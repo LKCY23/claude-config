@@ -596,7 +596,7 @@ def _antigravity_guard_fingerprint(ag_inventory, rendered, previous=None):
     })
 
 
-def inspect_skills(manager, previous, rendered, native, *, selected_refs=None):
+def inspect_skills(manager, previous, rendered, native, *, selected_refs=None, observed_files=None):
     """Return metadata/checks and a semantic guard, independent of busy DB logs."""
     if selected_refs is not None:
         previous = {ref: row for ref, row in previous.items() if ref in selected_refs}
@@ -625,7 +625,8 @@ def inspect_skills(manager, previous, rendered, native, *, selected_refs=None):
             if not Path(location).is_relative_to(Path(old['native']['root'])):
                 continue
             try:
-                actual = file_fingerprint(location)
+                cached = observed_files.get(Path(location).absolute()) if observed_files is not None else None
+                actual = dict(cached) if cached is not None else file_fingerprint(location)
             except (ValueError, OSError):
                 actual = {'exists': True, 'inspection': 'unsafe_or_unreadable'}
             if expected != actual:
@@ -642,6 +643,20 @@ def inspect_skills(manager, previous, rendered, native, *, selected_refs=None):
         duplicate = manager.agent == 'codex' and legacy != entry and legacy.is_file()
         if manager.agent == 'codex' and item and legacy != entry:
             legacy_snapshots[str(legacy)] = skill_entry(legacy)
+        entry_info = None
+        if observed_files is not None:
+            cached_entry = observed_files.get(entry.absolute())
+            if cached_entry is not None and cached_entry.get('exists') and not entry.is_symlink() and not entry.parent.is_symlink():
+                entry_info = {
+                    'path': str(entry),
+                    'exists': True,
+                    'symlink': False,
+                    'resolved': str(entry.resolve()),
+                    'sha256': cached_entry['sha256'],
+                    'mode': cached_entry['mode'],
+                }
+        if entry_info is None:
+            entry_info = skill_entry(entry)
         row = {'agent_type': manager.agent, 'ref': ref, 'identity': identity,
                'selected': item is not None, 'managed': bool(old),
                'lifecycle': 'selected' if item else 'residual',
@@ -649,7 +664,7 @@ def inspect_skills(manager, previous, rendered, native, *, selected_refs=None):
                'source_fingerprint': item['package'].source_fingerprint if item else old.get('source_fingerprint'),
                'desired_enabled': item['package'].selection.get('options', {}).get('control', {}).get('enabled') if item else None,
                'native_enabled': native_enabled(manager.agent, native, identity, entry),
-               'entry': skill_entry(entry), 'file_changes': changes,
+               'entry': entry_info, 'file_changes': changes,
                'change_counts': dict(Counter(change['kind'] for change in changes)),
                'alternate_entries': candidates,
                'external_managers': ['cc-switch'] if identity in claims['claims'] else [],

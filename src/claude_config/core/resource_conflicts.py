@@ -186,21 +186,38 @@ class ResourceConflicts:
             incoming['instruction'] = {'sha256': hashlib.sha256(desired.encode()).hexdigest()}
             self.native_details[ref] = {'local': {'block': body}, 'incoming': {'block': desired}}
         if 'plugin' in state:
+            from .native import parse_native
             from .native_plugins import PluginOperation
             from .registrations import claude_user_config
             receipt = state['plugin']
             executable = Path(self.manager.entry['binding']['executable']).resolve()
+            exec_snapshot = self.manager.sources.get(executable) or file_fingerprint(executable)
+            self.manager.sources[executable] = exec_snapshot
             operation = PluginOperation({'agent': self.manager.agent, 'root': str(self.manager.native_path.parent.resolve()),
                 'user_config': str(claude_user_config(self.manager.entry['binding']).resolve()) if self.manager.agent == 'claude-code' else None,
-                'executable': str(executable), 'executable_snapshot': file_fingerprint(executable),
+                'executable': str(executable), 'executable_snapshot': exec_snapshot,
                 'plugins': [{'ref': ref, 'desired': receipt, 'previous': receipt}]})
-            for path in operation.paths:
-                if path == operation.user_config:
-                    continue
-                _, expected = snapshot_read(path)
-                self.manager.sources[path] = expected
+            docs = getattr(self, '_plugin_documents', None)
+            if docs is None:
+                docs = {}
+                for path in operation.paths:
+                    if path == operation.user_config:
+                        continue
+                    content, expected = snapshot_read(path)
+                    self.manager.sources[path] = expected
+                    if path == operation.config:
+                        docs[path] = parse_native(operation.agent, content)
+                    elif path.name in ('known_marketplaces.json', 'installed_plugins.json'):
+                        docs[path] = parse_json(content)
+                self._plugin_documents = docs
+            else:
+                for path in operation.paths:
+                    if path == operation.user_config or path in self.manager.sources:
+                        continue
+                    _, expected = snapshot_read(path)
+                    self.manager.sources[path] = expected
             self.r.directories.add(operation.cache_parent(receipt))
-            result['plugin'] = operation.native(receipt)
+            result['plugin'] = operation.native(receipt, documents=docs, dir_cache=self.r._dir_fingerprints)
             incoming['plugin'] = {'image': item['rendered_fingerprint'], 'options': item['package'].selection.get('options', {})}
             if not result['plugin']['installed'] or not result['plugin']['marketplace'] or any(result['plugin'][key] != receipt[key] for key in ('version', 'image')):
                 issues.append('plugin_version_or_image_unknown')
@@ -242,6 +259,7 @@ class ResourceConflicts:
             path = Path(location)
             data, actual = snapshot_read(path)
             self.manager.sources[path] = actual
+            self.r._observed_files[path] = actual
             local_files[location] = actual
             if actual != expected:
                 base_data = None
@@ -263,10 +281,18 @@ class ResourceConflicts:
             roots.append(Path(old['native']['root']))
         for root in roots:
             self.r.directories.add(root)
-            world = directory_fingerprint(root)
-            for relative, value in world['entries'].items():
-                if str(root / relative) not in base_files or value.get('kind') == 'symlink':
+            if root.is_symlink() or (root.exists() and not root.is_dir()):
+                raise ValueError('Resource directory identity changed')
+            if root.exists():
+                _, rel_files, has_symlink = self.r._scan_dir_files(root)
+                if has_symlink:
                     issues.append('unmanaged_resource_collision')
+                else:
+                    root_prefix = str(root) + '/'
+                    for relative in rel_files:
+                        if root_prefix + relative not in base_files:
+                            issues.append('unmanaged_resource_collision')
+                            break
         native, desired_native, native_issues = self._native(ref, item)
         issues.extend(native_issues)
         baseline_native = {}

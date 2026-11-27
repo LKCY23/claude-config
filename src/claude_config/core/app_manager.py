@@ -171,7 +171,7 @@ class AppProfileManager:
             return []
         audit = next((row for row in checks if row.get('name') == 'app_preference_interface'
                       and row.get('status') == 'passed'), {})
-        if audit.get('reviewed_version') not in DESKTOP_HOME_AUDITS:
+        if audit.get('reviewed_version') not in DESKTOP_HOME_AUDITS and not audit.get('desktop_home_supported'):
             return []
         if not ({'chatTabEnabled', 'desktopHome'} & set(projected)):
             return []
@@ -203,9 +203,10 @@ class AppProfileManager:
         state, state_expected = self._state()
         require(selection.full or not state or state['profile'] == name, 'Complete the Profile switch before partial deployment')
         self.deployment_scope = selection.report(refs, fields, (), fields)
-        native, stores, checks = self._native(set(settings) | (set(state.get('declared', {})) if selection.full else set()))
+        native, stores, native_checks = self._native(set(settings) | (set(state.get('declared', {})) if selection.full else set()))
         validate_policies(self.app, run_policy)
-        checks += self.probe.check(self.app, self.application, declared, self.sources)
+        probe_checks = self.probe.check(self.app, self.application, declared, self.sources)
+        checks = [*native_checks, *probe_checks]
         selected = {path for path, _ in leaves(settings)}
         for selector, resolution in mapping(resolutions or {}, 'App drift resolutions').items():
             path = pointer(selector)
@@ -223,10 +224,9 @@ class AppProfileManager:
                           number_fields=[as_pointer(('settings', key)) for key in settings
                                          if registry(self.app).get(key, ('',))[0] == 'number'])
         changes, native_write = [], False
-        ready = not merge.blockers and not any(row['status'] == 'blocked' for row in checks)
         managed = projection(merge.result['settings'], [path for path, _ in leaves(settings)])
-        checks += self._home_semantics(native, merge.result['settings'], checks)
-        if ready:
+        can_plan_without_probe = not merge.blockers and not any(row['status'] == 'blocked' for row in native_checks)
+        if can_plan_without_probe:
             validate_settings(self.app, managed)
             for store, (path, value, original, expected, codec) in stores.items():
                 result = deepcopy(value)
@@ -243,15 +243,35 @@ class AppProfileManager:
                     native_write = True
                     changes.append(FileChange(path, content, 'app-preferences',
                                               lambda data, codec=codec: parse_native(codec, data), expected))
-            if settings or state:
+            new_managed = managed if selection.full else update_leaves(state.get('managed', {}), managed)
+            new_declared = settings if selection.full else update_leaves(state.get('declared', {}), settings)
+            state_dirty = (
+                bool(settings or state)
+                and (
+                    not state
+                    or state.get('profile') != name
+                    or not same(state.get('managed'), new_managed)
+                    or not same(state.get('declared'), new_declared)
+                )
+            )
+            if state_dirty:
                 new_state = {'schema_version': 1, 'kind': 'app-profile-managed-state', 'app': self.app,
                              'scopes': self.recovery_scopes, 'profile': name,
-                             'managed': managed if selection.full else update_leaves(state.get('managed', {}), managed),
-                             'declared': settings if selection.full else update_leaves(state.get('declared', {}), settings)}
+                             'managed': new_managed, 'declared': new_declared}
                 changes.append(FileChange(self.state_path, (json.dumps(new_state, indent=2, ensure_ascii=False) + '\n').encode(),
                                           'app-managed-baseline', lambda data: self._validate_state(parse_json(data)), state_expected))
-            if profile and profile != self.entry['profile']:
+            switch_dirty = bool(profile and profile != self.entry['profile'])
+            if switch_dirty:
                 changes.append(self.machine_profiles.switch('apps', self.app, name))
+            is_noop = not native_write and not state_dirty and not switch_dirty
+            if is_noop:
+                for row in probe_checks:
+                    if row.get('status') == 'blocked' and row.get('code') == 'capability_unknown':
+                        row['status'] = 'warning'
+                        row['reason'] = '原生偏好已与 Profile 一致，无需写入；如需修改偏好需先核对应用接口'
+        if any(row['status'] == 'blocked' for row in checks) or merge.blockers:
+            changes, native_write = [], False
+        checks += self._home_semantics(native, merge.result['settings'], checks)
         operation = 'switch' if profile is not None or state and state['profile'] != name else 'apply'
         plan = self._file_plan(merge, changes, checks, operation, native_write, prepare=prepare)
         plan.report['binding'] = {'previous_profile': state.get('profile', self.entry['profile']), 'profile': name}

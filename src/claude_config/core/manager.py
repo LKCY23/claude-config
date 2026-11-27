@@ -138,7 +138,7 @@ class ProfileManager:
             for executable in dict.fromkeys(executables):
                 actual = Path(executable).resolve()
                 try:
-                    expected = file_fingerprint(actual)
+                    expected = self.sources.get(actual) or file_fingerprint(actual)
                     require(expected['exists'], 'Native executable does not exist')
                     self.sources[actual] = expected
                     backend_context = {'features': {key: val for key, val in context.get('features', {}).items()
@@ -183,7 +183,10 @@ class ProfileManager:
                      'hook': 'next_hook_or_reload', 'instruction': 'next_read_or_new_session',
                      'agent': 'next_invocation_or_new_session', 'rule': 'next_read_or_new_session'}
             changed = {change.owner.removeprefix('resource:') for change in changes
-                       if change.owner.startswith('resource:') and not FilePlan._unchanged(change, file_fingerprint(change.path))}
+                       if change.owner.startswith('resource:') and not FilePlan._unchanged(
+                           change,
+                           change.expected if isinstance(change.expected, dict) else file_fingerprint(change.path),
+                       )}
             changed.update(ref for ref in resources.processed
                            if resources.records[ref]['native'].get('skill_control') != resources.previous.get(ref, {}).get('native', {}).get('skill_control')
                            or resources.records[ref]['native'].get('antigravity_plugin') != resources.previous.get(ref, {}).get('native', {}).get('antigravity_plugin'))
@@ -271,8 +274,14 @@ class ProfileManager:
                         parts[0] == 'settings' and path in requested_fields | resources.binding_fields,
                         'Run policy is outside the deployment scope')
             from .resource_inventory import inspect_skills
-            resources.inventory, ownership_guard = inspect_skills(self, resources.previous, resources.rendered, native,
-                selected_refs=None if selection.full else resources.selected_refs)
+            resources.inventory, ownership_guard = inspect_skills(
+                self,
+                resources.previous,
+                resources.rendered,
+                native,
+                selected_refs=None if selection.full else resources.selected_refs,
+                observed_files=resources._observed_files,
+            )
             resources.checks.extend(resources.inventory['checks'])
             resources.resolver.guards.append(ownership_guard)
         except (ValueError, OSError, subprocess.SubprocessError) as exc:
@@ -363,8 +372,25 @@ class ProfileManager:
             changes.append(self.machine_profiles.switch('agents', self.agent, name))
         if not resource_failed:
             changes = resources.changes + changes
-        for change in changes:
-            require(not any(change.path.resolve().is_relative_to(root) for root in resources.resolver.repositories), 'Write target overlaps a fixed source repository')
+        repo_roots = tuple(dict.fromkeys(resources.resolver.repositories))
+        if repo_roots:
+            repo_checks = tuple((str(root), str(root) + '/') for root in repo_roots)
+            resolved_parents = {}
+            for change in changes:
+                path = change.path
+                if path.is_symlink() or path.name in ('', '.', '..'):
+                    resolved_target = str(path.resolve())
+                else:
+                    parent = path.parent
+                    resolved_parent = resolved_parents.get(parent)
+                    if resolved_parent is None:
+                        resolved_parent = str(parent.resolve())
+                        resolved_parents[parent] = resolved_parent
+                    resolved_target = '/' + path.name if resolved_parent == '/' else resolved_parent + '/' + path.name
+                require(
+                    not any(resolved_target == root_str or resolved_target.startswith(prefix) for root_str, prefix in repo_checks),
+                    'Write target overlaps a fixed source repository',
+                )
         effective_fields = set(scope)
         effective_fields.update(as_pointer(('settings', *path)) for path in resources.registrations.main_fields)
         effective_fields.update(as_pointer(('settings', key)) for key in resources.registrations.main_roots)

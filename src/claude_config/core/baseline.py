@@ -152,10 +152,19 @@ def adopt_baseline(manager, alias, commit, checkout, release_record, source_map=
         manager.sources.update(preview.sources)
         manager.references.update(preview.references)
         checks.append({'name': 'affected_sources', 'status': 'passed', 'profile': impact['profile'], 'reason': 'Exact selected bodies and explicit dependencies are prepared'})
+    desired_roots = {}
+    for name, selected_target in targets.items():
+        expected_checkout = (
+            manager.state_root / 'sources' / selected_target['repo'].replace('/', '--') / commit
+        ).resolve()
+        if manager.local_machine['catalog_roots'].get(name) == 'auto' and root == expected_checkout:
+            desired_roots[name] = 'auto'
+        else:
+            desired_roots[name] = str(root)
     machine = deepcopy(manager.local_machine)
-    machine['catalog_roots'].update(roots)
-    merge = MergePlan({'catalogs': targets, 'catalog_roots': roots},
-                      {'catalogs': catalogs['catalogs'], 'catalog_roots': manager.machine['catalog_roots']},
+    machine['catalog_roots'].update(desired_roots)
+    merge = MergePlan({'catalogs': targets, 'catalog_roots': desired_roots},
+                      {'catalogs': catalogs['catalogs'], 'catalog_roots': manager.local_machine['catalog_roots']},
                       source={'kind': 'released-baseline', 'file': str(release_record)}, destination={'kind': 'catalog-selection'},
                       scope=[f'/catalogs/{name}/{key}' for name in aliases for key in ('repo', 'commit', 'path')]
                             + [f'/catalog_roots/{name}' for name in aliases])

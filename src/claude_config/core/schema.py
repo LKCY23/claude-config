@@ -256,6 +256,15 @@ def state_directory(machine, *, config_dir=None):
     return Path(root) / '.state'
 
 
+def resolve_catalog_root(machine, alias, declared, *, state_root=None):
+    """Resolve an explicit catalog root path or `'auto'` cache directory."""
+    raw = machine['catalog_roots'][alias]
+    if raw == 'auto':
+        base = state_directory(machine) if state_root is None else Path(state_root)
+        return base / 'sources' / declared['repo'].replace('/', '--') / declared['commit']
+    return Path(raw)
+
+
 def validate_machine(value):
     required = ('schema_version', 'machine_id', 'config_dir', 'catalog_roots', 'agents', 'apps', 'bindings')
     closed(value, (*required, 'runtime', 'merge_policy', 'profile_selection'), required, 'Machine')
@@ -269,12 +278,16 @@ def validate_machine(value):
     absolute(value['config_dir'], 'config_dir')
     for name, root in mapping(value['catalog_roots'], 'catalog_roots').items():
         require(NAME.fullmatch(name), 'catalog_roots keys must be catalog aliases')
-        absolute(root, 'catalog root')
+        if root != 'auto':
+            absolute(root, 'catalog root')
     for group, kinds in (('agents', AGENTS), ('apps', APPS)):
         for name, entry in mapping(value[group], group).items():
             require(name in kinds, 'Unknown Machine entry: ' + name)
             keys = ('binding',) if external else ('profile', 'binding')
-            closed(entry, keys, keys, 'Machine entry')
+            allowed_keys = (*keys, 'sync_mode') if group == 'apps' else keys
+            closed(entry, allowed_keys, keys, 'Machine entry')
+            if 'sync_mode' in entry:
+                require(entry['sync_mode'] in ('auto', 'manual'), 'App sync_mode must be auto or manual')
             if not external:
                 profile_path(entry['profile'], group, name)
             if group == 'agents' and name == 'antigravity':

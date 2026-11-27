@@ -1,18 +1,18 @@
 # claude-config
 
-当前版本 **0.10.0**：管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。支持全局状态看板（`status`）、一键同步（`sync`）、交互式冲突解决（`resolve`）、一键基线同步（`baseline`）、[统一插件管理入口](references/plugin-management.md) 与 [按范围同步](references/scoped-deployment.md)。
+当前版本 **0.11.0**：管理独立 Agent/App Profiles、固定资源及经过检查的本机配置部署。支持全局状态看板（`status`）、一键同步（`sync` / `sync --pull`）、配置仓库同步（`data status/pull/publish`）、多 Profile 对比协同（`profiles matrix/diff/copy-item`）、交互式冲突解决（`resolve`）、一键基线同步（`baseline`）、[统一插件管理入口](references/plugin-management.md) 与 [按范围同步](references/scoped-deployment.md)。
 
 Claudespace 托管资源正文；Profile 选择配置和资源运行参数；Machine 提供本机绑定。同步结果与会话生效分开报告；部署一致性诊断、技能交接与显式退役沿用[现有规则](references/deployment-consistency.md)。
 
 ## 安装
 
 支持 macOS 和 Linux；原生 Windows 执行器尚不支持。macOS App 适配不自动适用于 Linux。
-先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后从明确版本的 [GitHub Release](https://github.com/LKCY23/claude-config/releases) 取得 wheel、`constraints.txt` 和 `install.sh`。使用已登录的 GitHub CLI 下载 0.10.0：
+先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后从明确版本的 [GitHub Release](https://github.com/LKCY23/claude-config/releases) 取得 wheel、`constraints.txt` 和 `install.sh`。使用已登录的 GitHub CLI 下载 0.11.0：
 
 ```sh
-gh release download v0.10.0 --repo LKCY23/claude-config --dir ./claude-config-v0.10.0 \
+gh release download v0.11.0 --repo LKCY23/claude-config --dir ./claude-config-v0.11.0 \
   --pattern '*.whl' --pattern constraints.txt --pattern install.sh
-bash ./claude-config-v0.10.0/install.sh ./claude-config-v0.10.0/claude_config-0.10.0-py3-none-any.whl
+bash ./claude-config-v0.11.0/install.sh ./claude-config-v0.11.0/claude_config-0.11.0-py3-none-any.whl
 claude-config --version
 ```
 
@@ -26,8 +26,12 @@ claude-config --version
 建议优先使用高层工作流，再按需进入单端细粒度操作：
 
 ```sh
-claude-config status                                    # 只读全局看板：基线缓存 + 所有端同步与冲突状态
-claude-config sync                                      # 一键对齐基线并同步就绪的 Agent/App（交互确认或 --dry-run / --yes）
+claude-config status                                    # 只读全局看板：配置仓库、基线缓存 + 所有端同步与冲突状态
+claude-config sync                                      # 一键对齐基线并同步就绪的 Agent/App（加 --pull 先安全拉取仓库）
+claude-config data status                               # 只读检查配置数据仓库 Git 状态与本地声明校验
+claude-config data publish                              # 校验本地改动并预览或提交/推送（支持 --pr）
+claude-config profiles matrix                           # 跨 Profile / 跨机器总览矩阵；diff 与 copy-item 支持显式对比与复制
+claude-config plugin upgrade <plugin> --agent <agent> --local-only  # 仅本机临时钉死；--promote 写入锁；unlock 回归 catalog
 claude-config resolve --agent codex                     # 引导式解决冲突（支持 --choose POINTER=ACTION 非交互）
 claude-config report last                               # 查看最近保存的报告（终端交互树，支持 --format json/text）
 ```

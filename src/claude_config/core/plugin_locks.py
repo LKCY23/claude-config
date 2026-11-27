@@ -80,3 +80,56 @@ def validate_package_pin(package, pin):
     manifest = parse_json(package.files[package.entry])
     require(manifest.get('version') == pin['version'], 'Plugin manifest version differs from its lock')
     require(package.source_fingerprint == pin['source_fingerprint'], 'Plugin content differs from its lock')
+
+
+def local_pins_path(manager):
+    path = manager.state_root / 'local-pins.yaml'
+    require(not path.is_symlink(), 'Local pins file must not be a symlink')
+    return path
+
+
+def empty_local_pins():
+    return {'schema_version': 1, 'profiles': {}}
+
+
+def validate_local_pins(value):
+    closed(value, ('schema_version', 'profiles'), ('schema_version', 'profiles'), 'local plugin pins')
+    require(type(value['schema_version']) is int and value['schema_version'] == 1, 'Unsupported local pins schema version')
+    profiles = value['profiles']
+    require(isinstance(profiles, dict), 'Local pins profiles must be an object')
+    for profile_name, entry in profiles.items():
+        require(isinstance(profile_name, str) and bool(profile_name), 'Invalid local pin profile key')
+        closed(entry, ('agent_type', 'plugins'), ('agent_type', 'plugins'), 'local pin profile')
+        agent = entry['agent_type']
+        require(agent in ('claude-code', 'codex', 'antigravity'), 'Invalid local pin agent_type')
+        validate_locks({'schema_version': 1, 'agent_type': agent, 'profile': profile_name, 'plugins': entry['plugins']}, agent, profile_name)
+    return value
+
+
+def read_local_pins(manager):
+    path = local_pins_path(manager)
+    value, raw, expected = manager._read(path, lambda raw: parse_yaml(raw) if raw else {})
+    if not expected['exists']:
+        value = empty_local_pins()
+    validate_local_pins(value)
+    return path, value, raw, expected
+
+
+def merge_locks(locks, local_pins, agent, profile_name):
+    """Merge machine-local temporary pins over portable Profile lock pins."""
+    merged = deepcopy(locks)
+    origins = {ref: 'lock' for ref in merged.get('plugins', {})}
+    local_entry = (local_pins or {}).get('profiles', {}).get(profile_name)
+    if local_entry:
+        require(local_entry['agent_type'] == agent, 'Local pins agent_type disagrees with Profile')
+        for ref, pin in local_entry.get('plugins', {}).items():
+            merged['plugins'][ref] = deepcopy(pin)
+            origins[ref] = 'local'
+    return merged, origins
+
+
+def effective_locks(manager, name):
+    """Return effective locks (Profile lock + machine-local override) and per-ref origin map."""
+    _, locks, _, _ = read_locks(manager, name)
+    _, local_pins, _, _ = read_local_pins(manager)
+    return merge_locks(locks, local_pins, manager.agent, name)

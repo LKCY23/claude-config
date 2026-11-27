@@ -480,6 +480,12 @@ def main(argv):
 
         progress(None)
         print(encode_json(public_value(display)) if fmt == 'json' else render_baseline_sync(display, color=color))
+        if fmt != 'json' and not display.get('preview_only') and any(item.get('applied') for item in display.get('actions', [])):
+            from .core.data_repo import format_dirty_hint
+            config_dir = MachineProfiles(machine_path, strict=False).effective['config_dir']
+            hint = format_dirty_hint(config_dir)
+            if hint:
+                print('\n' + hint)
         return 0
     except (Exception, KeyboardInterrupt) as exc:
         progress(None)

@@ -7,6 +7,7 @@ import sys
 
 from .baseline_cmd import inspect_baselines, sync_baseline_groups
 from .core.app_manager import AppProfileManager
+from .core.data_repo import pull_repo
 from .core.execution_context import progress
 from .core.machine_profiles import MachineProfiles
 from .core.manager import ProfileManager
@@ -123,6 +124,21 @@ def render_sync(report, *, color=False):
         f"  Machine: {report['machine_file']}",
     ]
 
+    data_pull = report.get('data_pull')
+    if data_pull is not None:
+        lines.append('')
+        lines.append(_style('0. 配置仓库拉取：', _ANSI_BOLD, color))
+        if not data_pull.get('ready'):
+            lines.append(f"  {_style('✗ 阻止拉取', _ANSI_RED, color)}  {data_pull.get('reason')}")
+        elif data_pull.get('status') == 'up_to_date':
+            lines.append(f"  {_style('✓ 已是最新', _ANSI_GREEN, color)}")
+        elif data_pull.get('status') == 'pending':
+            lines.append(f"  {_style('→ 待拉取', _ANSI_CYAN, color)}  {data_pull.get('would_pull_commits', 0)} 个提交")
+            for f in data_pull.get('updated_files', [])[:5]:
+                lines.append(f'    · {f}')
+        else:
+            lines.append(f"  {_style('✓ 已拉取', _ANSI_GREEN, color)}  {data_pull.get('before_head')} -> {data_pull.get('after_head')} ({data_pull.get('pulled_commits', 0)} 个提交)")
+
     baseline_stage = report['baseline']
     if not baseline_stage.get('skipped'):
         lines.append('')
@@ -206,6 +222,7 @@ def run_sync(
     app_filter=None,
     agents_only=False,
     skip_baseline=False,
+    pull=False,
     git_transport=DEFAULT_GIT_TRANSPORT,
     dry_run=False,
     yes=False,
@@ -217,6 +234,29 @@ def run_sync(
     profiles = MachineProfiles(machine_file, strict=True)
     machine = profiles.effective
     state_root = state_directory(machine)
+    config_dir = Path(machine['config_dir'])
+
+    data_pull = None
+    if pull:
+        progress('检查配置仓库更新')
+        data_pull = pull_repo(config_dir, dry_run=True, fetch=True)
+        if not data_pull['ready']:
+            blocked_report = {
+                'schema_version': 1,
+                'operation': 'sync',
+                'preview_only': True,
+                'machine_id': machine['machine_id'],
+                'machine_file': str(machine_file),
+                'state_root': str(state_root),
+                'has_pending': False,
+                'agents_only': agents_only,
+                'skipped_manual_apps': [],
+                'data_pull': data_pull,
+                'baseline': {'skipped': skip_baseline, 'status': 'skipped' if skip_baseline else 'unknown', 'actions': []},
+                'targets': [],
+            }
+            return blocked_report, 1
+
     selected_agents, selected_apps, skipped_manual_apps = _select_targets(
         machine, agent_filter, app_filter, agents_only=agents_only,
     )
@@ -235,9 +275,10 @@ def run_sync(
             'error': 'error',
         }[item['state']]
 
+    pull_pending = bool(data_pull and data_pull.get('status') == 'pending')
     baseline_pending = bool(baseline_preview and baseline_preview['pending'])
     targets_pending = any(item['state'] == 'pending' for item in preview_items)
-    has_pending = baseline_pending or targets_pending
+    has_pending = pull_pending or baseline_pending or targets_pending
 
     baseline_stage = {
         'skipped': skip_baseline,
@@ -257,6 +298,8 @@ def run_sync(
         'baseline': baseline_stage,
         'targets': preview_items,
     }
+    if data_pull is not None:
+        preview_report['data_pull'] = data_pull
 
     if dry_run or not has_pending:
         return preview_report, _sync_exit_code(preview_items)
@@ -271,6 +314,36 @@ def run_sync(
                 return preview_report, 0
         else:
             return preview_report, _sync_exit_code(preview_items)
+
+    # Stage 0: pull config_dir if requested.
+    pulled_updates = False
+    if pull:
+        progress('阶段 0：拉取配置仓库更新')
+        data_pull = pull_repo(config_dir, dry_run=False, fetch=True)
+        if not data_pull['ready']:
+            err_report = {
+                **preview_report,
+                'preview_only': False,
+                'has_pending': False,
+                'data_pull': data_pull,
+            }
+            return err_report, 1
+        if data_pull.get('pulled'):
+            pulled_updates = True
+            profiles = MachineProfiles(machine_file, strict=True)
+            machine = profiles.effective
+            selected_agents, selected_apps, skipped_manual_apps = _select_targets(
+                machine, agent_filter, app_filter, agents_only=agents_only,
+            )
+            if not skip_baseline:
+                baselines = inspect_baselines(machine_file)
+                baseline_preview = sync_baseline_groups(machine_file, write=False)
+                baseline_pending = bool(baseline_preview and baseline_preview['pending'])
+                baseline_stage = {
+                    'skipped': False,
+                    'status': 'pending' if baseline_pending else 'aligned',
+                    'actions': baseline_preview['actions'],
+                }
 
     # Stage 1: sync baseline if pending.
     baseline_updated = False
@@ -297,7 +370,7 @@ def run_sync(
         baseline_updated = True
 
     # Stage 2 & 4: fresh plan(prepare=True) and apply ready targets per target.
-    if baseline_updated:
+    if baseline_updated or pulled_updates:
         plans, _ = _plan_all_targets(machine_file, selected_agents, selected_apps, baselines, prepare=True)
     else:
         plans = []
@@ -356,6 +429,8 @@ def run_sync(
         'baseline': baseline_stage,
         'targets': result_targets,
     }
+    if data_pull is not None:
+        final_report['data_pull'] = data_pull
     return final_report, _sync_exit_code(result_targets)
 
 
@@ -369,6 +444,7 @@ def _build_parser():
     parser.add_argument('--app', action='append', choices=APP_ORDER, help='仅同步指定 App（可重复）')
     parser.add_argument('--agents-only', action='store_true', help='仅同步 Agent 配置，跳过所有桌面 App')
     parser.add_argument('--skip-baseline', action='store_true', help='跳过第 1 阶段基线检查与同步')
+    parser.add_argument('--pull', action='store_true', help='先安全 fast-forward 拉取配置仓库最新提交，再对齐基线并部署')
     parser.add_argument('--git-transport', choices=GIT_TRANSPORTS, default=DEFAULT_GIT_TRANSPORT)
     parser.add_argument('--dry-run', action='store_true', help='仅预览各阶段变更，不拉取或写入文件')
     parser.add_argument('--yes', '--write', dest='yes', action='store_true', help='跳过确认提示直接执行同步')
@@ -391,6 +467,7 @@ def main(argv):
             app_filter=args.app,
             agents_only=args.agents_only,
             skip_baseline=args.skip_baseline,
+            pull=args.pull,
             git_transport=args.git_transport,
             dry_run=args.dry_run,
             yes=args.yes,

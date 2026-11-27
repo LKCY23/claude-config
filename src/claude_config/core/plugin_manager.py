@@ -11,7 +11,8 @@ from .deployment_scope import DeploymentScope
 from .merge import fingerprint
 from .native import parse_json, parse_native, parse_yaml, render_native, snapshot_read
 from .native_plugins import PluginOperation
-from .plugin_locks import (apply_pin, empty_locks, locator, read_locks, validate_locks)
+from .plugin_locks import (apply_pin, empty_locks, locator, merge_locks, read_local_pins,
+                           read_locks, validate_local_pins, validate_locks)
 from .registrations import claude_user_config
 from .schema import COMMIT, REF, SchemaError, require, validate_catalogs, validate_profile, within
 from .source_transport import DEFAULT_GIT_TRANSPORT, validate_git_transport
@@ -78,6 +79,8 @@ class PluginManager:
         m = self.manager
         self.profile_path, self.profile, self.profile_raw, self.profile_expected, self.name = m._profile()
         self.lock_path, self.locks, self.lock_raw, self.lock_expected = read_locks(m, self.name)
+        self.local_pins_path, self.local_pins, self.local_pins_raw, self.local_pins_expected = read_local_pins(m)
+        self.effective_locks, self.lock_origins = merge_locks(self.locks, self.local_pins, m.agent, self.name)
         self.state, self.state_expected = m._state()
         self.resolver = CatalogResolver(m)
 
@@ -127,7 +130,7 @@ class PluginManager:
             item = catalog['resources'].get(name)
             require(item is not None, 'Required resource is not registered: ' + current)
             if current != ref:
-                pin = self.locks['plugins'].get(current)
+                pin = self.effective_locks['plugins'].get(current)
                 if pin:
                     apply_pin(item, declared, pin)
                     self.prepare_source(pin['source'])
@@ -231,13 +234,53 @@ class PluginManager:
         apply_pin(item, declared, pin)
         return pin
 
-    def plan(self, action, ref, *, version=None, commit=None, enable=False, disabled=False, bindings=None):
-        require(action in ('install', 'upgrade', 'enable', 'disable', 'remove'), 'Unknown plugin operation')
+    @staticmethod
+    def _remove_local_pin(local_pins, profile_name, ref):
+        entry = local_pins.get('profiles', {}).get(profile_name)
+        if not entry:
+            return
+        entry.get('plugins', {}).pop(ref, None)
+        if not entry.get('plugins'):
+            local_pins['profiles'].pop(profile_name, None)
+
+    def _resolve_extra_profile(self, spec, ref, pin):
+        m = self.manager
+        require(isinstance(spec, str) and bool(spec.strip()), '--also-profiles requires a non-empty Profile name or path')
+        raw = spec.strip()
+        if '/' not in raw:
+            other_name = f'profiles/agents/{m.agent}/{raw}.yaml'
+        elif raw.startswith('profiles/'):
+            other_name = raw if raw.endswith('.yaml') else raw + '.yaml'
+        else:
+            other_name = 'profiles/agents/' + (raw if raw.endswith('.yaml') else raw + '.yaml')
+        parts = Path(other_name).parts
+        require(len(parts) == 4 and parts[:3] == ('profiles', 'agents', m.agent) and Path(other_name).suffix == '.yaml',
+                '--also-profiles target must belong to the same agent directory: ' + spec)
+        require(other_name != self.name, '--also-profiles cannot reference the active Profile itself: ' + other_name)
+        other_path = within(m.root, other_name, must_exist=True)
+        other_profile, _, _ = m._read(other_path, lambda content: validate_profile(parse_yaml(content), expected=m.agent))
+        require(ref in other_profile.get('resources', {}).get('plugins', {}),
+                f'Plugin {ref} is not selected in target Profile {other_name}; add it with profiles copy-item first')
+        other_lock_path, other_locks, _, other_lock_expected = read_locks(m, other_name)
+        updated_locks = deepcopy(other_locks)
+        old_other_pin = other_locks['plugins'].get(ref)
+        chosen_pin = old_other_pin if (old_other_pin and all(pin[k] == old_other_pin[k] for k in ('source', 'version', 'source_fingerprint'))) else deepcopy(pin)
+        updated_locks['plugins'][ref] = chosen_pin
+        validate_locks(updated_locks, m.agent, other_name)
+        return other_name, other_lock_path, updated_locks, other_lock_expected, updated_locks != other_locks
+
+    def plan(self, action, ref, *, version=None, commit=None, enable=False, disabled=False, bindings=None,
+             local_only=False, promote=False, also_profiles=None):
+        require(action in ('install', 'upgrade', 'enable', 'disable', 'remove', 'unlock'), 'Unknown plugin operation')
         require(action != 'remove' or self.manager.agent == 'antigravity', 'Unknown plugin operation')
         require(not (version and commit), 'Choose --version or --commit, not both')
         require(not enable or action == 'upgrade', '--enable is only for upgrade')
         require(not disabled or action == 'install', '--disabled is only for install')
-        require(action in ('install', 'upgrade') or not (version or commit or bindings), 'Enable/disable/remove cannot select versions or bindings')
+        require(not (local_only and promote), 'Choose --local-only or --promote, not both')
+        require(not (local_only and also_profiles), '--also-profiles cannot be combined with --local-only')
+        require(not (local_only or promote or also_profiles) or action in ('install', 'upgrade'),
+                '--local-only/--promote/--also-profiles are only for install/upgrade')
+        require(action in ('install', 'upgrade') or not (version or commit or bindings), 'Enable/disable/remove/unlock cannot select versions or bindings')
         require(commit is None or isinstance(commit, str) and COMMIT.fullmatch(commit), '--commit requires a full 40-character SHA')
         require(version is None or isinstance(version, str) and SEMVER.fullmatch(version), '--version requires exact SemVer')
         require(not bindings or action == 'install', 'Bindings can only be declared during install')
@@ -248,7 +291,7 @@ class PluginManager:
         require(not self.state or self.state['profile'] == self.name, 'Complete the Profile switch before managing one plugin')
         ref = self.resolve_ref(ref, registered=action == 'install', include_retained=action == 'remove')
         before, actual = self.installed(ref)
-        if action != 'install':
+        if action not in ('install', 'unlock'):
             require(before is not None and actual['installed'], 'Plugin is not a managed installation; use install or explicit adoption first')
         if before is not None:
             require(actual['installed'] and actual['marketplace'] and all(actual[k] == before[k] for k in ('version', 'image')),
@@ -256,6 +299,8 @@ class PluginManager:
         candidate = deepcopy(self.profile)
         if action == 'remove':
             return self.remove_plan(ref, candidate, before, actual)
+        if action == 'unlock':
+            return self.unlock_plan(ref, candidate, before, actual)
         selected = candidate.setdefault('resources', {}).setdefault('plugins', {}).setdefault(ref, {})
         if bindings:
             require(not before, 'Existing plugin bindings require explicit Profile migration')
@@ -264,11 +309,17 @@ class PluginManager:
             selected.setdefault('options', {})['enabled'] = action == 'enable'
             return self.toggle_plan(action, ref, candidate, before, actual)
         item, declared = self.definition(ref)
-        # Install without a selector must honor an existing lock, as legacy apply does.
-        old_pin = self.locks['plugins'].get(ref)
-        if action == 'install' and old_pin and not (version or commit):
-            apply_pin(item, declared, old_pin)
-            pin = old_pin
+        old_effective = self.effective_locks['plugins'].get(ref)
+        old_lock_pin = self.locks['plugins'].get(ref)
+        old_local_pin = self.local_pins.get('profiles', {}).get(self.name, {}).get('plugins', {}).get(ref)
+        if promote and not (version or commit):
+            require(old_local_pin is not None, 'No --local-only pin found to promote; specify --version or --commit to pin explicitly')
+            pin = self.package_pin(ref, item, declared, deepcopy(old_local_pin['source']),
+                                   deepcopy(old_local_pin['resolution']), expected_version=old_local_pin['version'])
+        elif action == 'install' and old_effective and not (version or commit):
+            # Install without a selector must honor an existing lock/local pin, as legacy apply does.
+            apply_pin(item, declared, old_effective)
+            pin = old_effective
             self.prepare_source(pin['source'])
         else:
             source = locator(item, declared)
@@ -290,23 +341,68 @@ class PluginManager:
             desired_enabled = not disabled
         selected.setdefault('options', {})['enabled'] = desired_enabled
         locks = deepcopy(self.locks)
-        # Semantically identical requests retain provenance, for true idempotency.
-        if old_pin and all(pin[k] == old_pin[k] for k in ('source', 'version', 'source_fingerprint')):
-            pin = old_pin
-        locks['plugins'][ref] = pin
-        # Old tools must not silently ignore the new lock and reinstall the catalog pin.
-        if tuple(map(int, candidate.get('minimum_tool_version', '0.0.0').split('.'))) < (0, 8, 0):
-            candidate['minimum_tool_version'] = '0.8.0'
+        local_pins = deepcopy(self.local_pins)
+        if local_only:
+            chosen_pin = old_local_pin if (old_local_pin and all(pin[k] == old_local_pin[k] for k in ('source', 'version', 'source_fingerprint'))) else pin
+            profile_entry = local_pins['profiles'].setdefault(self.name, {'agent_type': self.manager.agent, 'plugins': {}})
+            profile_entry['agent_type'] = self.manager.agent
+            profile_entry['plugins'][ref] = chosen_pin
+            pin = chosen_pin
+            pin_scope = 'local'
+        else:
+            # Semantically identical requests retain provenance, for true idempotency.
+            if old_lock_pin and all(pin[k] == old_lock_pin[k] for k in ('source', 'version', 'source_fingerprint')):
+                pin = old_lock_pin
+            locks['plugins'][ref] = pin
+            self._remove_local_pin(local_pins, self.name, ref)
+            pin_scope = 'lock'
+            # Old tools must not silently ignore the new lock and reinstall the catalog pin.
+            if tuple(map(int, candidate.get('minimum_tool_version', '0.0.0').split('.'))) < (0, 8, 0):
+                candidate['minimum_tool_version'] = '0.8.0'
+        extra_locks = []
+        seen_extra = set()
+        for spec in (also_profiles or ()):
+            info = self._resolve_extra_profile(spec, ref, pin)
+            require(info[0] not in seen_extra, 'Duplicate --also-profiles target: ' + info[0])
+            seen_extra.add(info[0])
+            extra_locks.append(info)
+        effective_candidate_locks, _ = merge_locks(locks, local_pins, self.manager.agent, self.name)
         self.prepare_dependencies(candidate, ref)
         deployment = self.manager.plan(selection=DeploymentScope(resources=(ref,)), prepare=False,
-                                       profile_value=candidate, plugin_lock_value=locks)
-        return self.combine(action, ref, candidate, locks, deployment, before, pin['version'], desired_enabled)
+                                       profile_value=candidate, plugin_lock_value=effective_candidate_locks)
+        return self.combine(action, ref, candidate, locks, deployment, before, pin['version'], desired_enabled,
+                            local_pins=local_pins, effective_locks=effective_candidate_locks,
+                            pin_scope=pin_scope, extra_locks=extra_locks)
+
+    def unlock_plan(self, ref, candidate, before, actual):
+        """Remove Profile lock and local pin for ref so it tracks catalogs.yaml again."""
+        selected = candidate.get('resources', {}).get('plugins', {}).get(ref)
+        require(selected is not None, 'Plugin is not selected in current Profile')
+        item, declared = self.definition(ref)
+        if item['source']['kind'] == 'external':
+            self.prepare_source(locator(item, declared))
+        locks = deepcopy(self.locks)
+        locks['plugins'].pop(ref, None)
+        local_pins = deepcopy(self.local_pins)
+        self._remove_local_pin(local_pins, self.name, ref)
+        effective_candidate_locks, _ = merge_locks(locks, local_pins, self.manager.agent, self.name)
+        desired_enabled = selected.get('options', {}).get('enabled', actual['enabled'] if actual and actual['installed'] else True)
+        self.prepare_dependencies(candidate, ref)
+        deployment = self.manager.plan(selection=DeploymentScope(resources=(ref,)), prepare=False,
+                                       profile_value=candidate, plugin_lock_value=effective_candidate_locks)
+        catalog_version = None
+        last_res = getattr(self.manager, 'last_resources', None)
+        if last_res is not None and ref in getattr(last_res, 'rendered', {}):
+            pkg = last_res.rendered[ref]['package']
+            catalog_version = parse_json(pkg.files[pkg.entry]).get('version')
+        return self.combine('unlock', ref, candidate, locks, deployment, before, catalog_version, desired_enabled,
+                            local_pins=local_pins, effective_locks=effective_candidate_locks, pin_scope='unlocked')
 
     def toggle_plan(self, action, ref, candidate, before, actual):
         """Use known native ownership only; unavailable Git sources cannot prevent disabling."""
         m = self.manager
         # Enabling must not silently activate a version different from the declared lock.
-        pin = self.locks['plugins'].get(ref)
+        pin = self.effective_locks['plugins'].get(ref)
         if action == 'enable' and not pin:
             catalogs, _, _ = m._read(m.root / 'catalogs.yaml', lambda raw: validate_catalogs(parse_yaml(raw)))
             declared = catalogs['catalogs'].get(ref.split('@')[1])
@@ -420,10 +516,13 @@ class PluginManager:
                               directories={plugin_root}, guards=[guard], prepare=False)
         return self.combine('remove', ref, candidate, locks, deployment, before, None, None)
 
-    def combine(self, action, ref, candidate, locks, deployment, before, version, enabled):
+    def combine(self, action, ref, candidate, locks, deployment, before, version, enabled,
+                *, local_pins=None, effective_locks=None, pin_scope=None, extra_locks=None):
         m = self.manager
         validate_profile(candidate, expected=m.agent)
         validate_locks(locks, m.agent, self.name)
+        if local_pins is not None:
+            validate_local_pins(local_pins)
         declarations = []
         if candidate != self.profile:
             declarations.append(FileChange(self.profile_path, yaml.safe_dump(candidate, allow_unicode=True, sort_keys=False).encode(),
@@ -431,13 +530,29 @@ class PluginManager:
         if locks != self.locks:
             declarations.append(FileChange(self.lock_path, yaml.safe_dump(locks, allow_unicode=True, sort_keys=False).encode(),
                 'plugin-lock', lambda raw: validate_locks(parse_yaml(raw), m.agent, self.name), self.lock_expected))
+        if local_pins is not None and local_pins != self.local_pins:
+            if not local_pins.get('profiles') and self.local_pins_expected['exists']:
+                declarations.append(FileChange(self.local_pins_path, b'', 'plugin-local-pin',
+                    lambda raw: None, self.local_pins_expected, delete=True))
+            else:
+                declarations.append(FileChange(self.local_pins_path, yaml.safe_dump(local_pins, allow_unicode=True, sort_keys=False).encode(),
+                    'plugin-local-pin', lambda raw: validate_local_pins(parse_yaml(raw)), self.local_pins_expected))
+        also_updated = []
+        for other_name, other_lock_path, other_locks, other_lock_expected, changed in (extra_locks or ()):
+            also_updated.append(other_name)
+            if changed:
+                declarations.append(FileChange(other_lock_path, yaml.safe_dump(other_locks, allow_unicode=True, sort_keys=False).encode(),
+                    'plugin-lock', lambda raw, a=m.agent, p=other_name: validate_locks(parse_yaml(raw), a, p), other_lock_expected))
         report = deepcopy(deployment.report)
+        shown_locks = effective_locks or locks
         summary = {'resource': ref, 'action': action, 'profile': self.name,
             'before': {'version': before['version'], 'enabled': before['enabled']} if before else None,
             'after': {'version': version, 'enabled': enabled}, 'prepared_sources': self.prepared,
             'installation_scope': 'user', 'activation': 'not_verified',
-            'source': locks['plugins'].get(ref, {}).get('source'),
-            'resolution': locks['plugins'].get(ref, {}).get('resolution')}
+            'pin_scope': pin_scope or self.lock_origins.get(ref, 'catalog'),
+            'also_profiles': also_updated,
+            'source': shown_locks['plugins'].get(ref, {}).get('source'),
+            'resolution': shown_locks['plugins'].get(ref, {}).get('resolution')}
         report['plugin_management'] = summary
         report['decisions'].append(decision(['plugins', ref], summary['before'], summary['after'],
                                            'Apply the explicitly requested plugin version and usage state'))
@@ -455,9 +570,14 @@ class PluginManager:
         names = [self.resolve_ref(ref, include_retained=True)] if ref else sorted(set(refs) | retained)
         rows = []
         for name in names:
+            pin_source = self.lock_origins.get(name, 'catalog')
             row = {'resource': name, 'profile': self.name, 'selected': name in refs,
                 'desired_enabled': refs.get(name, {}).get('options', {}).get('enabled'),
-                'locked_version': self.locks['plugins'].get(name, {}).get('version'), 'session_verified': False}
+                'locked_version': self.effective_locks['plugins'].get(name, {}).get('version'),
+                'profile_locked_version': self.locks['plugins'].get(name, {}).get('version'),
+                'local_pin_version': self.local_pins.get('profiles', {}).get(self.name, {}).get('plugins', {}).get(name, {}).get('version'),
+                'pin_source': pin_source,
+                'session_verified': False}
             row['selected_version'] = row['locked_version'] if name in refs else None
             row['declaration_verified'] = row['selected_version'] is not None
             if name in refs and not row['selected_version']:

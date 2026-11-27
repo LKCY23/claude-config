@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 
 from .profile import ReportParser, UsageError, report_format, report_verbose
+from .core.data_repo import format_dirty_hint
 from .core.manager import ProfileManager
 from .core.plugin_manager import PluginManager
 from .core.schema import SchemaError, require
@@ -17,10 +18,19 @@ def summary(report):
     if intent:
         before, after = intent.get('before') or {}, intent['after']
         flag = lambda value: '启用' if value is True else '禁用' if value is False else '未声明'
+        scope_label = {
+            'local': '本机临时 (--local-only，不修改仓库锁文件)',
+            'lock': 'Profile 锁文件 (*.plugins.lock.yaml)',
+            'unlocked': '已解除钉死（跟随 catalogs.yaml）',
+        }.get(intent.get('pin_scope'), intent.get('pin_scope'))
         lines = [f"插件：{intent['resource']}", f"Profile：{intent['profile']}",
                  f"版本：{before.get('version') or '未安装'} → {after['version'] or '已移除'}",
                  f"状态：{flag(before.get('enabled'))} → {'已移除' if intent['action'] == 'remove' else flag(after['enabled'])}",
                  '范围：当前 Agent 用户级插件；共用配置目录的 CLI / Desktop 会受影响']
+        if scope_label and intent['action'] in ('install', 'upgrade', 'unlock'):
+            lines.append('钉死方式：' + scope_label)
+        if intent.get('also_profiles'):
+            lines.append('联动更新锁文件：' + '、'.join(intent['also_profiles']))
         if report.get('plan_id'):
             lines.append('计划 ID：' + report['plan_id'])
         if intent.get('source'):
@@ -35,8 +45,9 @@ def summary(report):
     if report.get('errors') and 'plugins' not in report:
         return '插件操作未完成。'
     return '\n'.join(f"{row['resource']}  已装={row.get('installed_version') or '无'}  "
-                     f"声明版本={row.get('selected_version') or '未验证'}  期望启用={row.get('desired_enabled')}  "
-                     f"实际启用={row.get('enabled')}  状态={row['status']}  会话=未验证"
+                     f"声明版本={row.get('selected_version') or '未验证'}  来源={row.get('pin_source') or 'catalog'}  "
+                     f"期望启用={row.get('desired_enabled')}  实际启用={row.get('enabled')}  "
+                     f"状态={row['status']}  会话=未验证"
                      for row in report.get('plugins', [])) or '当前 Profile 未选择插件。'
 
 
@@ -63,7 +74,7 @@ def main(argv=None):
     operation = 'plugin'
     try:
         parser = ReportParser(prog='claude-config plugin', description='Manage one declared Claude Code or Antigravity plugin with a checked Profile/native transaction.')
-        parser.add_argument('action', choices=('install', 'upgrade', 'enable', 'disable', 'remove', 'list', 'status'))
+        parser.add_argument('action', choices=('install', 'upgrade', 'unlock', 'enable', 'disable', 'remove', 'list', 'status'))
         parser.add_argument('plugin', nargs='?', help='name@catalog, or an unambiguous short name')
         parser.add_argument('--agent', required=True, choices=('claude-code', 'antigravity'))
         parser.add_argument('--machine', type=Path, default=Path.home() / '.claude-config-tool/machine.yaml')
@@ -73,6 +84,10 @@ def main(argv=None):
         parser.add_argument('--enable', action='store_true', help='Also enable while upgrading; otherwise preserve enablement')
         parser.add_argument('--disabled', action='store_true', help='Install new plugin without enabling it')
         parser.add_argument('--binding', action='append', default=[], metavar='NAME=MACHINE_REFERENCE')
+        pin_scope_group = parser.add_mutually_exclusive_group()
+        pin_scope_group.add_argument('--local-only', action='store_true', help='Pin version in machine-local .state/local-pins.yaml without modifying Git locks')
+        pin_scope_group.add_argument('--promote', action='store_true', help='Promote a --local-only pin (or new pin) into Profile .plugins.lock.yaml')
+        parser.add_argument('--also-profiles', action='append', default=[], metavar='PROFILE', help='Also update another Profile lock file with this verified pin')
         parser.add_argument('--git-transport', choices=GIT_TRANSPORTS, default=DEFAULT_GIT_TRANSPORT,
                             help='Git transport for preparing missing sources (default: gh-https)')
         execution = parser.add_mutually_exclusive_group()
@@ -90,10 +105,12 @@ def main(argv=None):
         query = args.action in ('list', 'status')
         if (args.action == 'list') != (args.plugin is None):
             raise UsageError('list takes no plugin; all other actions require one')
-        if query and (args.version or args.commit or args.enable or args.disabled or args.binding or args.write or args.expect_plan_id or args.git_transport != DEFAULT_GIT_TRANSPORT):
+        if query and (args.version or args.commit or args.enable or args.disabled or args.binding or args.local_only or args.promote or args.also_profiles or args.write or args.expect_plan_id or args.git_transport != DEFAULT_GIT_TRANSPORT):
             raise UsageError('list/status are read-only queries')
-        if args.action in ('enable', 'disable', 'remove') and (args.version or args.commit or args.enable or args.disabled or args.binding or args.git_transport != DEFAULT_GIT_TRANSPORT):
-            raise UsageError('enable/disable/remove change usage or ownership only, not version, bindings, or git transport')
+        if args.action in ('enable', 'disable', 'remove', 'unlock') and (args.version or args.commit or args.enable or args.disabled or args.binding or args.local_only or args.promote or args.also_profiles or args.git_transport != DEFAULT_GIT_TRANSPORT):
+            raise UsageError('enable/disable/remove/unlock cannot select versions, bindings, or pin-scope flags')
+        if args.local_only and args.also_profiles:
+            raise UsageError('--also-profiles cannot be combined with --local-only')
         if args.enable and args.action != 'upgrade' or args.disabled and args.action != 'install' or args.binding and args.action != 'install':
             raise UsageError('Invalid flag for this plugin action')
         bindings = {}
@@ -107,7 +124,8 @@ def main(argv=None):
             report = service.inventory(args.plugin)
         else:
             plan = service.plan(args.action, args.plugin, version=args.version, commit=args.commit,
-                                enable=args.enable, disabled=args.disabled, bindings=bindings)
+                                enable=args.enable, disabled=args.disabled, bindings=bindings,
+                                local_only=args.local_only, promote=args.promote, also_profiles=args.also_profiles)
             report = plan.report
             if args.expect_plan_id and not plan_id_matches(report['plan_id'], args.expect_plan_id, strict_format=False):
                 raise PlanStale('Plugin plan changed; preview again')
@@ -145,4 +163,9 @@ def main(argv=None):
     # private report and source cache; only the checked executor changes installs.
     if operation not in ('plugin-list', 'plugin-status') and manager is not None:
         save_report(report, manager.state_root)
-    return emit(report, mode, verbose=verbose)
+    code = emit(report, mode, verbose=verbose)
+    if code == 0 and mode != 'json' and not preview and error is None and manager is not None:
+        hint = format_dirty_hint(manager.root)
+        if hint:
+            print('\n' + hint)
+    return code

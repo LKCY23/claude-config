@@ -12,6 +12,7 @@ import yaml
 
 from claude_config.core.manager import ProfileManager
 from claude_config.core.app_manager import AppProfileManager
+from claude_config.core.data_repo import format_dirty_hint
 from claude_config.core.native import parse_json, snapshot_read
 from claude_config.core.schema import SchemaError
 from claude_config.core.transaction import PlanStale, UnfinishedRun, plan_id_matches
@@ -338,7 +339,12 @@ def _main(argv):
     report = build_report(report, operation=args.operation, preview_only=preview_only,
                           manager=manager, context=context, error=error, execution_started=started)
     save_report(report, manager.state_root if manager else fallback_state_root())
-    return output_report(report, args.format, verbose=args.verbose)
+    code = output_report(report, args.format, verbose=args.verbose)
+    if code == 0 and args.format != 'json' and not preview_only and not error and args.operation in ('export', 'adopt-baseline') and manager is not None:
+        hint = format_dirty_hint(manager.root)
+        if hint:
+            print('\n' + hint)
+    return code
 
 
 if __name__ == '__main__':

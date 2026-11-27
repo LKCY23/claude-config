@@ -56,8 +56,8 @@ class ProfileManager:
         value, content, expected = self._read(path, parse_yaml)
         validate_profile(value, expected=self.agent)
         validate_settings(self.agent, value.get('settings', {}))
-        from .plugin_locks import read_locks
-        self.plugin_locks = read_locks(self, name)[1]
+        from .plugin_locks import effective_locks
+        self.plugin_locks, self.plugin_lock_origins = effective_locks(self, name)
         return path, value, content, expected, name
 
     def _state(self):

@@ -11,8 +11,10 @@ Use `--agent {agent}` for this client's Agent settings and resources. Use `--app
 
 ## Daily workflows
 
-- Inspect read-only status across baselines, agents, and apps: `{command} status`
-- Sync aligned baselines and ready targets (preview with `--dry-run`, apply non-interactively with `--yes`, filter with `--agent NAME` or `--skip-baseline`): `{command} sync`
+- Inspect read-only status across config repo, baselines, agents, and apps: `{command} status`
+- Sync aligned baselines and ready targets (add `--pull` to fast-forward `config_dir` first; preview with `--dry-run`, apply non-interactively with `--yes`, filter with `--agent NAME` or `--skip-baseline`): `{command} sync`
+- Manage `config_dir` Git sync (`data status`, `data pull`, `data publish [--pr] [--dry-run|--yes]`): `{command} data status`
+- Compare independent Profiles across machines and copy selected entries (`profiles matrix`, `profiles diff A B`, `profiles copy-item --from A --to B ...`): `{command} profiles matrix`
 - Resolve deployment drift/conflicts interactively (`--choose POINTER=ACTION` for non-interactive runs): `{command} resolve --agent {agent}`
 - Inspect or sync catalog baselines in one step (`baseline status`, `baseline sync --write`, `baseline adopt <sha>`): `{command} baseline status`
 - View the latest or a specific saved report (`--plan-id` also accepts an 8–64 char hex prefix alias for `--expect-plan-id`): `{command} report last`
@@ -60,8 +62,9 @@ Claudespace owns fixed resource bodies; Profiles select resources and runtime op
 
 ## Unified plugin management (0.8.0+)
 
-For a Claude Code plugin, prefer `plugin install|upgrade|enable|disable REF --agent claude-code`.
-`plugin list|status` are read-only. Short names must be unambiguous.
+For a Claude Code or Antigravity plugin, prefer `plugin install|upgrade|unlock|enable|disable REF --agent <agent>`.
+`plugin list|status` are read-only and report `pin_source` (`local` / `lock` / `catalog`). Short names must be unambiguous.
+Use `--local-only` to pin a test build only in `<state_root>/local-pins.yaml` without dirtying Git; use `--promote` to move it into the Profile lock, `--also-profiles` to sync lock pins to sibling Profiles atomically, and `plugin unlock` to remove pins and return to `catalogs.yaml`.
 Interactive commands preview and confirm once. Noninteractive calls preview by default;
 In 0.8.0.dev2+, `--write` generates, validates and executes a fresh plan; `--expect-plan-id` is optional for a previously reviewed plan. `--dry-run` may prepare source caches only.
 Upgrade preserves enablement unless `--enable`; install can use `--disabled`.

@@ -7,6 +7,7 @@ import sys
 
 from .baseline_cmd import inspect_baselines
 from .core.app_manager import AppProfileManager
+from .core.data_repo import inspect_repo
 from .core.execution_context import progress
 from .core.machine_profiles import MachineProfiles
 from .core.manager import ProfileManager
@@ -133,12 +134,13 @@ def _classify_target_plan(kind, name, profile_name, plan, baselines):
     }
 
 
-def inspect_status(machine_path, *, agent_filter=None, app_filter=None):
+def inspect_status(machine_path, *, agent_filter=None, app_filter=None, fetch=False):
     """Collect a strictly read-only global overview of machine, baselines, and bound targets."""
     machine_file = Path(machine_path).expanduser().absolute()
     profiles = MachineProfiles(machine_file, strict=False)
     machine = profiles.effective
     state_root = state_directory(machine)
+    data_repo = inspect_repo(Path(machine['config_dir']), fetch=fetch)
 
     try:
         baselines = inspect_baselines(machine_file)
@@ -239,11 +241,12 @@ def inspect_status(machine_path, *, agent_filter=None, app_filter=None):
     return {
         'schema_version': 1,
         'operation': 'status',
-        'read_only': True,
+        'read_only': not fetch,
         'machine_id': machine['machine_id'],
         'machine_file': str(machine_file),
         'state_root': str(state_root),
         'mismatches': list(profiles.mismatches),
+        'data_repo': data_repo,
         'baselines': {
             'aligned': baselines.get('aligned', True),
             'error': baselines.get('error'),
@@ -310,6 +313,13 @@ def render_status(report, *, color=False):
         if len(mismatches) > 3:
             lines.append(f'    - 其余 {len(mismatches) - 3} 项请运行 claude-config doctor 查看')
 
+    data_repo = report.get('data_repo') or {}
+    if data_repo.get('is_git'):
+        from .data_cmd import render_data_repo_lines
+        lines.append('')
+        lines.append(_style('配置仓库状态：', _ANSI_BOLD, color))
+        lines.extend(render_data_repo_lines(data_repo, color=color))
+
     lines.append('')
     lines.append(_style('基线缓存：', _ANSI_BOLD, color))
     baselines = report['baselines']
@@ -347,6 +357,10 @@ def render_status(report, *, color=False):
         lines.append(f"  {badge}  {item['name']} [{profile_label}] — {detail}")
 
     hints = []
+    if data_repo.get('is_git') and (data_repo.get('dirty') or data_repo.get('ahead', 0) > 0):
+        hints.append('claude-config data publish')
+    if data_repo.get('is_git') and data_repo.get('behind', 0) > 0 and not data_repo.get('dirty') and data_repo.get('ahead', 0) == 0:
+        hints.append('claude-config sync --pull')
     if mismatches:
         hints.append('claude-config init --sync-selection')
     if not baselines.get('aligned', True):
@@ -372,6 +386,7 @@ def _build_parser():
     parser.add_argument('--machine', type=Path, default=Path.home() / '.claude-config-tool/machine.yaml')
     parser.add_argument('--agent', action='append', choices=AGENT_ORDER, help='只查看指定 Agent（可重复）')
     parser.add_argument('--app', action='append', choices=APP_ORDER, help='只查看指定 App（可重复）')
+    parser.add_argument('--fetch', action='store_true', help='先对配置仓库执行 git fetch，刷新远端领先/落后计数')
     parser.add_argument('--format', choices=('auto', 'text', 'json'), default='auto')
     parser.add_argument('--verbose', action='store_true')
     return parser
@@ -383,7 +398,7 @@ def main(argv):
     try:
         args = parser.parse_args(argv)
         color = terminal_color_enabled('text' if fmt == 'json' else fmt)
-        report = inspect_status(args.machine, agent_filter=args.agent, app_filter=args.app)
+        report = inspect_status(args.machine, agent_filter=args.agent, app_filter=args.app, fetch=args.fetch)
         progress(None)
         print(encode_json(public_value(report)) if fmt == 'json' else render_status(report, color=color))
         return 0

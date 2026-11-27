@@ -19,6 +19,9 @@ def _run_git(root, args, *, read_only=True, timeout=60):
     return subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
 
 
+_UNMERGED_STATUSES = frozenset(('DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'))
+
+
 def _is_state_path(rel_path):
     clean = rel_path.rstrip('/')
     return clean == '.state' or clean.startswith('.state/')
@@ -27,6 +30,8 @@ def _is_state_path(rel_path):
 def _parse_porcelain_z(raw_output):
     dirty_files = []
     untracked_files = []
+    staged_state_files = []
+    unmerged_files = []
     entries = raw_output.split('\0')
     idx = 0
     while idx < len(entries):
@@ -42,14 +47,25 @@ def _parse_porcelain_z(raw_output):
                 extra_path = entries[idx]
                 idx += 1
         if _is_state_path(path):
+            if status and status[0] not in (' ', '?'):
+                staged_state_files.append(path)
             continue
-        if status == '??':
+        if extra_path and _is_state_path(extra_path) and status and status[0] not in (' ', '?'):
+            staged_state_files.append(extra_path)
+        if status in _UNMERGED_STATUSES:
+            unmerged_files.append(path)
+        elif status == '??':
             untracked_files.append(path)
         else:
             dirty_files.append(path)
             if extra_path and not _is_state_path(extra_path):
                 dirty_files.append(extra_path)
-    return sorted(set(dirty_files)), sorted(set(untracked_files))
+    return (
+        sorted(set(dirty_files)),
+        sorted(set(untracked_files)),
+        sorted(set(staged_state_files)),
+        sorted(set(unmerged_files)),
+    )
 
 
 def inspect_repo(config_dir, *, fetch=False):
@@ -69,6 +85,8 @@ def inspect_repo(config_dir, *, fetch=False):
         'dirty': False,
         'dirty_files': [],
         'untracked_files': [],
+        'staged_state_files': [],
+        'unmerged_files': [],
         'fetched': False,
         'fetch_error': None,
     }
@@ -111,8 +129,11 @@ def inspect_repo(config_dir, *, fetch=False):
     diverged = ahead > 0 and behind > 0
 
     status_res = _run_git(root, ['status', '--porcelain=v1', '-z', '-uall'], read_only=True)
-    dirty_files, untracked_files = _parse_porcelain_z(status_res.stdout) if status_res.returncode == 0 else ([], [])
-    dirty = bool(dirty_files or untracked_files)
+    if status_res.returncode == 0:
+        dirty_files, untracked_files, staged_state_files, unmerged_files = _parse_porcelain_z(status_res.stdout)
+    else:
+        dirty_files, untracked_files, staged_state_files, unmerged_files = [], [], [], []
+    dirty = bool(dirty_files or untracked_files or unmerged_files)
 
     if dirty:
         state = 'dirty'
@@ -139,6 +160,8 @@ def inspect_repo(config_dir, *, fetch=False):
         'dirty': dirty,
         'dirty_files': dirty_files,
         'untracked_files': untracked_files,
+        'staged_state_files': staged_state_files,
+        'unmerged_files': unmerged_files,
         'fetched': fetched,
         'fetch_error': fetch_error,
     }
@@ -364,6 +387,26 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False):
             return {'ready': False, 'preview_only': False, 'status': 'fetch_failed',
                     'reason': f"发布前检查远端失败：{info['fetch_error']}", 'repo': info}
 
+    if info['unmerged_files']:
+        return {
+            'ready': False,
+            'preview_only': dry_run,
+            'status': 'unmerged_conflicts',
+            'reason': '存在未解决的 Git 合并冲突路径，已阻止发布；请先手动解决冲突后再试。',
+            'unmerged_files': info['unmerged_files'],
+            'repo': info,
+        }
+
+    if info['staged_state_files']:
+        return {
+            'ready': False,
+            'preview_only': dry_run,
+            'status': 'staged_state_files',
+            'reason': '暂存区包含本机私有 .state/ 路径，已阻止发布；请先执行 `git reset HEAD -- .state/`。',
+            'staged_state_files': info['staged_state_files'],
+            'repo': info,
+        }
+
     validation = validate_data_repo(root)
     if not validation['ok']:
         first = validation['errors'][0]
@@ -459,7 +502,7 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False):
             detail = (add_res.stderr or add_res.stdout or 'git add failed').strip()
             return {'ready': False, 'preview_only': False, 'status': 'git_add_failed',
                     'reason': f'暂存改动失败：{detail}', 'files': files, 'repo': inspect_repo(root), 'validation': validation}
-        commit_res = _run_git(root, ['commit', '-m', proposed_message], read_only=False)
+        commit_res = _run_git(root, ['commit', '--only', '-m', proposed_message, '--', *files], read_only=False)
         if commit_res.returncode != 0:
             detail = (commit_res.stderr or commit_res.stdout or 'git commit failed').strip()
             return {'ready': False, 'preview_only': False, 'status': 'git_commit_failed',

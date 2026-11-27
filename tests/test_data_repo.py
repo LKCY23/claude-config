@@ -229,6 +229,47 @@ class DataRepoTests(unittest.TestCase):
         self.assertEqual(sync_rep['targets'][0]['outcome'], 'applied')
         self.assertEqual(parse_native('codex', fixture.native('codex').read_bytes())['model'], 'peer-updated')
 
+    def test_publish_blocks_staged_state_files_and_unmerged_conflicts(self):
+        fixture, _, peer = self._setup_git_data()
+
+        # 1) Force-staged .state/ file must block publish even with another valid config change.
+        secret_state = fixture.data / '.state' / 'private-journal.json'
+        secret_state.parent.mkdir(parents=True, exist_ok=True)
+        secret_state.write_text('{"secret":"local"}', encoding='utf-8')
+        run_git(fixture.data, 'add', '-f', '.state/private-journal.json')
+        local_prof = fixture.data / 'profiles/agents/codex/work.yaml'
+        good = yaml.safe_load(local_prof.read_text())
+        good['settings']['model'] = 'with-staged-state'
+        local_prof.write_text(yaml.safe_dump(good, sort_keys=False))
+
+        blocked_state = publish_repo(fixture.data, dry_run=False)
+        self.assertFalse(blocked_state['ready'])
+        self.assertEqual(blocked_state['status'], 'staged_state_files')
+        self.assertIn('.state/private-journal.json', blocked_state['staged_state_files'])
+
+        # Clean index & reset working tree for conflict test.
+        run_git(fixture.data, 'reset', '-q', 'HEAD', '--', '.state')
+        good['settings']['model'] = 'initial'
+        local_prof.write_text(yaml.safe_dump(good, sort_keys=False))
+
+        # 2) Unmerged conflict path (e.g., README.md not schema-validated) must block publish.
+        (peer / 'README.md').write_text('peer line\n', encoding='utf-8')
+        run_git(peer, 'add', 'README.md')
+        run_git(peer, 'commit', '-qm', 'peer readme')
+        run_git(peer, 'push', '-q')
+
+        (fixture.data / 'README.md').write_text('local line\n', encoding='utf-8')
+        run_git(fixture.data, 'add', 'README.md')
+        run_git(fixture.data, 'commit', '-qm', 'local readme')
+        run_git(fixture.data, 'fetch', '-q')
+        merge_proc = subprocess.run(['git', '-C', str(fixture.data), 'merge', '--no-edit', 'origin/master'], capture_output=True, text=True)
+        self.assertNotEqual(merge_proc.returncode, 0)
+
+        blocked_conflict = publish_repo(fixture.data, dry_run=False)
+        self.assertFalse(blocked_conflict['ready'])
+        self.assertEqual(blocked_conflict['status'], 'unmerged_conflicts')
+        self.assertIn('README.md', blocked_conflict['unmerged_files'])
+
 
 if __name__ == '__main__':
     unittest.main()

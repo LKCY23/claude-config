@@ -74,12 +74,29 @@ class Phase4CliHelpAndTypoTests(unittest.TestCase):
         self.assertEqual(payload['error']['code'], 'unknown_command')
         self.assertIn('status', payload['error']['reason'])
 
-        err_secret = io.StringIO()
-        with redirect_stderr(err_secret):
-            code_secret = cli_entry.main(['TOKEN=sk-secret-123'])
-        self.assertEqual(code_secret, 2)
-        self.assertNotIn('sk-secret-123', err_secret.getvalue())
-        self.assertIn('<command>', err_secret.getvalue())
+        for secret_token in (
+            'TOKEN=sk-secret-123',
+            'ghp_AbCdEf123456',
+            'sk-abc123456',
+            'sk-abcdef',
+            'AKIAIOSFODNN7EXAMPLE',
+            'my_secret_token_99',
+            'token-secret',
+        ):
+            with self.subTest(secret_token=secret_token):
+                err_secret = io.StringIO()
+                with redirect_stderr(err_secret):
+                    code_secret = cli_entry.main([secret_token])
+                self.assertEqual(code_secret, 2)
+                self.assertNotIn(secret_token, err_secret.getvalue())
+                self.assertIn('<command>', err_secret.getvalue())
+
+                out_secret_json = io.StringIO()
+                with redirect_stdout(out_secret_json):
+                    code_secret_json = cli_entry.main([secret_token, '--format', 'json'])
+                self.assertEqual(code_secret_json, 2)
+                self.assertNotIn(secret_token, out_secret_json.getvalue())
+                self.assertIn('<command>', out_secret_json.getvalue())
 
 
 class Phase4DocsAndSkillTests(unittest.TestCase):

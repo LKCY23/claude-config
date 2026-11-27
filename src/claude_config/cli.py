@@ -68,9 +68,20 @@ def _wants_json(args):
     return mode == 'json'
 
 
+_SECRET_PREFIXES = (
+    'sk-', 'pk-', 'rk-', 'ghp-', 'gho-', 'ghu-', 'ghs-', 'ghr-',
+    'xox', 'akia', 'bearer', 'token', 'secret', 'apikey', 'api-key',
+)
+
+
 def _unknown_command(command, rest):
-    safe_label = command if re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_-]{0,31}', command) else '<command>'
-    suggestions = difflib.get_close_matches(command.lower(), _ALL_COMMANDS, n=3, cutoff=0.6)
+    safe = (
+        isinstance(command, str)
+        and bool(re.fullmatch(r'[a-z][a-z-]{0,23}', command))
+        and not any(command.startswith(prefix) for prefix in _SECRET_PREFIXES)
+    )
+    safe_label = command if safe else '<command>'
+    suggestions = difflib.get_close_matches(command, _ALL_COMMANDS, n=3, cutoff=0.6) if safe else []
     hint = f"（你是否想输入：{'、'.join(suggestions)}）" if suggestions else ''
     reason = f'未知子命令：{safe_label}{hint}；请运行 claude-config --help 查看全部命令。'
     if _wants_json(rest):

@@ -274,7 +274,10 @@ def validate_machine(value):
         for name, entry in mapping(value[group], group).items():
             require(name in kinds, 'Unknown Machine entry: ' + name)
             keys = ('binding',) if external else ('profile', 'binding')
-            closed(entry, keys, keys, 'Machine entry')
+            allowed_keys = (*keys, 'sync_mode') if group == 'apps' else keys
+            closed(entry, allowed_keys, keys, 'Machine entry')
+            if 'sync_mode' in entry:
+                require(entry['sync_mode'] in ('auto', 'manual'), 'App sync_mode must be auto or manual')
             if not external:
                 profile_path(entry['profile'], group, name)
             if group == 'agents' and name == 'antigravity':

@@ -27,9 +27,11 @@ def _style(text, code, color):
     return f'{code}{text}{_ANSI_RESET}' if color else text
 
 
-def _select_targets(machine, agent_filter, app_filter):
+def _select_targets(machine, agent_filter, app_filter, *, agents_only=False):
     bound_agents = machine.get('agents', {})
     bound_apps = machine.get('apps', {})
+    if agents_only and app_filter:
+        raise UsageError('--agents-only 与 --app 不能同时使用')
     if agent_filter:
         for agent in agent_filter:
             if agent not in bound_agents:
@@ -38,9 +40,15 @@ def _select_targets(machine, agent_filter, app_filter):
         for app in app_filter:
             if app not in bound_apps:
                 raise UsageError(f'machine.yaml 中未绑定 app: {app}')
+    if agents_only:
+        agents = list(agent_filter) if agent_filter else _ordered_keys(bound_agents, AGENT_ORDER)
+        return agents, [], []
     if agent_filter is None and app_filter is None:
-        return _ordered_keys(bound_agents, AGENT_ORDER), _ordered_keys(bound_apps, APP_ORDER)
-    return list(agent_filter or ()), list(app_filter or ())
+        all_apps = _ordered_keys(bound_apps, APP_ORDER)
+        auto_apps = [app for app in all_apps if bound_apps[app].get('sync_mode', 'auto') != 'manual']
+        manual_apps = [app for app in all_apps if bound_apps[app].get('sync_mode', 'auto') == 'manual']
+        return _ordered_keys(bound_agents, AGENT_ORDER), auto_apps, manual_apps
+    return list(agent_filter or ()), list(app_filter or ()), []
 
 
 def _plan_all_targets(machine_file, selected_agents, selected_apps, baselines, *, prepare=False):
@@ -173,6 +181,10 @@ def render_sync(report, *, color=False):
             badge = _style('✗ 失败', _ANSI_RED, color)
             lines.append(f"  {badge}  {name} [{profile}] — {item.get('reason') or '执行失败'}")
 
+    manual_skipped = report.get('skipped_manual_apps', [])
+    if manual_skipped:
+        lines.append(f"  · 已跳过 manual App：{', '.join(manual_skipped)}（如需同步请显式指定 --app）")
+
     if report['preview_only'] and report.get('has_pending'):
         lines.append('')
         lines.append('提示：当前仅预览，未写入任何目标；如需执行请追加 --yes。')
@@ -206,6 +218,7 @@ def run_sync(
     *,
     agent_filter=None,
     app_filter=None,
+    agents_only=False,
     skip_baseline=False,
     git_transport=DEFAULT_GIT_TRANSPORT,
     dry_run=False,
@@ -218,7 +231,9 @@ def run_sync(
     profiles = MachineProfiles(machine_file, strict=True)
     machine = profiles.effective
     state_root = state_directory(machine)
-    selected_agents, selected_apps = _select_targets(machine, agent_filter, app_filter)
+    selected_agents, selected_apps, skipped_manual_apps = _select_targets(
+        machine, agent_filter, app_filter, agents_only=agents_only,
+    )
 
     baselines = {'aligned': True, 'groups': []} if skip_baseline else inspect_baselines(machine_file)
     baseline_preview = None if skip_baseline else sync_baseline_groups(machine_file, write=False)
@@ -251,6 +266,8 @@ def run_sync(
         'machine_file': str(machine_file),
         'state_root': str(state_root),
         'has_pending': has_pending,
+        'agents_only': agents_only,
+        'skipped_manual_apps': skipped_manual_apps,
         'baseline': baseline_stage,
         'targets': preview_items,
     }
@@ -331,6 +348,8 @@ def run_sync(
         'machine_file': str(machine_file),
         'state_root': str(state_root),
         'has_pending': False,
+        'agents_only': agents_only,
+        'skipped_manual_apps': skipped_manual_apps,
         'baseline': baseline_stage,
         'targets': result_targets,
     }
@@ -345,6 +364,7 @@ def _build_parser():
     parser.add_argument('--machine', type=Path, default=Path.home() / '.claude-config-tool/machine.yaml')
     parser.add_argument('--agent', action='append', choices=AGENT_ORDER, help='仅同步指定 Agent（可重复）')
     parser.add_argument('--app', action='append', choices=APP_ORDER, help='仅同步指定 App（可重复）')
+    parser.add_argument('--agents-only', action='store_true', help='仅同步 Agent 配置，跳过所有桌面 App')
     parser.add_argument('--skip-baseline', action='store_true', help='跳过第 1 阶段基线检查与同步')
     parser.add_argument('--git-transport', choices=GIT_TRANSPORTS, default=DEFAULT_GIT_TRANSPORT)
     parser.add_argument('--dry-run', action='store_true', help='仅预览各阶段变更，不拉取或写入文件')
@@ -366,6 +386,7 @@ def main(argv):
             args.machine,
             agent_filter=args.agent,
             app_filter=args.app,
+            agents_only=args.agents_only,
             skip_baseline=args.skip_baseline,
             git_transport=args.git_transport,
             dry_run=args.dry_run,

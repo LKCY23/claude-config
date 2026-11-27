@@ -159,22 +159,28 @@ def inspect_status(machine_path, *, agent_filter=None, app_filter=None):
 
     targets = []
     empty_logical = {'settings': 0, 'resources': 0, 'other': 0, 'total': 0}
+    def _add_error(kind, name, profile_name, reason, hint, *, sync_mode=None):
+        entry = {
+            'kind': kind,
+            'name': name,
+            'profile': profile_name,
+            'state': 'error',
+            'plan_id': None,
+            'logical_changes': dict(empty_logical),
+            'pending_file_writes': 0,
+            'conflicts_count': 0,
+            'blockers': [],
+            'reason': reason,
+            'hint': hint,
+        }
+        if sync_mode is not None:
+            entry['sync_mode'] = sync_mode
+        targets.append(entry)
+
     for agent in selected_agents:
         profile_name = bound_agents[agent].get('profile')
         if not profile_name:
-            targets.append({
-                'kind': 'agent',
-                'name': agent,
-                'profile': None,
-                'state': 'error',
-                'plan_id': None,
-                'logical_changes': dict(empty_logical),
-                'pending_file_writes': 0,
-                'conflicts_count': 0,
-                'blockers': [],
-                'reason': f'{agent} 仅存在于本机 machine.yaml，缺少 machines/<id>.yaml 中的 Profile 声明',
-                'hint': 'claude-config doctor',
-            })
+            _add_error('agent', agent, None, f'{agent} 仅存在于本机 machine.yaml，缺少 machines/<id>.yaml 中的 Profile 声明', 'claude-config doctor')
             continue
         progress(f'检查 {agent} 状态')
         try:
@@ -183,57 +189,25 @@ def inspect_status(machine_path, *, agent_filter=None, app_filter=None):
             targets.append(_classify_target_plan('agent', agent, profile_name, plan, baselines))
         except Exception as exc:
             reason = str(exc) if isinstance(exc, SchemaError) else f'{agent} 状态检查失败'
-            targets.append({
-                'kind': 'agent',
-                'name': agent,
-                'profile': profile_name,
-                'state': 'error',
-                'plan_id': None,
-                'logical_changes': dict(empty_logical),
-                'pending_file_writes': 0,
-                'conflicts_count': 0,
-                'blockers': [],
-                'reason': reason,
-                'hint': 'claude-config baseline sync --write' if not baselines.get('aligned', True) else f'claude-config plan --agent {agent}',
-            })
+            hint = 'claude-config baseline sync --write' if not baselines.get('aligned', True) else f'claude-config plan --agent {agent}'
+            _add_error('agent', agent, profile_name, reason, hint)
 
     for app in selected_apps:
         profile_name = bound_apps[app].get('profile')
+        sync_mode = bound_apps[app].get('sync_mode', 'auto')
         if not profile_name:
-            targets.append({
-                'kind': 'app',
-                'name': app,
-                'profile': None,
-                'state': 'error',
-                'plan_id': None,
-                'logical_changes': dict(empty_logical),
-                'pending_file_writes': 0,
-                'conflicts_count': 0,
-                'blockers': [],
-                'reason': f'{app} 仅存在于本机 machine.yaml，缺少 machines/<id>.yaml 中的 Profile 声明',
-                'hint': 'claude-config doctor',
-            })
+            _add_error('app', app, None, f'{app} 仅存在于本机 machine.yaml，缺少 machines/<id>.yaml 中的 Profile 声明', 'claude-config doctor', sync_mode=sync_mode)
             continue
         progress(f'检查 {app} 状态')
         try:
             mgr = AppProfileManager(machine_file, app, machine_strict=False)
             plan = mgr.plan(prepare=False)
-            targets.append(_classify_target_plan('app', app, profile_name, plan, baselines))
+            item = _classify_target_plan('app', app, profile_name, plan, baselines)
+            item['sync_mode'] = sync_mode
+            targets.append(item)
         except Exception as exc:
             reason = str(exc) if isinstance(exc, SchemaError) else f'{app} 状态检查失败'
-            targets.append({
-                'kind': 'app',
-                'name': app,
-                'profile': profile_name,
-                'state': 'error',
-                'plan_id': None,
-                'logical_changes': dict(empty_logical),
-                'pending_file_writes': 0,
-                'conflicts_count': 0,
-                'blockers': [],
-                'reason': reason,
-                'hint': f'claude-config plan --app {app}',
-            })
+            _add_error('app', app, profile_name, reason, f'claude-config plan --app {app}', sync_mode=sync_mode)
 
     counts = {'synced': 0, 'pending': 0, 'conflict': 0, 'blocked': 0, 'error': 0}
     for item in targets:
@@ -345,6 +319,8 @@ def render_status(report, *, color=False):
     for item in report['targets']:
         badge, detail = _describe_target(item, color=color)
         profile_label = item.get('profile') or '-'
+        if item.get('kind') == 'app' and item.get('sync_mode') == 'manual':
+            profile_label = f'{profile_label} | manual'
         lines.append(f"  {badge}  {item['name']} [{profile_label}] — {detail}")
 
     hints = []

@@ -170,9 +170,11 @@ class TerminalUIContractTests(unittest.TestCase):
 
         plug = plugin_summary({
             'plugins': [{'resource': 'p@cat', 'installed_version': '1.0.0', 'selected_version': '1.0.0',
-                         'pin_source': 'catalog', 'desired_enabled': True, 'enabled': True, 'status': '已同步'}],
+                         'pin_source': 'catalog', 'desired_enabled': True, 'enabled': True,
+                         'status': 'in_sync', 'session_verified': False}],
         }, color=False)
         self.assertIn('p@cat', plug)
+        self.assertIn('会话=未验证', plug)
 
     def test_pty_single_line_progress_and_prompt_input_pauses_heartbeat(self):
         script = (

@@ -56,12 +56,14 @@ def summary(report, *, color=False):
     name_w = max((len(str(row['resource'])) for row in rows), default=12)
     for row in rows:
         st = row['status']
-        kind = 'success' if st in ('已同步', 'ok', 'installed') else 'warning' if '待' in st or '未' in st or '冲突' in st else 'muted'
+        kind = 'success' if st in ('已同步', 'in_sync', 'ok', 'installed') else 'warning' if '待' in st or '未' in st or '冲突' in st or 'not_' in st else 'muted'
+        session_note = '会话=已验证' if row.get('session_verified') else '会话=未验证'
         lines.append(
             f"  {badge(kind, st, color=color)}  {pad_display(row['resource'], name_w)}  "
             f"已装={row.get('installed_version') or '无'}  "
             f"声明={row.get('selected_version') or '未验证'}  来源={row.get('pin_source') or 'catalog'}  "
-            f"期望启用={row.get('desired_enabled')}  实际启用={row.get('enabled')}"
+            f"期望启用={row.get('desired_enabled')}  实际启用={row.get('enabled')}  "
+            f"{style(session_note, 'muted', color=color)}"
         )
     return '\n'.join(lines)
 

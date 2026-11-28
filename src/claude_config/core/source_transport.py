@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 
 from .catalog import verify_git
-from .native import parse_json
+from .native import parse_json_document
 from .reporting import _private_path
 from .schema import SchemaError, require
 
@@ -191,7 +191,7 @@ def github_api(path, *, binary=False, gh_runner=None, http_opener=None, access_s
         data = gh_runner(args)
         if access_state is not None:
             access_state['release_access'] = 'gh'
-        return data if binary else parse_json(data)
+        return data if binary else parse_json_document(data)
     except (SchemaError, FileNotFoundError) as exc:
         if not _is_auth_unavailable(exc):
             raise
@@ -199,4 +199,4 @@ def github_api(path, *, binary=False, gh_runner=None, http_opener=None, access_s
         if access_state is not None:
             access_state['release_access'] = 'public-https-fallback'
             access_state['release_fallback_reason'] = 'gh_auth_unavailable'
-        return data if binary else parse_json(data)
+        return data if binary else parse_json_document(data)

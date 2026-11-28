@@ -566,6 +566,19 @@ class PluginManagementTests(ResourceFixture):
         self.assertTrue(json.loads(out.getvalue())['prepared_sources'])
         self.assertFalse(self.lock.exists())
 
+    def test_release_commit_parses_github_releases_json_array(self):
+        from claude_config.core.plugin_manager import release_commit
+        sha = 'a' * 40
+        def fake_gh(args, **kwargs):
+            path = args[2]
+            if path == 'repos/example/clarity/releases?per_page=100&page=1':
+                return json.dumps([{'tag_name': 'v0.8.0', 'draft': False}]).encode()
+            if path == 'repos/example/clarity/git/ref/tags/v0.8.0':
+                return json.dumps({'object': {'type': 'commit', 'sha': sha}}).encode()
+            raise AssertionError(f'Unexpected gh api path: {path}')
+        with patch('claude_config.fetch_baseline.command', side_effect=fake_gh):
+            self.assertEqual(release_commit('example/clarity', '0.8.0'), sha)
+
 
 if __name__ == '__main__':
     unittest.main()

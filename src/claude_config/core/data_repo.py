@@ -19,6 +19,14 @@ def _run_git(root, args, *, read_only=True, timeout=60):
     return subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
 
 
+def _run_git_bytes(root, args, *, read_only=True, timeout=60):
+    cmd = ['git']
+    if read_only:
+        cmd.append('--no-optional-locks')
+    cmd.extend(['-C', str(root), *args])
+    return subprocess.run(cmd, capture_output=True, text=False, check=False, timeout=timeout)
+
+
 _UNMERGED_STATUSES = frozenset(('DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'))
 
 
@@ -179,9 +187,15 @@ def pull_repo(config_dir, *, dry_run=False, fetch=True):
         return {'ready': False, 'preview_only': dry_run, 'status': 'fetch_failed',
                 'pulled': False, 'reason': f"拉取远端失败：{info['fetch_error']}", 'repo': info, 'updated_files': []}
     if info['dirty']:
+        behind = info.get('behind', 0)
+        reason = (
+            f"配置仓库存在未提交改动且远端领先 {behind} 个提交，已阻止直接 fast-forward 拉取；请运行 claude-config data publish 自动对齐/安全变基，或先 git stash 后再拉取。"
+            if behind > 0
+            else '配置仓库存在未提交改动，已阻止拉取；请先执行 claude-config data publish 或手动处理改动。'
+        )
         return {'ready': False, 'preview_only': dry_run, 'status': 'dirty',
                 'pulled': False,
-                'reason': '配置仓库存在未提交改动，已阻止拉取；请先执行 claude-config data publish 或手动处理改动。',
+                'reason': reason,
                 'repo': info, 'updated_files': []}
     if not info['upstream']:
         return {'ready': False, 'preview_only': dry_run, 'status': 'no_upstream',
@@ -373,17 +387,70 @@ def _default_commit_message(files):
     return f"chore(config): update {', '.join(labels)}{suffix}"
 
 
-def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False):
-    """Validate config_dir, show diff preview, or stage/commit/push (or open PR)."""
+def _local_changes_match_upstream(root, upstream, files):
+    """Return True when every changed local path matches the blob/absence in upstream."""
+    if not files or not upstream:
+        return False
+    for rel in files:
+        target = root / rel
+        if target.is_symlink():
+            return False
+        exists_in_upstream = _run_git(root, ['cat-file', '-e', f'{upstream}:{rel}'], read_only=True).returncode == 0
+        if not exists_in_upstream:
+            if target.exists():
+                return False
+            continue
+        if not target.is_file():
+            return False
+        blob_res = _run_git_bytes(root, ['cat-file', 'blob', f'{upstream}:{rel}'], read_only=True)
+        if blob_res.returncode != 0:
+            return False
+        try:
+            if target.read_bytes() != blob_res.stdout:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _changed_files_between(root, rev_range):
+    res = _run_git(root, ['diff', '--name-only', rev_range], read_only=True)
+    if res.returncode != 0:
+        return None
+    return {line.strip() for line in res.stdout.splitlines() if line.strip()}
+
+
+def _revert_redundant_local_changes(root, info):
+    for rel in info['dirty_files']:
+        in_head = _run_git(root, ['cat-file', '-e', f'HEAD:{rel}'], read_only=True).returncode == 0
+        _run_git(root, ['reset', '-q', 'HEAD', '--', rel], read_only=False)
+        if in_head:
+            res = _run_git(root, ['checkout', '--', rel], read_only=False)
+            if res.returncode != 0:
+                return (res.stderr or res.stdout or f'git checkout failed for {rel}').strip()
+        else:
+            target = root / rel
+            if target.exists() and not target.is_dir():
+                target.unlink()
+    for rel in info['untracked_files']:
+        target = root / rel
+        if target.exists() and not target.is_dir():
+            target.unlink()
+    return None
+
+
+def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False, fetch=None):
+    """Validate config_dir, show diff preview, reconcile safe behind states, or stage/commit/push."""
     root = Path(config_dir).expanduser().absolute()
     info = inspect_repo(root, fetch=False)
     if not info['is_git']:
         return {'ready': False, 'preview_only': dry_run, 'status': 'not_git',
                 'reason': f'配置目录不是 Git 仓库：{root}', 'repo': info}
 
-    if info['upstream'] and not dry_run and not create_pr:
+    should_fetch = (not create_pr) if fetch is None else bool(fetch)
+    if info['upstream'] and should_fetch:
         info = inspect_repo(root, fetch=True)
-        if info['fetch_error']:
+        if info['fetch_error'] and not dry_run:
             return {'ready': False, 'preview_only': False, 'status': 'fetch_failed',
                     'reason': f"发布前检查远端失败：{info['fetch_error']}", 'repo': info}
 
@@ -434,16 +501,90 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False):
             'repo': info,
         }
 
+    stat_res = _run_git(root, ['diff', '--stat', '--', *info['dirty_files']], read_only=True) if info['dirty_files'] else None
+    diff_stat = stat_res.stdout.strip() if stat_res and stat_res.returncode == 0 else ''
+    if info['untracked_files']:
+        extra = '\n'.join(f' {f} (new untracked file)' for f in info['untracked_files'])
+        diff_stat = f'{diff_stat}\n{extra}'.strip()
+
+    will_rebase = False
     if info['behind'] > 0 and not create_pr:
-        return {
-            'ready': False,
-            'preview_only': dry_run,
-            'status': 'behind_remote',
-            'reason': f"远端领先 {info['behind']} 个提交，请先执行 claude-config data pull。",
-            'files': files,
-            'validation': validation,
-            'repo': info,
-        }
+        upstream = info['upstream']
+        # Case A: local uncommitted changes match remote tip identically.
+        if info['ahead'] == 0 and files and _local_changes_match_upstream(root, upstream, files):
+            if dry_run:
+                return {
+                    'ready': True,
+                    'preview_only': True,
+                    'status': 'pending_reconcile_identical',
+                    'reconcile_mode': 'drop_identical_and_pull',
+                    'behind': info['behind'],
+                    'files': files,
+                    'diff_stat': diff_stat,
+                    'proposed_message': None,
+                    'ahead': 0,
+                    'create_pr': False,
+                    'validation': validation,
+                    'repo': info,
+                }
+            revert_err = _revert_redundant_local_changes(root, info)
+            if revert_err:
+                return {'ready': False, 'preview_only': False, 'status': 'reconcile_failed',
+                        'reason': f'清理重复本地改动失败：{revert_err}', 'files': files,
+                        'validation': validation, 'repo': inspect_repo(root)}
+            pull_res = _run_git(root, ['pull', '--ff-only'], read_only=False)
+            if pull_res.returncode != 0:
+                detail = (pull_res.stderr or pull_res.stdout or 'git pull --ff-only failed').strip()
+                return {'ready': False, 'preview_only': False, 'status': 'pull_failed',
+                        'reason': f'对齐远端提交失败：{detail}', 'files': files,
+                        'validation': validation, 'repo': inspect_repo(root)}
+            after_info = inspect_repo(root, fetch=False)
+            return {
+                'ready': True,
+                'preview_only': False,
+                'status': 'reconciled_with_remote',
+                'committed': False,
+                'pushed': False,
+                'pulled_commits': info['behind'],
+                'files': files,
+                'branch': after_info['branch'],
+                'commit': after_info['head'],
+                'validation': validation,
+                'repo': after_info,
+            }
+
+        remote_files = _changed_files_between(root, f'HEAD...{upstream}')
+        ahead_files = _changed_files_between(root, f'{upstream}...HEAD') if info['ahead'] > 0 else set()
+        if remote_files is not None and ahead_files is not None:
+            local_all_files = set(files) | ahead_files
+            overlap = sorted(local_all_files & remote_files)
+            if not overlap:
+                will_rebase = True
+            else:
+                sample = overlap[0]
+                return {
+                    'ready': False,
+                    'preview_only': dry_run,
+                    'status': 'behind_conflict',
+                    'overlapping_files': overlap,
+                    'reason': (
+                        f"远端领先 {info['behind']} 个提交且与本地改动重叠（{', '.join(overlap[:3])}），无法直接推送；"
+                        f"请先用 `git -C {root} diff {upstream} -- {sample}` 查看差异，或改用 `claude-config data publish --pr` 提交分支 PR。"
+                    ),
+                    'files': files,
+                    'validation': validation,
+                    'repo': info,
+                }
+        else:
+            return {
+                'ready': False,
+                'preview_only': dry_run,
+                'status': 'behind_conflict',
+                'reason': f"远端领先 {info['behind']} 个提交且无法安全分析差异；请手动 rebase/merge 或改用 `claude-config data publish --pr`。",
+                'files': files,
+                'validation': validation,
+                'repo': info,
+            }
 
     if not create_pr and not info['upstream']:
         return {
@@ -457,11 +598,6 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False):
         }
 
     proposed_message = message or _default_commit_message(files)
-    stat_res = _run_git(root, ['diff', '--stat', '--', *info['dirty_files']], read_only=True) if info['dirty_files'] else None
-    diff_stat = stat_res.stdout.strip() if stat_res and stat_res.returncode == 0 else ''
-    if info['untracked_files']:
-        extra = '\n'.join(f' {f} (new untracked file)' for f in info['untracked_files'])
-        diff_stat = f'{diff_stat}\n{extra}'.strip()
 
     if dry_run:
         return {
@@ -472,6 +608,8 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False):
             'diff_stat': diff_stat,
             'proposed_message': proposed_message,
             'ahead': info['ahead'],
+            'behind': info['behind'],
+            'will_rebase': will_rebase,
             'create_pr': create_pr,
             'validation': validation,
             'repo': info,
@@ -494,6 +632,8 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False):
         target_branch = candidate
         created_branch = candidate
 
+    orig_head = info['head_full']
+    pre_rebase_head = orig_head
     commit_sha = info['head']
     committed = False
     if files:
@@ -508,7 +648,47 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False):
             return {'ready': False, 'preview_only': False, 'status': 'git_commit_failed',
                     'reason': f'提交失败：{detail}', 'files': files, 'repo': inspect_repo(root), 'validation': validation}
         committed = True
-        commit_sha = inspect_repo(root)['head']
+        after_commit = inspect_repo(root, fetch=False)
+        commit_sha = after_commit['head']
+        pre_rebase_head = after_commit['head_full']
+
+    rebased = False
+    if will_rebase and info['upstream']:
+        rebase_res = _run_git(root, ['rebase', info['upstream']], read_only=False)
+        if rebase_res.returncode != 0:
+            _run_git(root, ['rebase', '--abort'], read_only=False)
+            if pre_rebase_head:
+                _run_git(root, ['reset', '--hard', pre_rebase_head], read_only=False)
+            if committed and orig_head:
+                _run_git(root, ['reset', '--mixed', orig_head], read_only=False)
+            detail = (rebase_res.stderr or rebase_res.stdout or 'git rebase failed').strip()
+            return {
+                'ready': False,
+                'preview_only': False,
+                'status': 'behind_conflict',
+                'reason': f"安全变基到 {info['upstream']} 失败，已完整还原本地工作区；请先手动同步或改用 `claude-config data publish --pr`。（{detail}）",
+                'files': files,
+                'validation': validation,
+                'repo': inspect_repo(root, fetch=False),
+            }
+        rebased = True
+        after_rebase = inspect_repo(root, fetch=False)
+        commit_sha = after_rebase['head']
+        validation = validate_data_repo(root)
+        if not validation['ok']:
+            if pre_rebase_head:
+                _run_git(root, ['reset', '--hard', pre_rebase_head], read_only=False)
+            if committed and orig_head:
+                _run_git(root, ['reset', '--mixed', orig_head], read_only=False)
+            first = validation['errors'][0]
+            return {
+                'ready': False,
+                'preview_only': False,
+                'status': 'validation_failed',
+                'reason': f"变基合并后校验未通过（{first['file']}），已完整还原现场：{first['reason']}",
+                'validation': validation,
+                'repo': inspect_repo(root, fetch=False),
+            }
 
     push_args = ['push', '-u', 'origin', target_branch] if (create_pr or created_branch) else ['push']
     push_res = _run_git(root, push_args, read_only=False)
@@ -523,6 +703,7 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False):
             'commit': commit_sha,
             'branch': target_branch,
             'files': files,
+            'rebased': rebased,
             'validation': validation,
             'repo': inspect_repo(root),
         }
@@ -542,7 +723,7 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False):
             pr_error = (gh_res.stderr or gh_res.stdout or 'gh pr create failed').strip()
 
     after_info = inspect_repo(root, fetch=False)
-    return {
+    result = {
         'ready': pr_error is None,
         'preview_only': False,
         'status': 'published' if pr_error is None else 'pr_failed',
@@ -553,10 +734,14 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False):
         'proposed_message': proposed_message,
         'pushed': True,
         'pr_url': pr_url,
+        'rebased': rebased,
         'reason': f'已推送分支 {target_branch}，但创建 PR 失败：{pr_error}' if pr_error else None,
         'validation': validation,
         'repo': after_info,
     }
+    if rebased:
+        result['pulled_commits'] = info['behind']
+    return result
 
 
 def format_dirty_hint(config_dir):

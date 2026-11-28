@@ -15,7 +15,7 @@ import tomlkit
 
 from .fields import capability_checks, leaves
 from .merge import MISSING, get, same
-from .schema import StrictLoader, json_value, mapping
+from .schema import StrictLoader, json_value, mapping, require
 from .transaction import PlanStale, atomic_write
 import yaml
 
@@ -47,7 +47,7 @@ def snapshot_read(path):
     return content, {'exists': True, 'sha256': hashlib.sha256(content).hexdigest(), 'mode': before.st_mode & 0o777}
 
 
-def parse_json(content):
+def parse_json_document(content):
     def pairs(rows):
         value = {}
         for key, child in rows:
@@ -57,7 +57,12 @@ def parse_json(content):
         return value
     value = json.loads(content, object_pairs_hook=pairs) if content else {}
     json_value(value)
-    return mapping(value, 'native JSON')
+    require(isinstance(value, (dict, list)), 'JSON payload must be an object or array')
+    return value
+
+
+def parse_json(content):
+    return mapping(parse_json_document(content), 'native JSON')
 
 
 def parse_json_or_empty(content):

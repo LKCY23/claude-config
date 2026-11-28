@@ -361,7 +361,13 @@ class DataRepoTests(unittest.TestCase):
         self.assertEqual(blocked['status'], 'behind_conflict')
         self.assertIn('profiles/agents/codex/work.yaml', blocked['overlapping_files'])
         self.assertNotIn('claude-config data pull', blocked['reason'])
+        self.assertIn('--no-pager', blocked['reason'])
+        self.assertIn('--prefer-local', blocked['reason'])
         self.assertIn('--pr', blocked['reason'])
+        self.assertTrue(blocked['can_prefer_local'])
+        self.assertFalse(blocked['metadata_only_lock_diff'])
+        self.assertIn('-  model: remote-other', blocked['diff_vs_upstream'])
+        self.assertIn('+  model: local-conflict', blocked['diff_vs_upstream'])
 
         pull_blocked = pull_repo(fixture.data, dry_run=False, fetch=True)
         self.assertFalse(pull_blocked['ready'])
@@ -379,6 +385,163 @@ class DataRepoTests(unittest.TestCase):
         with patch('builtins.input', return_value='n'), redirect_stdout(buf):
             self.assertFalse(_confirm_publish(sample, False))
         self.assertNotIn('追加 --yes', buf.getvalue())
+
+    def test_publish_behind_conflict_detects_lockfile_metadata_only_diff_and_renders_inline(self):
+        fixture, _, peer = self._setup_git_data()
+        lock_rel = 'profiles/agents/claude-code/work.plugins.lock.yaml'
+        base_pin = {
+            'catalog': {'repo': 'example/catalog', 'commit': 'a' * 40, 'path': '.'},
+            'source': {'repo': 'example/clarity', 'commit': 'b' * 40, 'path': 'release/plugin'},
+            'version': '0.8.0',
+            'source_fingerprint': 'c' * 64,
+            'resolution': {'kind': 'commit', 'requested': 'b' * 40},
+        }
+        remote_lock = {
+            'schema_version': 1,
+            'agent_type': 'claude-code',
+            'profile': 'profiles/agents/claude-code/work.yaml',
+            'plugins': {'clarity@personal': base_pin},
+        }
+        (peer / lock_rel).write_text(yaml.safe_dump(remote_lock, sort_keys=False), encoding='utf-8')
+        run_git(peer, 'add', lock_rel)
+        run_git(peer, 'commit', '-qm', 'peer locks clarity by commit')
+        run_git(peer, 'push', '-q')
+
+        local_lock = yaml.safe_load(yaml.safe_dump(remote_lock, sort_keys=False))
+        local_lock['plugins']['clarity@personal']['resolution'] = {'kind': 'release', 'requested': '0.8.0'}
+        (fixture.data / lock_rel).write_text(yaml.safe_dump(local_lock, sort_keys=False), encoding='utf-8')
+
+        code, out = self._run_cli([
+            'data', 'publish', '--machine', str(fixture.machine_path), '--dry-run', '--format', 'text',
+        ])
+        self.assertEqual(code, 1, out)
+        self.assertIn('git --no-pager -C', out)
+        self.assertIn('仅来源元数据（resolution）不同', out)
+        self.assertIn('kind: commit', out)
+        self.assertIn('kind: release', out)
+
+        # Changing version/fingerprint must NOT be classified as metadata-only.
+        local_lock['plugins']['clarity@personal']['version'] = '0.8.1'
+        local_lock['plugins']['clarity@personal']['resolution'] = {'kind': 'release', 'requested': '0.8.1'}
+        (fixture.data / lock_rel).write_text(yaml.safe_dump(local_lock, sort_keys=False), encoding='utf-8')
+        blocked = publish_repo(fixture.data, dry_run=True)
+        self.assertEqual(blocked['status'], 'behind_conflict')
+        self.assertFalse(blocked['metadata_only_lock_diff'])
+
+    def test_publish_prefer_local_previews_net_diff_preserves_disjoint_remote_and_pushes(self):
+        fixture, _, peer = self._setup_git_data()
+
+        # Peer edits both codex/work.yaml (overlapping) and claude-code/work.yaml (disjoint).
+        peer_codex = peer / 'profiles/agents/codex/work.yaml'
+        pc = yaml.safe_load(peer_codex.read_text())
+        pc['settings']['model'] = 'remote-codex'
+        peer_codex.write_text(yaml.safe_dump(pc, sort_keys=False))
+        peer_cc = peer / 'profiles/agents/claude-code/work.yaml'
+        pcc = yaml.safe_load(peer_cc.read_text())
+        pcc['settings']['model'] = 'peer-claude-must-survive'
+        peer_cc.write_text(yaml.safe_dump(pcc, sort_keys=False))
+        run_git(peer, 'commit', '-qam', 'peer updates codex and claude-code')
+        run_git(peer, 'push', '-q')
+
+        # Local (behind by 1, ahead == 0) edits only codex/work.yaml.
+        local_codex = fixture.data / 'profiles/agents/codex/work.yaml'
+        lc = yaml.safe_load(local_codex.read_text())
+        lc['settings']['model'] = 'local-preferred-codex'
+        local_codex.write_text(yaml.safe_dump(lc, sort_keys=False))
+
+        code_prev, out_prev = self._run_cli([
+            'data', 'publish', '--machine', str(fixture.machine_path), '--prefer-local', '--dry-run', '--format', 'json',
+        ])
+        self.assertEqual(code_prev, 0, out_prev)
+        prev_rep = json.loads(out_prev)
+        self.assertTrue(prev_rep['ready'])
+        self.assertTrue(prev_rep['prefer_local'])
+        self.assertEqual(prev_rep['status'], 'pending')
+        self.assertEqual(prev_rep['overlapping_files'], ['profiles/agents/codex/work.yaml'])
+        self.assertIn('-  model: remote-codex', prev_rep['diff_vs_upstream'])
+        self.assertIn('+  model: local-preferred-codex', prev_rep['diff_vs_upstream'])
+
+        code_exec, out_exec = self._run_cli([
+            'data', 'publish', '--machine', str(fixture.machine_path), '--prefer-local', '--yes', '--format', 'json',
+        ])
+        self.assertEqual(code_exec, 0, out_exec)
+        exec_rep = json.loads(out_exec)
+        self.assertTrue(exec_rep['ready'])
+        self.assertEqual(exec_rep['status'], 'published')
+        self.assertTrue(exec_rep['prefer_local'])
+        self.assertTrue(exec_rep['rebased'])
+        self.assertEqual(exec_rep['pulled_commits'], 1)
+
+        run_git(peer, 'pull', '--ff-only', '-q')
+        self.assertEqual(yaml.safe_load((peer / 'profiles/agents/codex/work.yaml').read_text())['settings']['model'], 'local-preferred-codex')
+        self.assertEqual(yaml.safe_load((peer / 'profiles/agents/claude-code/work.yaml').read_text())['settings']['model'], 'peer-claude-must-survive')
+        self.assertEqual(yaml.safe_load((fixture.data / 'profiles/agents/claude-code/work.yaml').read_text())['settings']['model'], 'peer-claude-must-survive')
+        self.assertFalse(inspect_repo(fixture.data, fetch=False)['dirty'])
+
+    def test_publish_prefer_local_blocks_when_ahead_or_with_pr_and_rolls_back_on_validation_error(self):
+        fixture, _, peer = self._setup_git_data()
+
+        # Peer edits codex/work.yaml and pushes.
+        peer_codex = peer / 'profiles/agents/codex/work.yaml'
+        pc = yaml.safe_load(peer_codex.read_text())
+        pc['settings']['model'] = 'remote-v1'
+        peer_codex.write_text(yaml.safe_dump(pc, sort_keys=False))
+        run_git(peer, 'commit', '-qam', 'peer codex')
+        run_git(peer, 'push', '-q')
+
+        # Combining --prefer-local with --pr is rejected.
+        code_bad, out_bad = self._run_cli([
+            'data', 'publish', '--machine', str(fixture.machine_path), '--prefer-local', '--pr', '--format', 'json',
+        ])
+        self.assertEqual(code_bad, 2, out_bad)
+
+        # Local commits an overlapping change (ahead == 1) -> --prefer-local must refuse.
+        local_codex = fixture.data / 'profiles/agents/codex/work.yaml'
+        lc = yaml.safe_load(local_codex.read_text())
+        lc['settings']['model'] = 'local-committed'
+        local_codex.write_text(yaml.safe_dump(lc, sort_keys=False))
+        run_git(fixture.data, 'commit', '-qam', 'local ahead commit')
+
+        blocked = publish_repo(fixture.data, dry_run=False, prefer_local=True)
+        self.assertFalse(blocked['ready'])
+        self.assertEqual(blocked['status'], 'behind_conflict')
+        self.assertFalse(blocked['can_prefer_local'])
+        self.assertIn('未推送提交', blocked['reason'])
+
+        # Rollback guard: reset local commit back to base, have peer remove a profile referenced by a new local machine edit.
+        run_git(fixture.data, 'reset', '--hard', 'HEAD~1', '-q')
+        extra_prof = peer / 'profiles/agents/codex/temp.yaml'
+        extra_prof.write_text("schema_version: 1\nagent_type: codex\nsettings:\n  model: temp\n", encoding='utf-8')
+        run_git(peer, 'add', '.')
+        run_git(peer, 'commit', '-qm', 'peer add temp')
+        run_git(peer, 'push', '-q')
+        run_git(fixture.data, 'pull', '--ff-only', '-q')
+
+        # Peer deletes temp.yaml and updates machine profile selection; local points machine file to temp.yaml.
+        machine_rel = f"machines/{fixture.machine['machine_id']}.yaml"
+        extra_prof.unlink()
+        peer_machine = peer / machine_rel
+        pm = yaml.safe_load(peer_machine.read_text())
+        pm['agents']['codex'] = 'profiles/agents/codex/work.yaml'
+        peer_machine.write_text(yaml.safe_dump(pm, sort_keys=False))
+        run_git(peer, 'add', '-A')
+        run_git(peer, 'commit', '-qm', 'peer remove temp')
+        run_git(peer, 'push', '-q')
+
+        local_machine = fixture.data / machine_rel
+        lm = yaml.safe_load(local_machine.read_text())
+        lm['agents']['codex'] = 'profiles/agents/codex/temp.yaml'
+        local_machine_text = yaml.safe_dump(lm, sort_keys=False)
+        local_machine.write_text(local_machine_text)
+        orig_head = inspect_repo(fixture.data, fetch=False)['head_full']
+
+        rolled_back = publish_repo(fixture.data, dry_run=False, prefer_local=True)
+        self.assertFalse(rolled_back['ready'])
+        self.assertEqual(rolled_back['status'], 'validation_failed')
+        self.assertIn('已完整还原现场', rolled_back['reason'])
+        self.assertEqual(inspect_repo(fixture.data, fetch=False)['head_full'], orig_head)
+        self.assertEqual(local_machine.read_text(), local_machine_text)
+        self.assertTrue((fixture.data / 'profiles/agents/codex/temp.yaml').is_file())
 
     def test_publish_dirty_chmod_not_misclassified_as_identical(self):
         fixture, _, peer = self._setup_git_data()

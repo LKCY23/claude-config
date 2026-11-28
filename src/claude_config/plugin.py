@@ -44,6 +44,19 @@ def summary(report, *, color=False):
             lines.append(meta_line('来源', '明确指定的 Git 提交；不代表已发布 Release', color=color))
         if intent.get('prepared_sources'):
             lines.append(style('  ! 已准备来源缓存；预览尚未改变 Profile 或插件安装', 'hint', color=color))
+        repo_sync = intent.get('data_repo_sync') or {}
+        if repo_sync.get('status') == 'behind_overlap':
+            lines.append(style(
+                f"  ! 配置仓库落后 {repo_sync.get('upstream')} {repo_sync.get('behind')} 个提交且远端已修改同名文件，已阻断写入",
+                'error', color=color,
+            ))
+        elif repo_sync.get('status') == 'behind_disjoint':
+            lines.append(style(
+                f"  ! 配置仓库落后 {repo_sync.get('upstream')} {repo_sync.get('behind')} 个提交（改动文件不重叠，后续 data publish 可自动变基）",
+                'warning', color=color,
+            ))
+        elif repo_sync.get('status') == 'fetch_failed':
+            lines.append(style('  · 配置仓库远端检查失败（已降级按本地仓库继续规划）', 'muted', color=color))
         if not report.get('preview_only', True):
             lines.append(style('  · 会话效果：未验证；如有需要请重新加载插件或重开会话', 'muted', color=color))
         return '\n'.join(lines)

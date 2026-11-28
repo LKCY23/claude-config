@@ -1,5 +1,6 @@
 """Read-only inspection, pull, validation, and guarded publish helpers for the config_dir Git repository."""
 from datetime import datetime
+import difflib
 import json
 from pathlib import Path
 import subprocess
@@ -76,7 +77,7 @@ def _parse_porcelain_z(raw_output):
     )
 
 
-def inspect_repo(config_dir, *, fetch=False):
+def inspect_repo(config_dir, *, fetch=False, timeout=60):
     """Inspect config_dir Git state strictly read-only unless fetch=True is requested."""
     root = Path(config_dir).expanduser().absolute()
     base = {
@@ -108,11 +109,14 @@ def inspect_repo(config_dir, *, fetch=False):
     fetched = False
     fetch_error = None
     if fetch:
-        res_fetch = _run_git(root, ['fetch', '--quiet'], read_only=False)
-        if res_fetch.returncode == 0:
-            fetched = True
-        else:
-            fetch_error = (res_fetch.stderr or res_fetch.stdout or 'git fetch failed').strip()
+        try:
+            res_fetch = _run_git(root, ['fetch', '--quiet'], read_only=False, timeout=timeout)
+            if res_fetch.returncode == 0:
+                fetched = True
+            else:
+                fetch_error = (res_fetch.stderr or res_fetch.stdout or 'git fetch failed').strip()
+        except subprocess.TimeoutExpired:
+            fetch_error = 'git fetch timed out'
 
     head_res = _run_git(root, ['rev-parse', '--short', 'HEAD'], read_only=True)
     head_full_res = _run_git(root, ['rev-parse', 'HEAD'], read_only=True)
@@ -454,13 +458,221 @@ def _revert_redundant_local_changes(root, info):
     return None
 
 
-def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False, fetch=None):
+def _file_diff_lines_against_upstream(root, upstream, rel):
+    """Compute exact unified diff lines between upstream:rel and local working tree file (works for untracked files too)."""
+    target = root / rel
+    in_up = _run_git(root, ['cat-file', '-e', f'{upstream}:{rel}'], read_only=True).returncode == 0
+    up_bytes = None
+    if in_up:
+        blob_res = _run_git_bytes(root, ['cat-file', 'blob', f'{upstream}:{rel}'], read_only=True)
+        if blob_res.returncode == 0:
+            up_bytes = blob_res.stdout
+    local_exists = target.exists() and not target.is_dir()
+    local_bytes = None
+    if local_exists and not target.is_symlink():
+        try:
+            local_bytes = target.read_bytes()
+        except OSError:
+            local_bytes = None
+    if up_bytes is not None and local_bytes is not None:
+        if up_bytes == local_bytes:
+            res = _run_git(root, ['diff', '--no-ext-diff', upstream, '--', rel], read_only=True)
+            return res.stdout.splitlines() if res.returncode == 0 and res.stdout else []
+        try:
+            up_lines = up_bytes.decode('utf-8').splitlines()
+            local_lines = local_bytes.decode('utf-8').splitlines()
+        except UnicodeDecodeError:
+            return [f'Binary files {upstream}:{rel} and {rel} differ']
+        return list(difflib.unified_diff(
+            up_lines, local_lines,
+            fromfile=f'{upstream}/{rel}', tofile=f'local/{rel}',
+            n=3, lineterm='',
+        ))
+    if up_bytes is None and local_exists:
+        return [f'+++ local/{rel} (new local file)']
+    if up_bytes is not None and not local_exists:
+        return [f'--- {upstream}/{rel} (deleted locally)']
+    res = _run_git(root, ['diff', '--no-ext-diff', upstream, '--', rel], read_only=True)
+    return res.stdout.splitlines() if res.returncode == 0 and res.stdout else []
+
+
+def _diff_against_upstream(root, upstream, paths, *, max_lines=24):
+    """Return a bounded unified diff preview of local paths against upstream (never invokes a pager)."""
+    if not upstream or not paths:
+        return '', False, 0
+    lines = []
+    for rel in paths:
+        lines.extend(_file_diff_lines_against_upstream(root, upstream, rel))
+    total = len(lines)
+    truncated = total > max_lines
+    preview = '\n'.join(lines[:max_lines])
+    return preview, truncated, total
+
+
+def _diff_stat_against_upstream(root, upstream, paths):
+    """Return a concise per-file diff summary against upstream (accurate even for untracked local files)."""
+    rows = []
+    for rel in paths:
+        diff_lines = _file_diff_lines_against_upstream(root, upstream, rel)
+        if not diff_lines:
+            continue
+        if len(diff_lines) == 1 and diff_lines[0].startswith(('+++ ', '--- ', 'Binary files ')):
+            rows.append(f' {rel} ({diff_lines[0].split("(", 1)[1].rstrip(")") if "(" in diff_lines[0] else "binary"})')
+            continue
+        adds = sum(1 for ln in diff_lines if ln.startswith('+') and not ln.startswith('+++'))
+        dels = sum(1 for ln in diff_lines if ln.startswith('-') and not ln.startswith('---'))
+        rows.append(f' {rel} | +{adds} -{dels}')
+    return '\n'.join(rows)
+
+
+def _lockfile_metadata_only_diff(root, upstream, overlap):
+    """Return True when every overlapping path is a .plugins.lock.yaml differing only in resolution metadata."""
+    if not upstream or not overlap:
+        return False
+    if not all(rel.endswith(PLUGIN_LOCK_SUFFIX) for rel in overlap):
+        return False
+    fm_res = _run_git(root, ['config', '--bool', 'core.filemode'], read_only=True)
+    check_mode = fm_res.stdout.strip().lower() != 'false'
+    any_resolution_diff = False
+    for rel in overlap:
+        target = root / rel
+        if not target.is_file() or target.is_symlink():
+            return False
+        tree_res = _run_git(root, ['ls-tree', upstream, '--', rel], read_only=True)
+        if tree_res.returncode != 0 or not tree_res.stdout.strip():
+            return False
+        upstream_mode = tree_res.stdout.strip().split(None, 2)[0]
+        if upstream_mode not in ('100644', '100755'):
+            return False
+        if check_mode:
+            try:
+                local_mode = '100755' if (target.stat().st_mode & 0o100) else '100644'
+            except OSError:
+                return False
+            if local_mode != upstream_mode:
+                return False
+        blob_res = _run_git_bytes(root, ['cat-file', 'blob', f'{upstream}:{rel}'], read_only=True)
+        if blob_res.returncode != 0:
+            return False
+        try:
+            local_doc = parse_yaml(target.read_bytes())
+            remote_doc = parse_yaml(blob_res.stdout)
+        except (SchemaError, ValueError, OSError):
+            return False
+        if not isinstance(local_doc, dict) or not isinstance(remote_doc, dict):
+            return False
+        local_plugins = local_doc.get('plugins')
+        remote_plugins = remote_doc.get('plugins')
+        if not isinstance(local_plugins, dict) or not isinstance(remote_plugins, dict):
+            return False
+        if {k: v for k, v in local_doc.items() if k != 'plugins'} != {k: v for k, v in remote_doc.items() if k != 'plugins'}:
+            return False
+        if set(local_plugins.keys()) != set(remote_plugins.keys()):
+            return False
+        for ref, local_pin in local_plugins.items():
+            remote_pin = remote_plugins[ref]
+            if not isinstance(local_pin, dict) or not isinstance(remote_pin, dict):
+                return False
+            local_core = {k: v for k, v in local_pin.items() if k != 'resolution'}
+            remote_core = {k: v for k, v in remote_pin.items() if k != 'resolution'}
+            if local_core != remote_core:
+                return False
+            if local_pin.get('resolution') != remote_pin.get('resolution'):
+                any_resolution_diff = True
+    return any_resolution_diff
+
+
+def _snapshot_local_paths(root, files):
+    """Capture exact bytes, file mode, and existence of local paths before rebasing base to upstream."""
+    snapshots = {}
+    for rel in files:
+        target = root / rel
+        if target.is_symlink():
+            return None, f'不支持 --prefer-local 覆盖软链接路径：{rel}'
+        if target.exists():
+            if target.is_dir():
+                return None, f'不支持 --prefer-local 覆盖目录路径：{rel}'
+            try:
+                st = target.stat()
+                snapshots[rel] = {'exists': True, 'content': target.read_bytes(), 'mode': st.st_mode & 0o777}
+            except OSError as exc:
+                return None, f'读取本地文件失败（{rel}）：{exc}'
+        else:
+            snapshots[rel] = {'exists': False}
+    return snapshots, None
+
+
+def _restore_local_paths(root, snapshots):
+    for rel, snap in snapshots.items():
+        target = root / rel
+        if snap['exists']:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(snap['content'])
+            target.chmod(snap['mode'])
+        elif target.exists() and not target.is_dir():
+            target.unlink()
+
+
+def check_data_repo_sync_for_paths(config_dir, target_paths, *, fetch=True, timeout=15):
+    """Check whether config_dir is behind its upstream on any of the given tracked target paths."""
+    root = Path(config_dir).expanduser().absolute()
+    root_resolved = root.resolve()
+    rel_targets = []
+    for raw in (target_paths or ()):
+        p = Path(raw)
+        if not p.is_absolute():
+            p = (root / p).resolve()
+        else:
+            p = p.resolve()
+        try:
+            rel = p.relative_to(root_resolved).as_posix()
+        except ValueError:
+            continue
+        if _is_state_path(rel):
+            continue
+        rel_targets.append(rel)
+    rel_targets = sorted(set(rel_targets))
+    if not rel_targets:
+        return {'status': 'skipped'}
+
+    info = inspect_repo(root, fetch=False)
+    if not info['is_git'] or not info['upstream']:
+        return {'status': 'skipped', 'repo': info}
+
+    if fetch:
+        info = inspect_repo(root, fetch=True, timeout=timeout)
+        if info['fetch_error']:
+            return {'status': 'fetch_failed', 'fetch_error': info['fetch_error'], 'repo': info}
+
+    if info['behind'] <= 0:
+        return {'status': 'up_to_date', 'repo': info}
+
+    upstream = info['upstream']
+    remote_files = _changed_files_between(root, f'HEAD...{upstream}')
+    if remote_files is None:
+        return {'status': 'behind_disjoint', 'behind': info['behind'], 'upstream': upstream, 'repo': info}
+    overlap = sorted(set(rel_targets) & remote_files)
+    if overlap:
+        return {
+            'status': 'behind_overlap',
+            'behind': info['behind'],
+            'upstream': upstream,
+            'overlapping_files': overlap,
+            'repo': info,
+        }
+    return {'status': 'behind_disjoint', 'behind': info['behind'], 'upstream': upstream, 'repo': info}
+
+
+def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False, fetch=None, prefer_local=False):
     """Validate config_dir, show diff preview, reconcile safe behind states, or stage/commit/push."""
     root = Path(config_dir).expanduser().absolute()
     info = inspect_repo(root, fetch=False)
     if not info['is_git']:
         return {'ready': False, 'preview_only': dry_run, 'status': 'not_git',
                 'reason': f'配置目录不是 Git 仓库：{root}', 'repo': info}
+    if prefer_local and create_pr:
+        return {'ready': False, 'preview_only': dry_run, 'status': 'invalid_options',
+                'reason': '--prefer-local 与 --pr 不能同时使用。', 'repo': info}
 
     should_fetch = (not create_pr) if fetch is None else bool(fetch)
     if info['upstream'] and should_fetch:
@@ -523,6 +735,11 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False, fe
         diff_stat = f'{diff_stat}\n{extra}'.strip()
 
     will_rebase = False
+    will_prefer_local = False
+    overlap_files = []
+    diff_vs_upstream = ''
+    diff_vs_upstream_truncated = False
+    metadata_only_lock_diff = False
     if info['behind'] > 0 and not create_pr:
         upstream = info['upstream']
         # Case A: local uncommitted changes match remote tip identically.
@@ -576,20 +793,52 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False, fe
             if not overlap:
                 will_rebase = True
             else:
-                sample = overlap[0]
-                return {
-                    'ready': False,
-                    'preview_only': dry_run,
-                    'status': 'behind_conflict',
-                    'overlapping_files': overlap,
-                    'reason': (
-                        f"远端领先 {info['behind']} 个提交且与本地改动重叠（{', '.join(overlap[:3])}），无法直接推送；"
-                        f"请先用 `git -C {root} diff {upstream} -- {sample}` 查看差异，或改用 `claude-config data publish --pr` 提交分支 PR。"
-                    ),
-                    'files': files,
-                    'validation': validation,
-                    'repo': info,
-                }
+                overlap_files = overlap
+                diff_vs_upstream, diff_vs_upstream_truncated, _ = _diff_against_upstream(root, upstream, overlap)
+                metadata_only_lock_diff = _lockfile_metadata_only_diff(root, upstream, overlap)
+                can_prefer_local = info['ahead'] == 0 and bool(files)
+                if prefer_local:
+                    if not can_prefer_local:
+                        return {
+                            'ready': False,
+                            'preview_only': dry_run,
+                            'status': 'behind_conflict',
+                            'overlapping_files': overlap,
+                            'diff_vs_upstream': diff_vs_upstream,
+                            'diff_vs_upstream_truncated': diff_vs_upstream_truncated,
+                            'metadata_only_lock_diff': metadata_only_lock_diff,
+                            'can_prefer_local': False,
+                            'reason': (
+                                f"本地存在 {info['ahead']} 个未推送提交且与远端重叠，不能使用 --prefer-local；"
+                                '请手动 rebase 或改用 `claude-config data publish --pr` 提交分支 PR。'
+                            ),
+                            'files': files,
+                            'validation': validation,
+                            'repo': info,
+                        }
+                    will_prefer_local = True
+                    diff_stat = _diff_stat_against_upstream(root, upstream, files)
+                    diff_vs_upstream, diff_vs_upstream_truncated, _ = _diff_against_upstream(root, upstream, files)
+                else:
+                    sample = overlap[0]
+                    prefer_hint = '，或运行 `claude-config data publish --prefer-local` 预览以本地覆盖' if can_prefer_local else ''
+                    return {
+                        'ready': False,
+                        'preview_only': dry_run,
+                        'status': 'behind_conflict',
+                        'overlapping_files': overlap,
+                        'diff_vs_upstream': diff_vs_upstream,
+                        'diff_vs_upstream_truncated': diff_vs_upstream_truncated,
+                        'metadata_only_lock_diff': metadata_only_lock_diff,
+                        'can_prefer_local': can_prefer_local,
+                        'reason': (
+                            f"远端领先 {info['behind']} 个提交且与本地改动重叠（{', '.join(overlap[:3])}），无法直接推送；"
+                            f"请先用 `git --no-pager -C {root} diff {upstream} -- {sample}` 查看差异{prefer_hint}，或改用 `claude-config data publish --pr` 提交分支 PR。"
+                        ),
+                        'files': files,
+                        'validation': validation,
+                        'repo': info,
+                    }
         else:
             return {
                 'ready': False,
@@ -615,7 +864,7 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False, fe
     proposed_message = message or _default_commit_message(files)
 
     if dry_run:
-        return {
+        preview = {
             'ready': True,
             'preview_only': True,
             'status': 'pending',
@@ -625,10 +874,20 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False, fe
             'ahead': info['ahead'],
             'behind': info['behind'],
             'will_rebase': will_rebase,
+            'prefer_local': will_prefer_local,
             'create_pr': create_pr,
             'validation': validation,
             'repo': info,
         }
+        if will_prefer_local:
+            preview.update(
+                reconcile_mode='prefer_local_over_upstream',
+                overlapping_files=overlap_files,
+                diff_vs_upstream=diff_vs_upstream,
+                diff_vs_upstream_truncated=diff_vs_upstream_truncated,
+                metadata_only_lock_diff=metadata_only_lock_diff,
+            )
+        return preview
 
     target_branch = info['branch']
     created_branch = None
@@ -651,7 +910,64 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False, fe
     pre_rebase_head = orig_head
     commit_sha = info['head']
     committed = False
-    if files:
+    rebased = False
+    if will_prefer_local and info['upstream']:
+        snapshots, snap_err = _snapshot_local_paths(root, files)
+        if snap_err:
+            return {'ready': False, 'preview_only': False, 'status': 'reconcile_failed',
+                    'reason': snap_err, 'files': files, 'validation': validation, 'repo': inspect_repo(root)}
+        reset_res = _run_git(root, ['reset', '--hard', info['upstream']], read_only=False)
+        if reset_res.returncode != 0:
+            detail = (reset_res.stderr or reset_res.stdout or 'git reset --hard failed').strip()
+            return {'ready': False, 'preview_only': False, 'status': 'reconcile_failed',
+                    'reason': f"基于 {info['upstream']} 对齐失败：{detail}", 'files': files,
+                    'validation': validation, 'repo': inspect_repo(root)}
+        try:
+            _restore_local_paths(root, snapshots)
+            validation = validate_data_repo(root)
+        except OSError as exc:
+            if orig_head:
+                _run_git(root, ['reset', '--hard', orig_head], read_only=False)
+                _restore_local_paths(root, snapshots)
+            return {'ready': False, 'preview_only': False, 'status': 'reconcile_failed',
+                    'reason': f'恢复本地改动失败，已还原现场：{exc}', 'files': files,
+                    'validation': validation, 'repo': inspect_repo(root)}
+        if not validation['ok']:
+            if orig_head:
+                _run_git(root, ['reset', '--hard', orig_head], read_only=False)
+                _restore_local_paths(root, snapshots)
+            first = validation['errors'][0]
+            return {
+                'ready': False,
+                'preview_only': False,
+                'status': 'validation_failed',
+                'reason': f"基于远端合并本地改动后校验未通过（{first['file']}），已完整还原现场：{first['reason']}",
+                'validation': validation,
+                'repo': inspect_repo(root, fetch=False),
+            }
+        add_res = _run_git(root, ['add', '-A', '--', *files], read_only=False)
+        if add_res.returncode != 0:
+            if orig_head:
+                _run_git(root, ['reset', '--hard', orig_head], read_only=False)
+                _restore_local_paths(root, snapshots)
+            detail = (add_res.stderr or add_res.stdout or 'git add failed').strip()
+            return {'ready': False, 'preview_only': False, 'status': 'git_add_failed',
+                    'reason': f'暂存改动失败，已还原现场：{detail}', 'files': files,
+                    'repo': inspect_repo(root, fetch=False), 'validation': validation}
+        commit_res = _run_git(root, ['commit', '--only', '-m', proposed_message, '--', *files], read_only=False)
+        if commit_res.returncode != 0:
+            if orig_head:
+                _run_git(root, ['reset', '--hard', orig_head], read_only=False)
+                _restore_local_paths(root, snapshots)
+            detail = (commit_res.stderr or commit_res.stdout or 'git commit failed').strip()
+            return {'ready': False, 'preview_only': False, 'status': 'git_commit_failed',
+                    'reason': f'提交失败，已还原现场：{detail}', 'files': files,
+                    'repo': inspect_repo(root, fetch=False), 'validation': validation}
+        committed = True
+        rebased = True
+        after_commit = inspect_repo(root, fetch=False)
+        commit_sha = after_commit['head']
+    elif files:
         add_res = _run_git(root, ['add', '-A', '--', *files], read_only=False)
         if add_res.returncode != 0:
             detail = (add_res.stderr or add_res.stdout or 'git add failed').strip()
@@ -667,7 +983,6 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False, fe
         commit_sha = after_commit['head']
         pre_rebase_head = after_commit['head_full']
 
-    rebased = False
     if will_rebase and info['upstream']:
         rebase_res = _run_git(root, ['rebase', info['upstream']], read_only=False)
         if rebase_res.returncode != 0:
@@ -719,6 +1034,7 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False, fe
             'branch': target_branch,
             'files': files,
             'rebased': rebased,
+            'prefer_local': will_prefer_local,
             'validation': validation,
             'repo': inspect_repo(root),
         }
@@ -750,12 +1066,15 @@ def publish_repo(config_dir, *, message=None, create_pr=False, dry_run=False, fe
         'pushed': True,
         'pr_url': pr_url,
         'rebased': rebased,
+        'prefer_local': will_prefer_local,
         'reason': f'已推送分支 {target_branch}，但创建 PR 失败：{pr_error}' if pr_error else None,
         'validation': validation,
         'repo': after_info,
     }
     if rebased:
         result['pulled_commits'] = info['behind']
+    if will_prefer_local:
+        result['overlapping_files'] = overlap_files
     return result
 
 

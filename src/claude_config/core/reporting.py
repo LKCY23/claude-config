@@ -53,7 +53,8 @@ LABELS.update(clients='客户端', framework='框架文件', shared_files='共�
               app_preference_interface='应用配置接口', native_installation='插件安装', options='运行选项', enabled='启用状态')
 LABELS.update(catalogs='资源目录', catalog_roots='本机来源目录', repo='来源仓库', commit='固定提交',
               path='仓库内路径', release_record='发布记录', released_baseline='发布基线检查',
-              catalog_source_map='来源迁移映射', affected_sources='受影响资源来源')
+              catalog_source_map='来源迁移映射', affected_sources='受影响资源来源',
+              data_repo_sync='配置仓库同步状态', data_repo_behind_overlap='配置仓库已落后远端')
 LABELS.update(antigravity_discovery='Antigravity 只读盘点', antigravity_binding='Antigravity 绑定检查',
               antigravity_plugin_package='Antigravity 插件包', duplicate_plugin_name='插件名称冲突',
               plugin_dir_name_collision='插件目录与名称冲突', skill_plugin_overlap='技能与插件技能重名',

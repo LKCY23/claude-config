@@ -191,6 +191,70 @@ class PluginLockWorkflowTests(ResourceFixture):
         self.assertEqual(code, 0, out_text.getvalue())
         self.assertIn('claude-config data publish', out_text.getvalue())
 
+    def test_plugin_upgrade_guards_stale_data_repo_and_degrades_on_offline_fetch(self):
+        import subprocess
+        code_in, rep_in = self.cli('install', 'tiny', '--write')
+        self.assertEqual(code_in, 0, rep_in)
+        run_git(self.data, 'add', '.')
+        run_git(self.data, 'commit', '-qm', 'lock tiny 1.0.0')
+
+        bare = self.root / 'data-remote.git'
+        subprocess.run(['git', 'init', '--bare', '-q', '-b', 'master', str(bare)], check=True)
+        run_git(self.data, 'remote', 'add', 'origin', str(bare))
+        run_git(self.data, 'push', '-u', 'origin', 'master', '-q')
+
+        peer = self.root / 'data-peer'
+        subprocess.run(['git', 'clone', '-q', str(bare), str(peer)], check=True)
+        run_git(peer, 'config', 'user.name', 'Peer User')
+        run_git(peer, 'config', 'user.email', 'peer@example.com')
+
+        # Peer modifies the same lock file and pushes -> local data repo is behind on overlapping lock.
+        peer_lock = peer / self.lock.relative_to(self.data)
+        peer_lock_data = yaml.safe_load(peer_lock.read_text())
+        peer_lock_data['plugins']['tiny@test']['resolution'] = {'kind': 'release', 'requested': '1.0.0'}
+        peer_lock.write_text(yaml.safe_dump(peer_lock_data, sort_keys=False))
+        run_git(peer, 'commit', '-qam', 'peer updates tiny lock')
+        run_git(peer, 'push', '-q')
+
+        commit_v2 = self.make_side_commit('2.0.0')
+        lock_before = self.lock.read_text()
+
+        # 1) Non-local-only upgrade touching overlapping lock must block before mutating native or lock.
+        code_blk, rep_blk = self.cli('upgrade', 'tiny', '--commit', commit_v2, '--write')
+        self.assertNotEqual(code_blk, 0)
+        self.assertFalse(rep_blk['ready'])
+        self.assertEqual(rep_blk['plugin_management']['data_repo_sync']['status'], 'behind_overlap')
+        self.assertTrue(any(b.get('code') == 'data_repo_behind_overlap' for b in rep_blk['blockers']))
+        self.assertIn('claude-config data pull', rep_blk['blockers'][0]['reason'])
+        self.assertEqual(self.receipt()['version'], '1.0.0')
+        self.assertEqual(self.lock.read_text(), lock_before)
+
+        # 2) --local-only does not modify Git-tracked files -> allowed even while behind.
+        code_loc, rep_loc = self.cli('upgrade', 'tiny', '--commit', commit_v2, '--local-only', '--write')
+        self.assertEqual(code_loc, 0, rep_loc)
+        self.assertEqual(self.receipt()['version'], '2.0.0')
+        self.assertNotIn('data_repo_sync', rep_loc['plugin_management'])
+
+        # 3) Pull aligns remote; then peer edits a disjoint file -> promote warns but succeeds.
+        run_git(self.data, 'pull', '--ff-only', '-q')
+        (peer / 'README.md').write_text('disjoint peer note\n', encoding='utf-8')
+        run_git(peer, 'add', 'README.md')
+        run_git(peer, 'commit', '-qm', 'peer disjoint readme')
+        run_git(peer, 'push', '-q')
+
+        code_dis, rep_dis = self.cli('upgrade', 'tiny', '--promote', '--write')
+        self.assertEqual(code_dis, 0, rep_dis)
+        self.assertEqual(rep_dis['plugin_management']['data_repo_sync']['status'], 'behind_disjoint')
+        self.assertEqual(yaml.safe_load(self.lock.read_text())['plugins']['tiny@test']['version'], '2.0.0')
+
+        # 4) Offline / fetch failure degrades to not_verified without blocking.
+        run_git(self.data, 'remote', 'set-url', 'origin', str(self.root / 'nonexistent-remote.git'))
+        commit_v3 = self.make_side_commit('3.0.0')
+        code_off, rep_off = self.cli('upgrade', 'tiny', '--commit', commit_v3, '--write')
+        self.assertEqual(code_off, 0, rep_off)
+        self.assertEqual(rep_off['plugin_management']['data_repo_sync']['status'], 'fetch_failed')
+        self.assertEqual(self.receipt()['version'], '3.0.0')
+
 
 if __name__ == '__main__':
     unittest.main()

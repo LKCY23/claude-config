@@ -72,8 +72,8 @@ def _render_status(report, *, color=False):
     hints = []
     if repo.get('dirty') or repo.get('ahead', 0) > 0:
         hints.append('claude-config data publish')
-    if repo.get('behind', 0) > 0:
-        hints.append('claude-config data pull' if repo.get('ahead', 0) == 0 else '先手动 rebase/merge 再发布')
+    elif repo.get('behind', 0) > 0:
+        hints.append('claude-config data pull')
     lines.extend(next_steps(hints, color=color))
     return '\n'.join(lines)
 
@@ -105,12 +105,15 @@ def _render_pull(report, *, color=False):
     return '\n'.join(lines)
 
 
-def _render_publish(report, *, color=False):
+def _render_publish(report, *, color=False, interactive_confirm=False):
     header = '配置仓库发布预览' if report.get('preview_only') else '配置仓库发布结果'
     lines = [
         heading(f"{header} ({report.get('machine_id', '-')})", color=color),
         meta_line('目录', report.get('config_dir', '-'), color=color),
     ]
+    repo = report.get('repo') or {}
+    if repo.get('fetch_error') and report.get('preview_only'):
+        lines.append(f"  {style('⚠ 远端检查失败（仅展示本地状态）', 'warning', color=color)}：{repo['fetch_error']}")
     if not report.get('ready'):
         lines.append(f"  {badge('error', '阻止发布', color=color)}  {report.get('reason')}")
         validation = report.get('validation') or {}
@@ -121,8 +124,23 @@ def _render_publish(report, *, color=False):
     if status == 'nothing_to_publish':
         lines.append(f"  {badge('success', '无需发布', color=color)}  工作区干净且无未推送提交")
         return '\n'.join(lines)
+    if status == 'pending_reconcile_identical':
+        lines.append(f"  {badge('pending', '待对齐', color=color)}  本地未提交改动与远端最新提交内容完全一致，将对齐至远端（拉取 {report.get('behind', 0)} 个提交，无需新提交）")
+        for rel in report.get('files', [])[:15]:
+            lines.append(f'    - {rel}')
+        if not interactive_confirm:
+            lines.append('')
+            lines.append(style('提示：当前仅预览，尚未修改工作区；如需执行对齐请追加 --yes。', 'hint', color=color))
+        return '\n'.join(lines)
+    if status == 'reconciled_with_remote':
+        lines.append(f"  {badge('success', '已对齐远端', color=color)}  本地改动已包含在远端提交中（已拉取 {report.get('pulled_commits', 0)} 个提交，当前 {report.get('commit')}）")
+        for rel in report.get('files', [])[:10]:
+            lines.append(f'    · {rel}')
+        return '\n'.join(lines)
     if status == 'pending':
         lines.append(f"  {badge('pending', '待发布', color=color)}  提交信息：{report.get('proposed_message')}")
+        if report.get('will_rebase'):
+            lines.append(f"  · 远端领先 {report.get('behind', 0)} 个提交（改动文件无重叠），执行时将先安全变基再推送")
         if report.get('ahead'):
             lines.append(f"  · 包含 {report['ahead']} 个尚未推送的本地提交")
         if report.get('files'):
@@ -134,10 +152,12 @@ def _render_publish(report, *, color=False):
         if report.get('diff_stat'):
             lines.append('')
             lines.append(report['diff_stat'])
-        lines.append('')
-        lines.append(style('提示：当前仅预览，未提交或推送；如需执行请追加 --yes。', 'hint', color=color))
+        if not interactive_confirm:
+            lines.append('')
+            lines.append(style('提示：当前仅预览，未提交或推送；如需执行请追加 --yes。', 'hint', color=color))
         return '\n'.join(lines)
-    lines.append(f"  {badge('success', '已发布', color=color)}  分支 {report.get('branch')} ({report.get('commit')})")
+    extra = f"（已先安全变基 {report['pulled_commits']} 个远端提交）" if report.get('rebased') else ''
+    lines.append(f"  {badge('success', '已发布', color=color)}  分支 {report.get('branch')} ({report.get('commit')}){extra}")
     if report.get('pr_url'):
         lines.append(f"  · PR: {report['pr_url']}")
     for rel in report.get('files', [])[:10]:
@@ -146,8 +166,13 @@ def _render_publish(report, *, color=False):
 
 
 def _confirm_publish(report, color):
-    print(_render_publish(report, color=color))
-    prompt = '\n确认创建分支、推送并创建 PR 吗？[y/N]: ' if report.get('create_pr') else '\n确认校验、提交并推送到远端吗？[y/N]: '
+    print(_render_publish(report, color=color, interactive_confirm=True))
+    if report.get('status') == 'pending_reconcile_identical':
+        prompt = '\n确认丢弃重复本地改动并对齐到远端最新提交吗？[y/N]: '
+    elif report.get('create_pr'):
+        prompt = '\n确认创建分支、推送并创建 PR 吗？[y/N]: '
+    else:
+        prompt = '\n确认校验、提交并推送到远端吗？[y/N]: '
     try:
         answer = prompt_input(prompt).strip().lower()
     except (EOFError, KeyboardInterrupt):
@@ -176,6 +201,7 @@ def _build_parser():
     p_pub = sub.add_parser('publish', parents=[common], help='本地校验所有声明并预览或提交/推送改动到远端')
     p_pub.add_argument('-m', '--message', help='自定义提交信息')
     p_pub.add_argument('--pr', action='store_true', help='创建同步分支并调用 gh pr create 提交 PR')
+    p_pub.add_argument('--no-fetch', action='store_true', help='跳过发布前的 git fetch 远端检查（离线快速预览）')
     p_pub.add_argument('--dry-run', action='store_true', help='仅校验并预览变更，不提交或推送')
     p_pub.add_argument('--write', '--yes', dest='write', action='store_true', help='跳过交互确认直接提交并推送')
     return parser
@@ -225,7 +251,7 @@ def main(argv):
 
         # publish
         progress('校验并预览配置仓库发布')
-        preview = publish_repo(config_dir, message=args.message, create_pr=args.pr, dry_run=True)
+        preview = publish_repo(config_dir, message=args.message, create_pr=args.pr, dry_run=True, fetch=not args.no_fetch)
         preview.update(schema_version=1, operation='data-publish', machine_id=machine_id, config_dir=str(config_dir))
 
         if not preview['ready'] or preview['status'] == 'nothing_to_publish' or args.dry_run:
@@ -248,8 +274,8 @@ def main(argv):
                 return 0
 
         if execute:
-            progress('提交并推送配置仓库变更')
-            result = publish_repo(config_dir, message=args.message, create_pr=args.pr, dry_run=False)
+            progress('对齐远端并对齐发布' if preview.get('status') == 'pending_reconcile_identical' else '提交并推送配置仓库变更')
+            result = publish_repo(config_dir, message=args.message, create_pr=args.pr, dry_run=False, fetch=not args.no_fetch)
             result.update(schema_version=1, operation='data-publish', machine_id=machine_id, config_dir=str(config_dir))
             progress(None)
             print(encode_json(public_value(result)) if fmt == 'json' else _render_publish(result, color=color))

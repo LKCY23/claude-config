@@ -15,7 +15,7 @@ from .core.report_viewer import terminal_color_enabled
 from .core.reporting import build_report, encode_json, public_value, save_report
 from .core.schema import SchemaError, state_directory
 from .core.source_transport import DEFAULT_GIT_TRANSPORT, GIT_TRANSPORTS
-from .core.terminal_ui import badge, heading, meta_line, next_steps, pad_display, section, style
+from .core.terminal_ui import badge, display_width, heading, meta_line, next_steps, pad_display, section, style
 from .core.transaction import PlanStale
 from .profile import ReportParser, UsageError, report_format
 from .status_cmd import AGENT_ORDER, APP_ORDER, _classify_target_plan, _ordered_keys, effective_file_writes
@@ -107,7 +107,7 @@ def _save_target_report(mgr, raw, state_root, *, operation):
     save_report(report, state_root)
 
 
-def render_sync(report, *, color=False):
+def render_sync(report, *, color=False, interactive_confirm=False):
     header = '全局同步预览' if report['preview_only'] else '全局同步结果'
     lines = [
         heading(f"{header} ({report['machine_id']})", color=color),
@@ -149,36 +149,47 @@ def render_sync(report, *, color=False):
     lines.append(section('2. 目标配置：', color=color))
     if not report['targets']:
         lines.append(style('  (无选定目标)', 'muted', color=color))
-    name_w = max((len(t['name']) for t in report['targets']), default=0)
-    for item in report['targets']:
+    raw_labels = [f"{t['name']} [{t.get('profile') or '-'}]" for t in report['targets']]
+    label_w = max((display_width(lbl) for lbl in raw_labels), default=0)
+    for item, raw_label in zip(report['targets'], raw_labels):
         outcome = item['outcome']
-        name = pad_display(item['name'], name_w)
-        profile = style(f"[{item.get('profile') or '-'}]", 'muted', color=color)
+        profile_text = f"[{item.get('profile') or '-'}]"
+        padding = ' ' * max(0, label_w - display_width(raw_label))
+        target_col = f"{item['name']} {style(profile_text, 'muted', color=color)}{padding}"
         if outcome == 'applied':
             b = badge('success', '已同步', color=color)
-            lines.append(f'  {b}  {name} {profile} — 已写入 {item.get("applied_changes", 0)} 项')
+            logical_n = item.get('applied_logical_changes')
+            if logical_n is None:
+                logical_n = item.get('logical_changes', {}).get('total', 0)
+            file_n = item.get('applied_changes', 0)
+            detail = f'已同步 {logical_n} 项配置（已写入 {file_n} 个文件）' if logical_n else f'已写入 {file_n} 个文件'
+            lines.append(f'  {b}  {target_col} — {detail}')
         elif outcome == 'synced':
             b = badge('success', '已最新', color=color)
-            lines.append(f'  {b}  {name} {profile} — 无需更新')
+            lines.append(f'  {b}  {target_col} — 无需更新')
         elif outcome == 'pending':
             b = badge('pending', '待同步', color=color)
             logical = item.get('logical_changes', {})
-            lines.append(f"  {b}  {name} {profile} — 待应用 {logical.get('total', 0) or item.get('pending_file_writes', 0)} 项")
+            logical_total = logical.get('total', 0)
+            detail = f'待应用 {logical_total} 项配置' if logical_total else f"待更新 {item.get('pending_file_writes', 0)} 个文件"
+            lines.append(f'  {b}  {target_col} — {detail}')
+            for summary_line in item.get('change_summaries', [])[:3]:
+                lines.append(style(f'      · {summary_line}', 'muted', color=color))
         elif outcome == 'skipped_conflict':
             b = badge('warning', '已跳过(冲突)', color=color)
-            lines.append(f"  {b}  {name} {profile} — {item.get('conflicts_count', 0)} 处冲突，需先执行 {style(item.get('hint') or '', 'cmd', color=color)}")
+            lines.append(f"  {b}  {target_col} — {item.get('conflicts_count', 0)} 处冲突，需先执行 {style(item.get('hint') or '', 'cmd', color=color)}")
         elif outcome == 'skipped_blocked':
             b = badge('error', '已跳过(阻塞)', color=color)
-            lines.append(f"  {b}  {name} {profile} — {item.get('reason') or '存在阻塞条件'}")
+            lines.append(f"  {b}  {target_col} — {item.get('reason') or '存在阻塞条件'}")
         else:
             b = badge('error', '失败', color=color)
-            lines.append(f"  {b}  {name} {profile} — {item.get('reason') or '执行失败'}")
+            lines.append(f"  {b}  {target_col} — {item.get('reason') or '执行失败'}")
 
     manual_skipped = report.get('skipped_manual_apps', [])
     if manual_skipped:
         lines.append(style(f"  · 已跳过 manual App：{', '.join(manual_skipped)}（如需同步请显式指定 --app）", 'muted', color=color))
 
-    if report['preview_only'] and report.get('has_pending'):
+    if report['preview_only'] and report.get('has_pending') and not interactive_confirm:
         lines.append('')
         lines.append(style('提示：当前仅预览，未写入任何目标；如需执行请追加 --yes。', 'muted', color=color))
     conflicts = [t for t in report['targets'] if t['outcome'] == 'skipped_conflict']
@@ -188,7 +199,7 @@ def render_sync(report, *, color=False):
 
 
 def _confirm_sync(report, color):
-    print(render_sync(report, color=color))
+    print(render_sync(report, color=color, interactive_confirm=True))
     try:
         answer = prompt_input('\n确认执行以上同步吗？[y/N]: ').strip().lower()
     except (EOFError, KeyboardInterrupt):
@@ -399,6 +410,7 @@ def run_sync(
             item['outcome'] = 'applied'
             item['run_id'] = raw.get('run_id') or (Path(raw['recovery']).parent.name if isinstance(raw.get('recovery'), str) else None)
             item['applied_changes'] = len([r for r in raw.get('results', []) if r.get('status') == 'applied'])
+            item['applied_logical_changes'] = item.get('logical_changes', {}).get('total', 0)
         except (SchemaError, PlanStale, OSError) as exc:
             item['outcome'] = 'error'
             item['reason'] = str(exc)

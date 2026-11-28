@@ -12,9 +12,9 @@ from .core.execution_context import progress
 from .core.machine_profiles import MachineProfiles
 from .core.manager import ProfileManager
 from .core.report_viewer import terminal_color_enabled
-from .core.reporting import _logical_changes, encode_json, is_difference, public_value
+from .core.reporting import _logical_changes, encode_json, is_difference, path_label, public_value, value_label
 from .core.schema import SchemaError, state_directory
-from .core.terminal_ui import badge, heading, meta_line, next_steps, pad_display, section, style
+from .core.terminal_ui import badge, heading, meta_line, next_steps, pad_display, section, style, truncate_display
 from .profile import ReportParser, UsageError, report_format
 
 AGENT_ORDER = ('claude-code', 'codex', 'antigravity')
@@ -62,6 +62,43 @@ def effective_file_writes(plan):
         if change.mode is not None and (change.mode & 0o777) != expected.get('mode'):
             writes += 1
     return writes
+
+
+def _summarize_decisions(decisions, *, limit=3):
+    items = []
+    seen = set()
+    for raw_row in decisions:
+        if not is_difference(raw_row):
+            continue
+        row = public_value(raw_row)
+        path = row.get('path') or []
+        if path[:1] == ['settings']:
+            key = ('setting', tuple(path))
+            if key in seen:
+                continue
+            seen.add(key)
+            label = path_label(path[1:]) if len(path) > 1 else '设置'
+            before = value_label(row, 'before', compact=True)
+            after = value_label(row, 'after', compact=True)
+            items.append(truncate_display(f'{label}: {before} → {after}', 72))
+        elif path[:1] == ['resources'] and len(path) >= 3:
+            ref = path[2]
+            key = ('resource', ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            action = {'add': '新增', 'set': '更新', 'remove': '移除', 'set_enabled': '切换启用'}.get(row.get('action'), row.get('action') or '更新')
+            items.append(truncate_display(f'资源 {ref} ({action})', 72))
+        else:
+            key = ('other', tuple(path))
+            if key in seen:
+                continue
+            seen.add(key)
+            label = path_label(path) if path else (row.get('reason') or '配置更新')
+            items.append(truncate_display(label, 72))
+        if len(items) >= limit:
+            break
+    return items
 
 
 def _classify_target_plan(kind, name, profile_name, plan, baselines):
@@ -113,6 +150,7 @@ def _classify_target_plan(kind, name, profile_name, plan, baselines):
         'state': state,
         'plan_id': raw.get('plan_id'),
         'logical_changes': logical,
+        'change_summaries': _summarize_decisions(decisions),
         'pending_file_writes': pending_writes,
         'conflicts_count': conflict_count,
         'blockers': [

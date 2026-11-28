@@ -270,6 +270,135 @@ class DataRepoTests(unittest.TestCase):
         self.assertEqual(blocked_conflict['status'], 'unmerged_conflicts')
         self.assertIn('README.md', blocked_conflict['unmerged_files'])
 
+    def test_publish_dirty_and_behind_identical_reconciles_without_deadlock(self):
+        fixture, _, peer = self._setup_git_data()
+
+        # Peer advances codex/work.yaml to 'shared-model' and pushes.
+        peer_prof = peer / 'profiles/agents/codex/work.yaml'
+        peer_data = yaml.safe_load(peer_prof.read_text())
+        peer_data['settings']['model'] = 'shared-model'
+        peer_prof.write_text(yaml.safe_dump(peer_data, sort_keys=False))
+        run_git(peer, 'commit', '-qam', 'peer updates codex model')
+        run_git(peer, 'push', '-q')
+
+        # Local makes identical uncommitted edit without having fetched yet.
+        local_prof = fixture.data / 'profiles/agents/codex/work.yaml'
+        local_prof.write_text(peer_prof.read_text())
+
+        # Preview defaults to fetch=True and detects identical remote reconciliation.
+        code_prev, out_prev = self._run_cli([
+            'data', 'publish', '--machine', str(fixture.machine_path), '--dry-run', '--format', 'json',
+        ])
+        self.assertEqual(code_prev, 0, out_prev)
+        prev_rep = json.loads(out_prev)
+        self.assertEqual(prev_rep['status'], 'pending_reconcile_identical')
+        self.assertTrue(prev_rep['ready'])
+
+        code_exec, out_exec = self._run_cli([
+            'data', 'publish', '--machine', str(fixture.machine_path), '--yes', '--format', 'json',
+        ])
+        self.assertEqual(code_exec, 0, out_exec)
+        exec_rep = json.loads(out_exec)
+        self.assertEqual(exec_rep['status'], 'reconciled_with_remote')
+        self.assertEqual(exec_rep['pulled_commits'], 1)
+        self.assertFalse(inspect_repo(fixture.data, fetch=False)['dirty'])
+        self.assertEqual(inspect_repo(fixture.data, fetch=False)['behind'], 0)
+
+    def test_publish_dirty_and_behind_disjoint_auto_rebases_and_pushes(self):
+        fixture, _, peer = self._setup_git_data()
+
+        # Peer edits claude-code profile and pushes.
+        peer_cc = peer / 'profiles/agents/claude-code/work.yaml'
+        peer_cc_data = yaml.safe_load(peer_cc.read_text())
+        peer_cc_data['settings']['model'] = 'peer-claude'
+        peer_cc.write_text(yaml.safe_dump(peer_cc_data, sort_keys=False))
+        run_git(peer, 'commit', '-qam', 'peer updates claude-code')
+        run_git(peer, 'push', '-q')
+
+        # Local edits a disjoint file (codex/work.yaml).
+        local_codex = fixture.data / 'profiles/agents/codex/work.yaml'
+        local_data = yaml.safe_load(local_codex.read_text())
+        local_data['settings']['model'] = 'local-rebased-codex'
+        local_codex.write_text(yaml.safe_dump(local_data, sort_keys=False))
+
+        code_prev, out_prev = self._run_cli([
+            'data', 'publish', '--machine', str(fixture.machine_path), '--dry-run', '--format', 'json',
+        ])
+        self.assertEqual(code_prev, 0, out_prev)
+        prev_rep = json.loads(out_prev)
+        self.assertEqual(prev_rep['status'], 'pending')
+        self.assertTrue(prev_rep['will_rebase'])
+
+        code_exec, out_exec = self._run_cli([
+            'data', 'publish', '--machine', str(fixture.machine_path), '--yes', '--format', 'json',
+        ])
+        self.assertEqual(code_exec, 0, out_exec)
+        exec_rep = json.loads(out_exec)
+        self.assertEqual(exec_rep['status'], 'published')
+        self.assertTrue(exec_rep['rebased'])
+
+        run_git(peer, 'pull', '--ff-only', '-q')
+        self.assertEqual(yaml.safe_load((peer / 'profiles/agents/codex/work.yaml').read_text())['settings']['model'], 'local-rebased-codex')
+        self.assertEqual(yaml.safe_load((fixture.data / 'profiles/agents/claude-code/work.yaml').read_text())['settings']['model'], 'peer-claude')
+
+    def test_publish_dirty_and_behind_overlap_blocks_without_circular_advice(self):
+        fixture, _, peer = self._setup_git_data()
+
+        peer_prof = peer / 'profiles/agents/codex/work.yaml'
+        peer_data = yaml.safe_load(peer_prof.read_text())
+        peer_data['settings']['model'] = 'remote-other'
+        peer_prof.write_text(yaml.safe_dump(peer_data, sort_keys=False))
+        run_git(peer, 'commit', '-qam', 'remote edit codex')
+        run_git(peer, 'push', '-q')
+
+        local_prof = fixture.data / 'profiles/agents/codex/work.yaml'
+        local_data = yaml.safe_load(local_prof.read_text())
+        local_data['settings']['model'] = 'local-conflict'
+        local_prof.write_text(yaml.safe_dump(local_data, sort_keys=False))
+
+        blocked = publish_repo(fixture.data, dry_run=True)
+        self.assertFalse(blocked['ready'])
+        self.assertEqual(blocked['status'], 'behind_conflict')
+        self.assertIn('profiles/agents/codex/work.yaml', blocked['overlapping_files'])
+        self.assertNotIn('claude-config data pull', blocked['reason'])
+        self.assertIn('--pr', blocked['reason'])
+
+        pull_blocked = pull_repo(fixture.data, dry_run=False, fetch=True)
+        self.assertFalse(pull_blocked['ready'])
+        self.assertEqual(pull_blocked['status'], 'dirty')
+        self.assertIn('自动对齐/安全变基', pull_blocked['reason'])
+
+        # Interactive confirmation hides redundant `--yes` tip.
+        from claude_config.data_cmd import _confirm_publish
+        sample = {
+            'ready': True, 'preview_only': True, 'status': 'pending',
+            'machine_id': 'm1', 'config_dir': str(fixture.data),
+            'proposed_message': 'chore: test', 'files': ['a.yaml'],
+        }
+        buf = io.StringIO()
+        with patch('builtins.input', return_value='n'), redirect_stdout(buf):
+            self.assertFalse(_confirm_publish(sample, False))
+        self.assertNotIn('追加 --yes', buf.getvalue())
+
+    def test_publish_dirty_chmod_not_misclassified_as_identical(self):
+        fixture, _, peer = self._setup_git_data()
+        run_git(fixture.data, 'config', 'core.filemode', 'true')
+
+        peer_prof = peer / 'profiles/agents/codex/work.yaml'
+        peer_data = yaml.safe_load(peer_prof.read_text())
+        peer_data['settings']['model'] = 'shared-model'
+        peer_prof.write_text(yaml.safe_dump(peer_data, sort_keys=False))
+        run_git(peer, 'commit', '-qam', 'peer updates codex model')
+        run_git(peer, 'push', '-q')
+
+        local_prof = fixture.data / 'profiles/agents/codex/work.yaml'
+        local_prof.write_text(peer_prof.read_text())
+        local_prof.chmod(0o755)
+
+        blocked = publish_repo(fixture.data, dry_run=True)
+        self.assertFalse(blocked['ready'])
+        self.assertEqual(blocked['status'], 'behind_conflict')
+
 
 if __name__ == '__main__':
     unittest.main()

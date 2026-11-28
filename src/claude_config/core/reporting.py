@@ -278,7 +278,8 @@ def build_report(raw, *, operation, preview_only=True, manager=None, context=Non
                for row in report.get('results', [])]
     machine = manager.machine if manager else {}
     target = {'machine_id': machine.get('machine_id') or context.get('machine_id'), 'machine_file': context.get('machine_file'),
-              'agent_type': context.get('agent_type'), 'app': context.get('app'),
+              'agent_type': context.get('agent_type') or (getattr(manager, 'agent', None) if manager is not None else None),
+              'app': context.get('app'),
               'profile': context.get('profile') or report.get('binding', {}).get('profile') or (manager.entry.get('profile') if manager else None),
               'native_file': str(manager.native_path) if manager else None}
     if context.get('target_label'):

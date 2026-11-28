@@ -11,7 +11,7 @@ _PROFILE_COMMANDS = (
 )
 _ALL_COMMANDS = (
     'status', 'sync', 'data', 'profiles', 'resolve', 'baseline', 'report',
-    'init', 'doctor', 'plugin', 'runs', 'app-profile',
+    'init', 'doctor', 'plugin', 'runs', 'app-profile', 'self-update',
     'fetch-baseline', 'cutover', 'migration',
     *_PROFILE_COMMANDS,
 )
@@ -39,6 +39,7 @@ HELP = """usage: claude-config COMMAND [OPTIONS]
   fetch-baseline  获取明确发布的固定来源，不采用或部署配置
   cutover    多客户端配置统一切换与恢复（不安装工具代码）
   migration  旧配置盘点与转换候选
+  self-update  检查 GitHub Release 并升级 claude-config（默认仅预览）
 
 常用示例：
   claude-config status
@@ -149,6 +150,9 @@ def main(argv=None):
         return with_progress(run, argv[1:])
     if command == 'fetch-baseline':
         from .fetch_baseline import main as run
+        return with_progress(run, argv[1:])
+    if command == 'self-update':
+        from .self_update_cmd import main as run
         return with_progress(run, argv[1:])
     if command in _PROFILE_COMMANDS:
         from .profile import main as run

@@ -68,6 +68,16 @@ def summary(report, *, color=False):
     return '\n'.join(lines)
 
 
+def _is_clean_noop(report):
+    return (
+        bool(report.get('plugin_management'))
+        and bool(report.get('ready'))
+        and not report.get('errors')
+        and (report.get('summary') or {}).get('changes', 0) == 0
+        and (report.get('execution') or {}).get('status') in ('unchanged', 'preview')
+    )
+
+
 def emit(report, mode, *, verbose=False):
     if mode == 'json':
         print(encode_json(report))
@@ -76,6 +86,18 @@ def emit(report, mode, *, verbose=False):
     if mode == 'tui' and report['artifacts']['saved'] and terminal_interactive(mode):
         viewed = show_report(report)
     color = False if (mode != 'auto' or viewed) else terminal_color_enabled(mode)
+    if not verbose and not viewed and _is_clean_noop(report):
+        status_line = (
+            badge('success', '预览完成，当前已与目标一致，无需变更。', color=color)
+            if report.get('preview_only')
+            else badge('success', '执行完成，未发生配置变化。', color=color)
+        )
+        tail = [summary(report, color=color), '', status_line]
+        if report['artifacts'].get('saved') and report['artifacts'].get('json_path'):
+            tail.append(style(f"完整 JSON：{report['artifacts']['json_path']}", 'muted', color=color))
+        tail.append(style('如需完整明细请追加 --verbose 或运行 claude-config report last。', 'muted', color=color))
+        print('\n'.join(tail))
+        return exit_code(report)
     print(summary(report, color=color) + '\n\n' + render_text(report, brief=viewed, verbose=verbose, color=color))
     return exit_code(report)
 
@@ -89,6 +111,7 @@ def main(argv=None):
     started = False
     preview = True
     operation = 'plugin'
+    context = {}
     try:
         parser = ReportParser(prog='claude-config plugin', description='Manage one declared Claude Code or Antigravity plugin with a checked Profile/native transaction.')
         parser.add_argument('action', choices=('install', 'upgrade', 'unlock', 'enable', 'disable', 'remove', 'list', 'status'))
@@ -115,6 +138,7 @@ def main(argv=None):
         parser.add_argument('--format', choices=('auto', 'text', 'tui', 'json'), default='auto')
         parser.add_argument('--verbose', action='store_true', help='显示完整保留决策与细粒度输出')
         args = parser.parse_args(argv)
+        context = {'agent_type': args.agent}
         if args.action == 'remove' and args.agent != 'antigravity':
             raise UsageError('remove is currently supported for --agent antigravity only')
         mode = args.format
@@ -150,14 +174,14 @@ def main(argv=None):
             execute = args.write
             if not args.write and not args.dry_run and interactive and report['ready']:
                 confirm_color = terminal_color_enabled(args.format)
-                shown = build_report(report, operation=operation, preview_only=True, manager=manager)
+                shown = build_report(report, operation=operation, preview_only=True, manager=manager, context=context)
                 print(summary(shown, color=confirm_color) + '\n\n' + render_text(shown, color=confirm_color))
                 execute = prompt_input('执行这份插件计划？[y/N] ').strip().lower() in ('y', 'yes')
             if execute and report['ready']:
                 preview = False
                 started = True
                 report = plan.apply(manager.state_root)
-        report = build_report(report, operation=operation, preview_only=preview, manager=manager, execution_started=started)
+        report = build_report(report, operation=operation, preview_only=preview, manager=manager, context=context, execution_started=started)
     except (Exception, KeyboardInterrupt) as exc:
         report = plan.report if plan else report
         if service is not None and service.prepared:
@@ -176,7 +200,7 @@ def main(argv=None):
         if isinstance(exc, UnfinishedRun):
             error['runs'] = exc.runs
         report.setdefault('blockers', []).append({'code': code, 'reason': message})
-        report = build_report(report, operation=operation, preview_only=preview, manager=manager, error=error, execution_started=started)
+        report = build_report(report, operation=operation, preview_only=preview, manager=manager, context=context, error=error, execution_started=started)
     # Query is read-only even with respect to diagnostic state. Plans may save a
     # private report and source cache; only the checked executor changes installs.
     if operation not in ('plugin-list', 'plugin-status') and manager is not None:

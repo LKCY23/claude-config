@@ -7,6 +7,7 @@ import re
 import yaml
 
 from .catalog import CatalogResolver, verify_git
+from .data_repo import check_data_repo_sync_for_paths
 from .deployment_scope import DeploymentScope
 from .merge import fingerprint
 from .native import parse_json, parse_native, parse_yaml, render_native, snapshot_read
@@ -553,10 +554,53 @@ class PluginManager:
             'also_profiles': also_updated,
             'source': shown_locks['plugins'].get(ref, {}).get('source'),
             'resolution': shown_locks['plugins'].get(ref, {}).get('resolution')}
+        tracked_targets = [change.path for change in declarations if change.owner != 'plugin-local-pin']
+        if tracked_targets:
+            sync_check = check_data_repo_sync_for_paths(m.root, tracked_targets, fetch=True, timeout=15)
+            sync_status = sync_check.get('status')
+            if sync_status == 'behind_overlap':
+                overlap = sync_check['overlapping_files']
+                upstream = sync_check['upstream']
+                behind = sync_check['behind']
+                if (sync_check.get('repo') or {}).get('dirty'):
+                    msg = (
+                        f"配置仓库落后 {upstream} {behind} 个提交，且远端已修改同名文件（{', '.join(overlap[:3])}）；"
+                        '工作区同时有未提交改动，请先运行 `claude-config data publish` 处理改动后再重试。'
+                    )
+                else:
+                    msg = (
+                        f"配置仓库落后 {upstream} {behind} 个提交，且远端已修改同名文件（{', '.join(overlap[:3])}）；"
+                        '请先运行 `claude-config data pull` 对齐远端后再重试。'
+                    )
+                report.setdefault('checks', []).append({
+                    'name': 'data_repo_sync', 'status': 'blocked', 'code': 'data_repo_behind_overlap', 'reason': msg,
+                })
+                report.setdefault('blockers', []).append({
+                    'code': 'data_repo_behind_overlap', 'reason': msg, 'overlapping_files': overlap,
+                })
+                report['ready'] = False
+                summary['data_repo_sync'] = {
+                    'status': 'behind_overlap', 'behind': behind, 'upstream': upstream, 'overlapping_files': overlap,
+                }
+            elif sync_status == 'behind_disjoint':
+                upstream = sync_check['upstream']
+                behind = sync_check['behind']
+                report.setdefault('checks', []).append({
+                    'name': 'data_repo_sync', 'status': 'warning',
+                    'reason': f"配置仓库落后 {upstream} {behind} 个提交（远端改动文件不重叠，后续可运行 `claude-config data publish` 自动变基）",
+                })
+                summary['data_repo_sync'] = {'status': 'behind_disjoint', 'behind': behind, 'upstream': upstream}
+            elif sync_status == 'fetch_failed':
+                report.setdefault('checks', []).append({
+                    'name': 'data_repo_sync', 'status': 'not_verified',
+                    'reason': f"无法检查配置仓库远端状态（已降级继续）：{sync_check['fetch_error']}",
+                })
+                summary['data_repo_sync'] = {'status': 'fetch_failed', 'fetch_error': sync_check['fetch_error']}
         report['plugin_management'] = summary
         report['decisions'].append(decision(['plugins', ref], summary['before'], summary['after'],
                                            'Apply the explicitly requested plugin version and usage state'))
-        report['plan_id'] = fingerprint({'deployment': report.get('plan_id'), 'plugin': {k: v for k, v in summary.items() if k != 'prepared_sources'}})
+        report['plan_id'] = fingerprint({'deployment': report.get('plan_id'),
+                                         'plugin': {k: v for k, v in summary.items() if k not in ('prepared_sources', 'data_repo_sync')}})
         # Native installation and managed-baseline steps precede declarations. All
         # are in one journal: failure unwinds them in reverse, including Profile/lock.
         return FilePlan([*deployment.changes, *declarations], sources=m.sources, scopes=deployment.scopes, report=report,

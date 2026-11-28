@@ -116,6 +116,14 @@ def _render_publish(report, *, color=False, interactive_confirm=False):
         lines.append(f"  {style('⚠ 远端检查失败（仅展示本地状态）', 'warning', color=color)}：{repo['fetch_error']}")
     if not report.get('ready'):
         lines.append(f"  {badge('error', '阻止发布', color=color)}  {report.get('reason')}")
+        if report.get('metadata_only_lock_diff'):
+            lines.append(f"  {style('· 注：重叠锁文件的插件版本与内容指纹均与远端一致，仅来源元数据（resolution）不同。', 'hint', color=color)}")
+        if report.get('diff_vs_upstream'):
+            lines.append('  · 与远端最新提交的差异预览：')
+            for diff_line in report['diff_vs_upstream'].splitlines():
+                lines.append(f'    {diff_line}')
+            if report.get('diff_vs_upstream_truncated'):
+                lines.append(f"    {style('...（差异已截断，请运行上方 git --no-pager diff 命令查看完整差异）', 'muted', color=color)}")
         validation = report.get('validation') or {}
         for err in validation.get('errors', [])[:5]:
             lines.append(f"    - {err['file']}: {err['reason']}")
@@ -139,7 +147,12 @@ def _render_publish(report, *, color=False, interactive_confirm=False):
         return '\n'.join(lines)
     if status == 'pending':
         lines.append(f"  {badge('pending', '待发布', color=color)}  提交信息：{report.get('proposed_message')}")
-        if report.get('will_rebase'):
+        if report.get('prefer_local'):
+            overlap = '、'.join(report.get('overlapping_files', [])[:3])
+            lines.append(f"  · 已启用 --prefer-local：将基于远端最新提交（领先 {report.get('behind', 0)} 个提交）保留本地改动并覆盖重叠文件（{overlap}），仅提交相对远端的净差异")
+            if report.get('metadata_only_lock_diff'):
+                lines.append(f"  {style('· 注：重叠锁文件的插件版本与内容指纹均与远端一致，仅来源元数据（resolution）不同。', 'hint', color=color)}")
+        elif report.get('will_rebase'):
             lines.append(f"  · 远端领先 {report.get('behind', 0)} 个提交（改动文件无重叠），执行时将先安全变基再推送")
         if report.get('ahead'):
             lines.append(f"  · 包含 {report['ahead']} 个尚未推送的本地提交")
@@ -152,11 +165,23 @@ def _render_publish(report, *, color=False, interactive_confirm=False):
         if report.get('diff_stat'):
             lines.append('')
             lines.append(report['diff_stat'])
+        if report.get('prefer_local') and report.get('diff_vs_upstream'):
+            lines.append('')
+            lines.append('  · 相对远端最新提交的净差异预览：')
+            for diff_line in report['diff_vs_upstream'].splitlines():
+                lines.append(f'    {diff_line}')
+            if report.get('diff_vs_upstream_truncated'):
+                lines.append(f"    {style('...（净差异已截断）', 'muted', color=color)}")
         if not interactive_confirm:
             lines.append('')
             lines.append(style('提示：当前仅预览，未提交或推送；如需执行请追加 --yes。', 'hint', color=color))
         return '\n'.join(lines)
-    extra = f"（已先安全变基 {report['pulled_commits']} 个远端提交）" if report.get('rebased') else ''
+    if report.get('prefer_local'):
+        extra = f"（已基于远端最新提交保留本地改动并同步 {report.get('pulled_commits', 0)} 个远端提交）"
+    elif report.get('rebased'):
+        extra = f"（已先安全变基 {report['pulled_commits']} 个远端提交）"
+    else:
+        extra = ''
     lines.append(f"  {badge('success', '已发布', color=color)}  分支 {report.get('branch')} ({report.get('commit')}){extra}")
     if report.get('pr_url'):
         lines.append(f"  · PR: {report['pr_url']}")
@@ -169,6 +194,8 @@ def _confirm_publish(report, color):
     print(_render_publish(report, color=color, interactive_confirm=True))
     if report.get('status') == 'pending_reconcile_identical':
         prompt = '\n确认丢弃重复本地改动并对齐到远端最新提交吗？[y/N]: '
+    elif report.get('prefer_local'):
+        prompt = '\n确认基于远端保留本地重叠改动、提交净差异并推送吗？[y/N]: '
     elif report.get('create_pr'):
         prompt = '\n确认创建分支、推送并创建 PR 吗？[y/N]: '
     else:
@@ -201,6 +228,8 @@ def _build_parser():
     p_pub = sub.add_parser('publish', parents=[common], help='本地校验所有声明并预览或提交/推送改动到远端')
     p_pub.add_argument('-m', '--message', help='自定义提交信息')
     p_pub.add_argument('--pr', action='store_true', help='创建同步分支并调用 gh pr create 提交 PR')
+    p_pub.add_argument('--prefer-local', action='store_true',
+                       help='远端领先且改动重叠（本地无未推送提交）时，基于远端保留本地改动并预览/提交净差异')
     p_pub.add_argument('--no-fetch', action='store_true', help='跳过发布前的 git fetch 远端检查（离线快速预览）')
     p_pub.add_argument('--dry-run', action='store_true', help='仅校验并预览变更，不提交或推送')
     p_pub.add_argument('--write', '--yes', dest='write', action='store_true', help='跳过交互确认直接提交并推送')
@@ -250,8 +279,11 @@ def main(argv):
             return 0 if result['ready'] else 1
 
         # publish
+        if args.prefer_local and args.pr:
+            raise UsageError('--prefer-local 与 --pr 不能同时使用')
         progress('校验并预览配置仓库发布')
-        preview = publish_repo(config_dir, message=args.message, create_pr=args.pr, dry_run=True, fetch=not args.no_fetch)
+        preview = publish_repo(config_dir, message=args.message, create_pr=args.pr, dry_run=True,
+                               fetch=not args.no_fetch, prefer_local=args.prefer_local)
         preview.update(schema_version=1, operation='data-publish', machine_id=machine_id, config_dir=str(config_dir))
 
         if not preview['ready'] or preview['status'] == 'nothing_to_publish' or args.dry_run:
@@ -275,7 +307,8 @@ def main(argv):
 
         if execute:
             progress('对齐远端并对齐发布' if preview.get('status') == 'pending_reconcile_identical' else '提交并推送配置仓库变更')
-            result = publish_repo(config_dir, message=args.message, create_pr=args.pr, dry_run=False, fetch=not args.no_fetch)
+            result = publish_repo(config_dir, message=args.message, create_pr=args.pr, dry_run=False,
+                                  fetch=not args.no_fetch, prefer_local=args.prefer_local)
             result.update(schema_version=1, operation='data-publish', machine_id=machine_id, config_dir=str(config_dir))
             progress(None)
             print(encode_json(public_value(result)) if fmt == 'json' else _render_publish(result, color=color))

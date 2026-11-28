@@ -388,20 +388,35 @@ def _default_commit_message(files):
 
 
 def _local_changes_match_upstream(root, upstream, files):
-    """Return True when every changed local path matches the blob/absence in upstream."""
+    """Return True when every changed local path matches upstream bytes, type, and tracked mode."""
     if not files or not upstream:
         return False
+    fm_res = _run_git(root, ['config', '--bool', 'core.filemode'], read_only=True)
+    check_mode = fm_res.stdout.strip().lower() != 'false'
     for rel in files:
         target = root / rel
         if target.is_symlink():
             return False
-        exists_in_upstream = _run_git(root, ['cat-file', '-e', f'{upstream}:{rel}'], read_only=True).returncode == 0
-        if not exists_in_upstream:
+        tree_res = _run_git(root, ['ls-tree', upstream, '--', rel], read_only=True)
+        if tree_res.returncode != 0:
+            return False
+        tree_line = tree_res.stdout.strip()
+        if not tree_line:
             if target.exists():
                 return False
             continue
+        upstream_mode = tree_line.split(None, 2)[0]
+        if upstream_mode not in ('100644', '100755'):
+            return False
         if not target.is_file():
             return False
+        if check_mode:
+            try:
+                local_mode = '100755' if (target.stat().st_mode & 0o100) else '100644'
+            except OSError:
+                return False
+            if local_mode != upstream_mode:
+                return False
         blob_res = _run_git_bytes(root, ['cat-file', 'blob', f'{upstream}:{rel}'], read_only=True)
         if blob_res.returncode != 0:
             return False

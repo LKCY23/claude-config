@@ -380,6 +380,25 @@ class DataRepoTests(unittest.TestCase):
             self.assertFalse(_confirm_publish(sample, False))
         self.assertNotIn('追加 --yes', buf.getvalue())
 
+    def test_publish_dirty_chmod_not_misclassified_as_identical(self):
+        fixture, _, peer = self._setup_git_data()
+        run_git(fixture.data, 'config', 'core.filemode', 'true')
+
+        peer_prof = peer / 'profiles/agents/codex/work.yaml'
+        peer_data = yaml.safe_load(peer_prof.read_text())
+        peer_data['settings']['model'] = 'shared-model'
+        peer_prof.write_text(yaml.safe_dump(peer_data, sort_keys=False))
+        run_git(peer, 'commit', '-qam', 'peer updates codex model')
+        run_git(peer, 'push', '-q')
+
+        local_prof = fixture.data / 'profiles/agents/codex/work.yaml'
+        local_prof.write_text(peer_prof.read_text())
+        local_prof.chmod(0o755)
+
+        blocked = publish_repo(fixture.data, dry_run=True)
+        self.assertFalse(blocked['ready'])
+        self.assertEqual(blocked['status'], 'behind_conflict')
+
 
 if __name__ == '__main__':
     unittest.main()

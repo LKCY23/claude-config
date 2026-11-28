@@ -30,6 +30,7 @@ def _release_payload(tag='v0.99.0', *, draft=False, include_all_assets=True):
 class SelfUpdateTests(unittest.TestCase):
     def test_semver_helpers_and_help(self):
         self.assertGreater(parse_semver('0.12.0'), parse_semver('0.12.0-rc.1'))
+        self.assertGreater(parse_semver('0.12.0-rc.10'), parse_semver('0.12.0-rc.2'))
         self.assertGreater(parse_semver('0.12.0'), parse_semver('0.11.1'))
         self.assertEqual(normalize_tag('0.12.0'), 'v0.12.0')
         self.assertEqual(normalize_tag('v0.12.0'), 'v0.12.0')
@@ -71,6 +72,27 @@ class SelfUpdateTests(unittest.TestCase):
                 code = cli_entry.main(['self-update', '--format', 'json'])
             self.assertEqual(code, 1)
             self.assertEqual(json.loads(out.getvalue())['status'], 'draft_release')
+
+        wrong_wheel_payload = json.dumps({
+            'tagName': 'v0.99.0',
+            'url': 'https://github.com/LKCY23/claude-config/releases/tag/v0.99.0',
+            'isDraft': False,
+            'isPrerelease': False,
+            'assets': [
+                {'name': 'claude_config-0.1.0-py3-none-any.whl'},
+                {'name': 'constraints.txt'},
+                {'name': 'install.sh'},
+            ],
+        })
+        with patch('shutil.which', return_value='/usr/bin/tool'), \
+                patch('claude_config.self_update_cmd.subprocess.run', return_value=subprocess.CompletedProcess([], 0, wrong_wheel_payload, '')):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = cli_entry.main(['self-update', '--format', 'json'])
+            self.assertEqual(code, 1)
+            rep = json.loads(out.getvalue())
+            self.assertEqual(rep['status'], 'missing_assets')
+            self.assertIn('claude_config-0.99.0-py3-none-any.whl', rep['missing_assets'])
 
     def test_dry_run_interactive_and_yes_execution(self):
         new_payload = _release_payload('v0.99.0')

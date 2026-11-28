@@ -19,13 +19,14 @@ _SEMVER_RE = re.compile(r'^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$')
 
 
 def parse_semver(value):
-    """Return comparable version tuple `(major, minor, patch, is_release, pre)` or None."""
+    """Return SemVer 2.0.0 comparable tuple `(major, minor, patch, is_release, pre_parts)` or None."""
     match = _SEMVER_RE.fullmatch(str(value or '').strip())
     if not match:
         return None
     major, minor, patch = int(match.group(1)), int(match.group(2)), int(match.group(3))
     pre = match.group(4) or ''
-    return (major, minor, patch, 1 if not pre else 0, pre)
+    pre_parts = tuple((0, int(p)) if p.isdigit() else (1, p) for p in pre.split('.')) if pre else ()
+    return (major, minor, patch, 1 if not pre else 0, pre_parts)
 
 
 def normalize_tag(version_arg):
@@ -66,10 +67,15 @@ def _select_assets(release_data):
         if isinstance(item, dict) and item.get('name')
     ]
     expected_wheel = f'claude_config-{target_ver}-py3-none-any.whl'
-    wheel = expected_wheel if expected_wheel in asset_names else next(
-        (name for name in asset_names if name.startswith('claude_config-') and name.endswith('.whl')),
-        None,
+    pep440_ver = re.sub(
+        r'[-_.]?(alpha|beta|rc)\.?(\d*)',
+        lambda m: ({'alpha': 'a', 'beta': 'b'}.get(m.group(1), m.group(1)) + m.group(2)),
+        target_ver,
     )
+    candidates = [expected_wheel]
+    if pep440_ver != target_ver:
+        candidates.append(f'claude_config-{pep440_ver}-py3-none-any.whl')
+    wheel = next((name for name in candidates if name in asset_names), None)
     missing = []
     if not wheel:
         missing.append(expected_wheel)
